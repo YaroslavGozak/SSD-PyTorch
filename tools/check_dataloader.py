@@ -1,4 +1,3 @@
-from dataset.visdrone import VisDroneDataset
 import torch
 import argparse
 import os
@@ -8,8 +7,9 @@ from tqdm import tqdm
 from model.ssd import SSD
 import numpy as np
 import cv2
-from dataset.voc import VOCDataset
-from torch.utils.data.dataloader import DataLoader
+import matplotlib.pyplot as plt
+from dataset.visdrone import VisDroneDataset
+from torch.utils.data import DataLoader
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if torch.backends.mps.is_available():
@@ -197,151 +197,140 @@ def load_model_and_dataset(args):
     return model, dataset, test_dataset_loader, config
 
 
-def infer(args):
-    if not os.path.exists('samples'):
-        os.mkdir('samples')
+def display_dataloader_samples(config_path, n_images=5, save_images=True, show_images=False):
+    """
+    Display first N images with their bounding boxes from the dataloader
+    
+    Args:
+        config_path (str): Path to config file
+        n_images (int): Number of images to display
+        save_images (bool): Whether to save images to disk
+        show_images (bool): Whether to display images using matplotlib
+    """
+    # Read the config file
+    with open(config_path, 'r') as file:
+        try:
+            config = yaml.safe_load(file)
+        except yaml.YAMLError as exc:
+            print(exc)
+    
+    dataset_config = config['dataset_params']
+    
+    # Create dataset and dataloader
+    dataset = VisDroneDataset('test', im_sets=dataset_config['test_im_sets'])
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+    
+    if save_images and not os.path.exists('dataloader_samples'):
+        os.mkdir('dataloader_samples')
+    
+    print(f"Displaying first {n_images} images from dataloader...")
+    print(f"Dataset size: {len(dataset)}")
+    print(f"Number of classes: {dataset_config['num_classes']}")
+    
+    # Get first n_images from dataloader
+    for i, (image_tensors, target, filenames) in enumerate(dataloader):
+        if i >= n_images:
+            break
+            
+        # Get the first (and only) item from batch (batch_size=1)
+        image_tensor = image_tensors[0]
+        # print(targets)
+        # target = targets[0]
+        filename = filenames[0]
+        
+        # Load original image for visualization
+        assert isinstance(filename, str), "Filename should be a string, got {}".format(type(filename))
+        original_img = cv2.imread(filename)
+        if original_img is None:
+            print(f"Could not load image: {filename}")
+            continue
+            
+        h, w = original_img.shape[:2]
+        display_img = original_img.copy()
 
-    model, dataset_dataset, test_dataset_loader, config = load_model_and_dataset(args)
-    conf_threshold = config['train_params']['infer_conf_threshold']
-    model.low_score_threshold = conf_threshold
+        # # Convert tensor -> NumPy (H, W, C)
+        # img = image_tensor.permute(1, 2, 0).cpu().numpy()
 
-    num_samples = 5
-    for i in tqdm(range(num_samples)):
-        dataset_idx = random.randint(0, len(dataset_dataset))
-        im_tensor, target, fname = dataset_dataset[dataset_idx]
-        _, ssd_detections = model(im_tensor.unsqueeze(0).to(device), [target])
-
-        gt_im = cv2.imread(fname)
-        h, w = gt_im.shape[:2]
-        gt_im_copy = gt_im.copy()
-        # Saving images with ground truth boxes
-        for idx, box in enumerate(target['bboxes']):
-            x1, y1, x2, y2 = box.detach().cpu().numpy()
-            x1, y1, x2, y2 = int(w*x1), int(h*y1), int(w*x2), int(h*y2)
-            cv2.rectangle(gt_im, (x1, y1), (x2, y2), thickness=2, color=[0, 255, 0])
-            cv2.rectangle(gt_im_copy, (x1, y1), (x2, y2), thickness=2, color=[0, 255, 0])
-            text = dataset_dataset.idx2label[target['labels'][idx].detach().cpu().item()]
-            text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_PLAIN, 1, 1)
-            text_w, text_h = text_size
-            cv2.rectangle(gt_im_copy, (x1, y1), (x1 + 10 + text_w, y1 + 10 + text_h), [255, 255, 255], -1)
-            cv2.putText(gt_im, text=dataset_dataset.idx2label[target['labels'][idx].detach().cpu().item()],
-                        org=(x1 + 5, y1 + 15),
-                        thickness=1,
-                        fontScale=1,
-                        color=[0, 0, 0],
-                        fontFace=cv2.FONT_HERSHEY_PLAIN)
-            cv2.putText(gt_im_copy, text=text,
-                        org=(x1 + 5, y1 + 15),
-                        thickness=1,
-                        fontScale=1,
-                        color=[0, 0, 0],
-                        fontFace=cv2.FONT_HERSHEY_PLAIN)
-        cv2.addWeighted(gt_im_copy, 0.7, gt_im, 0.3, 0, gt_im)
-        cv2.imwrite('samples/output_ssd_gt_{}.png'.format(i), gt_im)
-
-        # Getting predictions from trained model
-        boxes = ssd_detections[0]['boxes']
-        labels = ssd_detections[0]['labels']
-        scores = ssd_detections[0]['scores']
-        im = cv2.imread(fname)
-        im_copy = im.copy()
-
-        # Saving images with predicted boxes
-        for idx, box in enumerate(boxes):
-            x1, y1, x2, y2 = box.detach().cpu().numpy()
+        # # Convert RGB -> BGR and scale
+        # display_img = cv2.cvtColor((img * 255).astype(np.uint8), cv2.COLOR_RGB2BGR)
+        
+        # Get bounding boxes and labels
+        bboxes = target['bboxes']
+        labels = target['labels']
+        
+        print(f"\nImage {i+1}: {os.path.basename(filename)}")
+        print(f"  Image size: {w}x{h}")
+        print(f"  Number of objects: {len(bboxes)}")
+        print(target)
+        
+        # Draw bounding boxes
+        for j, (bbox, label) in enumerate(zip(bboxes[0], labels[0])):
+            # Convert normalized coordinates to pixel coordinates
+            x1, y1, x2, y2 = bbox.numpy()
             x1, y1, x2, y2 = int(w * x1), int(h * y1), int(w * x2), int(h * y2)
-            cv2.rectangle(im, (x1, y1), (x2, y2), thickness=2, color=[0, 0, 255])
-            cv2.rectangle(im_copy, (x1, y1), (x2, y2), thickness=2, color=[0, 0, 255])
-            text = '{} : {:.2f}'.format(dataset_dataset.idx2label[labels[idx].detach().cpu().item()],
-                                        scores[idx].detach().cpu().item())
-            text_size, _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_PLAIN, 1, 1)
-            text_w, text_h = text_size
-            cv2.rectangle(im_copy, (x1, y1), (x1 + 10 + text_w, y1 + 10 + text_h), [255, 255, 255], -1)
-            cv2.putText(im, text=text,
-                        org=(x1 + 5, y1 + 15),
-                        thickness=1,
-                        fontScale=1,
-                        color=[0, 0, 0],
-                        fontFace=cv2.FONT_HERSHEY_PLAIN)
-            cv2.putText(im_copy, text=text,
-                        org=(x1 + 5, y1 + 15),
-                        thickness=1,
-                        fontScale=1,
-                        color=[0, 0, 0],
-                        fontFace=cv2.FONT_HERSHEY_PLAIN)
-        cv2.addWeighted(im_copy, 0.7, im, 0.3, 0, im)
-        cv2.imwrite('samples/output_ssd_{}.jpg'.format(i), im)
-
-    print('Done Detecting...')
-
-
-def evaluate_map(args):
-    model, voc, test_dataset, config = load_model_and_dataset(args)
-
-    gts = []
-    preds = []
-    difficults = []
-    for im_tensor, target, fname in tqdm(test_dataset):
-        im_tensor = im_tensor.float().to(device)
-        target_bboxes = target['bboxes'].float()[0].to(device)
-        target_labels = target['labels'].long()[0].to(device)
-        difficult = target['difficult'].long()[0].to(device)
-        _, ssd_detections = model(im_tensor)
-
-        boxes = ssd_detections[0]['boxes']
-        labels = ssd_detections[0]['labels']
-        scores = ssd_detections[0]['scores']
-
-        pred_boxes = {}
-        gt_boxes = {}
-        difficult_boxes = {}
-
-        for label_name in voc.label2idx:
-            pred_boxes[label_name] = []
-            gt_boxes[label_name] = []
-            difficult_boxes[label_name] = []
-
-        for idx, box in enumerate(boxes):
-            x1, y1, x2, y2 = box.detach().cpu().numpy()
-            label = labels[idx].detach().cpu().item()
-            score = scores[idx].detach().cpu().item()
-            label_name = voc.idx2label[label]
-            pred_boxes[label_name].append([x1, y1, x2, y2, score])
-        for idx, box in enumerate(target_bboxes):
-            x1, y1, x2, y2 = box.detach().cpu().numpy()
-            label = target_labels[idx].detach().cpu().item()
-            label_name = voc.idx2label[label]
-            gt_boxes[label_name].append([x1, y1, x2, y2])
-            difficult_boxes[label_name].append(difficult[idx].detach().cpu().item())
-
-        gts.append(gt_boxes)
-        preds.append(pred_boxes)
-        difficults.append(difficult_boxes)
-    mean_ap, all_aps = compute_map(preds, gts, method='area', difficult=difficults)
-    print('Class Wise Average Precisions')
-    for idx in range(len(voc.idx2label)):
-        print('AP for class {} = {:.4f}'.format(voc.idx2label[idx],
-                                                all_aps[voc.idx2label[idx]]))
-    print('Mean Average Precision : {:.4f}'.format(mean_ap))
+            
+            # Get class name
+            class_name = dataset.idx2label[label.item()]
+            
+            # Draw bounding box
+            color = (0, 255, 0)  # Green color for GT boxes
+            cv2.rectangle(display_img, (x1, y1), (x2, y2), color, 2)
+            
+            # Add label text
+            label_text = f"{class_name}"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.6
+            thickness = 1
+            
+            # Get text size for background rectangle
+            (text_width, text_height), _ = cv2.getTextSize(label_text, font, font_scale, thickness)
+            
+            # Draw text background
+            cv2.rectangle(display_img, (x1, y1 - text_height - 10), 
+                         (x1 + text_width, y1), color, -1)
+            
+            # Draw text
+            cv2.putText(display_img, label_text, (x1, y1 - 5), 
+                       font, font_scale, (0, 0, 0), thickness)
+            
+            print(f"    Object {j+1}: {class_name} at [{x1}, {y1}, {x2}, {y2}]")
+        
+        if save_images:
+            output_path = f'dataloader_samples/sample_{i+1:03d}.jpg'
+            cv2.imwrite(output_path, display_img)
+            print(f"  Saved to: {output_path}")
+        
+        if show_images:
+            # Convert BGR to RGB for matplotlib
+            display_img_rgb = cv2.cvtColor(display_img, cv2.COLOR_BGR2RGB)
+            plt.figure(figsize=(12, 8))
+            plt.imshow(display_img_rgb)
+            plt.title(f"Sample {i+1}: {os.path.basename(filename)} ({len(bboxes)} objects)")
+            plt.axis('off')
+            plt.show()
+    
+    print(f"\nDisplayed {min(n_images, len(dataloader))} images from dataloader")
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Arguments for ssd inference')
+    parser = argparse.ArgumentParser(description='Arguments for ssd inference and dataloader visualization')
     parser.add_argument('--config', dest='config_path',
-                        default='config/voc.yaml', type=str)
-    parser.add_argument('--evaluate', dest='evaluate',
-                        default=False, type=bool)
-    parser.add_argument('--infer_samples', dest='infer_samples',
-                        default=True, type=bool)
+                        default='config/vis-drone.yaml', type=str)
+    parser.add_argument('--display_dataloader', dest='display_dataloader',
+                        default=True, type=bool,
+                        help='Display first N images from dataloader with bounding boxes')
+    parser.add_argument('--n_images', dest='n_images',
+                        default=10, type=int,
+                        help='Number of images to display from dataloader')
+    parser.add_argument('--show_images', dest='show_images',
+                        default=True, type=bool,
+                        help='Show images using matplotlib (requires display)')
     args = parser.parse_args()
 
-    with torch.no_grad():
-        if args.infer_samples:
-            infer(args)
-        else:
-            print('Not Inferring for samples as `infer_samples` argument is False')
-
-        if args.evaluate:
-            evaluate_map(args)
-        else:
-            print('Not Evaluating as `evaluate` argument is False')
+    if args.display_dataloader:
+        display_dataloader_samples(
+            config_path=args.config_path,
+            n_images=args.n_images,
+            save_images=False,
+            show_images=args.show_images
+        )

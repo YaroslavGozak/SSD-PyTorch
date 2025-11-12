@@ -42,10 +42,10 @@ def train(args):
     if device == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
-    voc = VOCDataset('train',
+    dataset = VOCDataset('train',
                      im_sets=dataset_config['train_im_sets'],
                      im_size=dataset_config['im_size'])
-    train_dataset = DataLoader(voc,
+    train_dataset_loader = DataLoader(dataset,
                                batch_size=train_config['batch_size'],
                                shuffle=True,
                                collate_fn=collate_function)
@@ -76,7 +76,7 @@ def train(args):
     for i in range(num_epochs):
         ssd_classification_losses = []
         ssd_localization_losses = []
-        for idx, (ims, targets, _) in enumerate(tqdm(train_dataset)):
+        for idx, (ims, targets, _) in enumerate(tqdm(train_dataset_loader)):
             for target in targets:
                 target['boxes'] = target['bboxes'].float().to(device)
                 del target['bboxes']

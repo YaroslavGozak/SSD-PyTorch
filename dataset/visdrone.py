@@ -1,13 +1,16 @@
+from glob import glob
 import os
+from pathlib import Path
 import torch
 import torchvision.transforms.v2
 from torch.utils.data.dataset import Dataset
 import xml.etree.ElementTree as ET
 from torchvision import tv_tensors
 from torchvision.io import read_image
+import random
 
 
-def load_images_and_anns(im_sets, label2idx, ann_fname):
+def load_images_and_anns(im_sets, ann_fname):
     r"""
     Method to get the xml files and for each file
     get all the objects and their ground truth detection
@@ -18,64 +21,77 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
     :param split: train/test
     :return:
     """
-    im_infos = []
+
+    categories = [
+        {"id": 1, "name": "pedestrian"},
+        {"id": 2, "name": "people"},
+        {"id": 3, "name": "bicycle"},
+        {"id": 4, "name": "car"},
+        {"id": 5, "name": "van"},
+        {"id": 6, "name": "truck"},
+        {"id": 7, "name": "tricycle"},
+        {"id": 8, "name": "awning-tricycle"},
+        {"id": 9, "name": "bus"},
+        {"id": 10, "name": "motor"},
+    ]
+
+    # im_infos = []
 
     for im_set in im_sets:
-        im_names = []
+        # im_names = []
         # Fetch all image names in txt file for this imageset
-        for line in open(os.path.join(
-                im_set, 'ImageSets', 'Main', '{}.txt'.format(ann_fname))):
-            im_names.append(line.strip())
 
-        # Set annotation and image path
-        ann_dir = os.path.join(im_set, 'Annotations')
-        im_dir = os.path.join(im_set, 'JPEGImages')
-        for im_name in im_names:
-            ann_file = os.path.join(ann_dir, '{}.xml'.format(im_name))
-            im_info = {}
-            ann_info = ET.parse(ann_file)
-            root = ann_info.getroot()
-            size = root.find('size')
-            width = int(size.find('width').text)
-            height = int(size.find('height').text)
-            im_info['img_id'] = os.path.basename(ann_file).split('.xml')[0]
-            im_info['filename'] = os.path.join(
-                im_dir, '{}.jpg'.format(im_info['img_id'])
-            )
-            im_info['width'] = width
-            im_info['height'] = height
-            detections = []
+        videos = sorted(os.listdir(os.path.join(im_set, "annotations")))
+        data = {"videos": [], "frames": [], "categories": categories}
 
-            for obj in ann_info.findall('object'):
-                det = {}
-                label = label2idx[obj.find('name').text]
-                difficult = int(obj.find('difficult').text)
-                bbox_info = obj.find('bndbox')
-                bbox = [
-                    int(bbox_info.find('xmin').text) - 1,
-                    int(bbox_info.find('ymin').text) - 1,
-                    int(bbox_info.find('xmax').text) - 1,
-                    int(bbox_info.find('ymax').text) - 1
-                ]
-                det['label'] = label
-                det['bbox'] = bbox
-                det['difficult'] = difficult
-                # At test time eval does the job of ignoring difficult
-                detections.append(det)
+        for vid_idx, vid in enumerate(videos):
+            ann_files = sorted(glob(os.path.join(im_set, "annotations", vid)))
+            data["videos"].append({"id": vid_idx + 1, "name": vid})
+            print(ann_files)
+            for _, ann_file in enumerate(ann_files):
+                with open(ann_file) as f:
+                    for line in f:
+                        vals = line.strip().split(',')
+                        if len(vals) < 10:
+                            continue
+                        frame_idx, tid, x, y, w, h, score, cat, trunc, occ = map(float, vals)
+                        frame_name = f"{int(frame_idx):07d}.jpg"
+                        frame_name = os.path.join(im_set, "sequences", vid[:-4], frame_name)
+                        for i, frame_info in enumerate(data["frames"]):
+                            if frame_info['filename'] == frame_name:
+                                data["frames"][i]["detections"].append({
+                                    "target_id": int(tid),
+                                    "label": int(cat),
+                                    "bbox": [x, y, x + w, y + h],
+                                    "area": w*h,
+                                    "difficult": bool(int(trunc) + int(occ))
+                                })
+                                break
+                        else:
+                            data["frames"].append({
+                                "filename": frame_name,
+                                "frame_id": frame_idx,
+                                "video_id": vid_idx + 1,
+                                "detections": [{
+                                    "target_id": int(tid),
+                                    "label": int(cat),
+                                    "bbox": [x, y, x + w, y + h],
+                                    "area": w*h,
+                                    "difficult": bool(int(trunc) + int(occ))
+                                }]
+                            })
+            break
+    print('Total {} images found'.format(len(data["frames"])))
+    return data
 
-            im_info['detections'] = detections
-            im_infos.append(im_info)
-    print('Total {} images found'.format(len(im_infos)))
-    return im_infos
 
-
-class VOCDataset(Dataset):
+class VisDroneDataset(Dataset):
     def __init__(self, split, im_sets, im_size=300):
         self.split = split
 
         # Imagesets for this dataset instance (VOC2007/VOC2007+VOC2012/VOC2007-test)
         self.im_sets = im_sets
-        self.fname = 'trainval' if self.split == 'train' else 'test'
+        self.fname = '_v' #'trainval' if self.split == 'train' else 'test'
         self.im_size = im_size
         self.im_mean = [123.0, 117.0, 104.0]
         self.imagenet_mean = [0.485, 0.456, 0.406]
@@ -106,12 +122,12 @@ class VOCDataset(Dataset):
                                                     std=self.imagenet_std)
             ]),
         }
-
-        classes = [
-            'person', 'bird', 'cat', 'cow', 'dog', 'horse', 'sheep',
-            'aeroplane', 'bicycle', 'boat', 'bus', 'car', 'motorbike', 'train',
-            'bottle', 'chair', 'diningtable', 'pottedplant', 'sofa', 'tvmonitor'
-        ]
+        
+        self.images_info = load_images_and_anns(self.im_sets,
+                                                self.fname)
+        
+        # Extract class names from categories list
+        classes = [category['name'] for category in self.images_info['categories']]
         classes = sorted(classes)
         # We need to add background class as well with 0 index
         classes = ['background'] + classes
@@ -119,15 +135,12 @@ class VOCDataset(Dataset):
         self.label2idx = {classes[idx]: idx for idx in range(len(classes))}
         self.idx2label = {idx: classes[idx] for idx in range(len(classes))}
         print(self.idx2label)
-        self.images_info = load_images_and_anns(self.im_sets,
-                                                self.label2idx,
-                                                self.fname)
 
     def __len__(self):
-        return len(self.images_info)
+        return len(self.images_info["frames"])
 
     def __getitem__(self, index):
-        im_info = self.images_info[index]
+        im_info = self.images_info["frames"][index]
         im = read_image(im_info['filename'])
 
         # Get annotations for this image
@@ -147,4 +160,4 @@ class VOCDataset(Dataset):
         h, w = im_tensor.shape[-2:]
         wh_tensor = torch.as_tensor([[w, h, w, h]]).expand_as(targets['bboxes'])
         targets['bboxes'] = targets['bboxes'] / wh_tensor
-        return im_tensor, targets, im_info['filename']
+        return im_tensor, targets, str(im_info['filename'])
