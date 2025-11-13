@@ -5,11 +5,17 @@ import numpy as np
 import yaml
 import random
 from tqdm import tqdm
+from dataset.visdrone import VisDroneDataset
 from model.ssd import SSD
 import torchvision
 from dataset.voc import VOCDataset
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
+
+if not torch.cuda.is_available():
+    raise Exception('CUDA not available')
+else:
+    print('Running on CUDA')
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -42,13 +48,14 @@ def train(args):
     if device == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
-    dataset = VOCDataset('train',
+    dataset = VisDroneDataset('train',
                      im_sets=dataset_config['train_im_sets'],
                      im_size=dataset_config['im_size'])
     train_dataset_loader = DataLoader(dataset,
                                batch_size=train_config['batch_size'],
                                shuffle=True,
-                               collate_fn=collate_function)
+                               collate_fn=collate_function,
+                               num_workers=8)
 
     # Instantiate model and load checkpoint if present
     model = SSD(config=config['model_params'],
@@ -73,7 +80,16 @@ def train(args):
     acc_steps = train_config['acc_steps']
     num_epochs = train_config['num_epochs']
     steps = 0
-    for i in range(num_epochs):
+
+    i_start = 0
+    if os.path.exists(os.path.join(train_config['task_name'], 'epoch.pth')):
+        print('Loading checkpoint epoch as one exists')
+        i_start = int(torch.load(os.path.join(train_config['task_name'], 'epoch.pth'))) + 1
+    print('Starting training from epoch {}'.format(i_start))
+
+    import time
+    for i in range(i_start, num_epochs):
+        epoch_start_time = time.time()
         ssd_classification_losses = []
         ssd_localization_losses = []
         for idx, (ims, targets, _) in enumerate(tqdm(train_dataset_loader)):
@@ -103,16 +119,20 @@ def train(args):
                 print('Loss is becoming nan. Exiting')
                 exit(0)
             steps += 1
-        optimizer.step()
-        optimizer.zero_grad()
-        lr_scheduler.step()
-        print('Finished epoch {}'.format(i+1))
-        loss_output = ''
-        loss_output += 'SSD Classification Loss : {:.4f}'.format(np.mean(ssd_classification_losses))
-        loss_output += ' | SSD Localization Loss : {:.4f}'.format(np.mean(ssd_localization_losses))
-        print(loss_output)
-        torch.save(model.state_dict(), os.path.join(train_config['task_name'],
-                                                         train_config['ckpt_name']))
+    optimizer.step()
+    optimizer.zero_grad()
+    lr_scheduler.step()
+    epoch_time = time.time() - epoch_start_time
+    print('Finished epoch {}'.format(i+1))
+    print('Epoch execution time: {:.2f} seconds'.format(epoch_time))
+    loss_output = ''
+    loss_output += 'SSD Classification Loss : {:.4f}'.format(np.mean(ssd_classification_losses))
+    loss_output += ' | SSD Localization Loss : {:.4f}'.format(np.mean(ssd_localization_losses))
+    print(loss_output)
+    torch.save(model.state_dict(), os.path.join(train_config['task_name'],
+                             train_config['ckpt_name']))
+    torch.save(i, os.path.join(train_config['task_name'],
+                             'epoch.pth'))
     print('Done Training...')
 
 
