@@ -125,8 +125,10 @@ def train(args):
         optimizer.zero_grad()
         lr_scheduler.step()
         epoch_time = time.time() - epoch_start_time
+        epoch_minutes = epoch_time / 60.0
+        epoch_hours = epoch_minutes / 60.0
         print('Finished epoch {}/{}'.format(i+1, num_epochs))
-        print('Epoch execution time: {:.2f} seconds'.format(epoch_time))
+        print('Epoch execution time: {:.2f} hours, {:.2f} minutes'.format(epoch_hours, epoch_minutes))
         loss_output = ''
         loss_output += 'SSD Classification Loss : {:.4f}'.format(np.mean(ssd_classification_losses))
         loss_output += ' | SSD Localization Loss : {:.4f}'.format(np.mean(ssd_localization_losses))
