@@ -43,12 +43,10 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
         # Fetch all image names in txt file for this imageset
 
         videos = sorted(os.listdir(os.path.join(im_set, "SequenceAnnotations")))
-        data = {"videos": [], "frames": [], "categories": categories}
         num_videos = len(videos)
 
         for vid_idx, vid in enumerate(videos):
             print(f'Loading video {vid_idx + 1}/{num_videos}')
-            data["videos"].append({"id": vid_idx + 1, "name": vid})
             im_dir = os.path.join(im_set, 'sequences', vid)
             for (_, _, filenames) in os.walk(os.path.join(im_set, "SequenceAnnotations", vid)):
                 for _, ann_file in enumerate(filenames):
@@ -86,6 +84,10 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
                         # At test time eval does the job of ignoring difficult
                         detections.append(det)
 
+                    # Skip images with no detections
+                    if len(detections) == 0:
+                        continue
+                    
                     im_info['detections'] = detections
                     im_infos.append(im_info)
     print('Total {} images found'.format(len(im_infos)))
