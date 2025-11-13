@@ -55,7 +55,9 @@ def train(args):
                                batch_size=train_config['batch_size'],
                                shuffle=True,
                                collate_fn=collate_function,
-                               num_workers=8)
+                               num_workers=8,  # 0 - 1 process, 4 or 8 - number of processes
+                               pin_memory=True,  # Add this for faster GPU transfer
+                               persistent_workers=True)  # Keep workers alive between epochs
 
     # Instantiate model and load checkpoint if present
     model = SSD(config=config['model_params'],
@@ -119,20 +121,20 @@ def train(args):
                 print('Loss is becoming nan. Exiting')
                 exit(0)
             steps += 1
-    optimizer.step()
-    optimizer.zero_grad()
-    lr_scheduler.step()
-    epoch_time = time.time() - epoch_start_time
-    print('Finished epoch {}'.format(i+1))
-    print('Epoch execution time: {:.2f} seconds'.format(epoch_time))
-    loss_output = ''
-    loss_output += 'SSD Classification Loss : {:.4f}'.format(np.mean(ssd_classification_losses))
-    loss_output += ' | SSD Localization Loss : {:.4f}'.format(np.mean(ssd_localization_losses))
-    print(loss_output)
-    torch.save(model.state_dict(), os.path.join(train_config['task_name'],
-                             train_config['ckpt_name']))
-    torch.save(i, os.path.join(train_config['task_name'],
-                             'epoch.pth'))
+        optimizer.step()
+        optimizer.zero_grad()
+        lr_scheduler.step()
+        epoch_time = time.time() - epoch_start_time
+        print('Finished epoch {}/{}'.format(i+1, num_epochs))
+        print('Epoch execution time: {:.2f} seconds'.format(epoch_time))
+        loss_output = ''
+        loss_output += 'SSD Classification Loss : {:.4f}'.format(np.mean(ssd_classification_losses))
+        loss_output += ' | SSD Localization Loss : {:.4f}'.format(np.mean(ssd_localization_losses))
+        print(loss_output)
+        torch.save(model.state_dict(), os.path.join(train_config['task_name'],
+                                train_config['ckpt_name']))
+        torch.save(i, os.path.join(train_config['task_name'],
+                                'epoch.pth'))
     print('Done Training...')
 
 
