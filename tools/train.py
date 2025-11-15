@@ -11,6 +11,7 @@ import torchvision
 from dataset.voc import VOCDataset
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
+from torch.cuda.amp import GradScaler, autocast
 
 if not torch.cuda.is_available():
     raise Exception('CUDA not available')
@@ -57,7 +58,8 @@ def train(args):
                                collate_fn=collate_function,
                                num_workers=8,  # 0 - 1 process, 4 or 8 - number of processes
                                pin_memory=True,  # Add this for faster GPU transfer
-                               persistent_workers=True)  # Keep workers alive between epochs
+                               persistent_workers=True, # Keep workers alive between epochs
+                               prefetch_factor=2)  # Prefetch 2 batches per worker
 
     # Instantiate model and load checkpoint if present
     model = SSD(config=config['model_params'],
@@ -95,14 +97,23 @@ def train(args):
         ssd_classification_losses = []
         ssd_localization_losses = []
         for idx, (ims, targets, _) in enumerate(tqdm(train_dataset_loader)):
+            # Asynchronous GPU transfer for faster throughput
             for target in targets:
-                target['boxes'] = target['bboxes'].float().to(device)
+                target['boxes'] = target['bboxes'].float().to(device, non_blocking=True)
                 del target['bboxes']
-                target['labels'] = target['labels'].long().to(device)
-            images = torch.stack([im.float().to(device) for im in ims], dim=0)
+                target['labels'] = target['labels'].long().to(device, non_blocking=True)
+            
+            # Stack images and transfer to GPU asynchronously
+            images = torch.stack([im.float() for im in ims], dim=0).to(device, non_blocking=True)
             batch_losses, _ = model(images, targets)
             loss = batch_losses['classification']
             loss += batch_losses['bbox_regression']
+
+            # Check for NaN before combining losses
+            if torch.isnan(batch_losses['classification']) or torch.isnan(batch_losses['bbox_regression']):
+                print(f"NaN detected! Classification: {batch_losses['classification'].item()}, BBox: {batch_losses['bbox_regression'].item()}")
+                print(f"Batch index: {idx}")
+                print('Targets: {}'.format(targets))
 
             ssd_classification_losses.append(batch_losses['classification'].item())
             ssd_localization_losses.append(batch_losses['bbox_regression'].item())
@@ -110,6 +121,7 @@ def train(args):
             loss.backward()
 
             if (idx + 1) % acc_steps == 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Clip gradient to prevent exploding gradient
                 optimizer.step()
                 optimizer.zero_grad()
             if steps % train_config['log_steps'] == 0:

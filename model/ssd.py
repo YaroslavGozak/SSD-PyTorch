@@ -252,6 +252,14 @@ class SSD(nn.Module):
         backbone.features[max_pool_stage_3_pos].ceil_mode = True
         # otherwise vgg conv4_3 output will be 37x37
         self.features = nn.Sequential(*backbone.features[:max_pool_stage_4_pos])
+        
+        # Freeze conv1 and conv2 layers for fine-tuning
+        # Conv1: layers 0-4 (conv1_1, relu, conv1_2, relu, maxpool)
+        # Conv2: layers 5-9 (conv2_1, relu, conv2_2, relu, maxpool)
+        for i, layer in enumerate(self.features):
+            if i <= 9:  # Freeze conv1 and conv2 blocks (layers 0-9)
+                for param in layer.parameters():
+                    param.requires_grad = False
         self.scale_weight = nn.Parameter(torch.ones(512) * 20)
 
         ###################################
@@ -357,6 +365,49 @@ class SSD(nn.Module):
             torch.nn.init.xavier_uniform_(module.weight)
             if module.bias is not None:
                 torch.nn.init.constant_(module.bias, 0.0)
+
+    def set_freeze_level(self, freeze_level='conv1_conv2'):
+        """
+        Control which layers to freeze for fine-tuning
+        
+        Args:
+            freeze_level (str): 
+                - 'none': Train all layers
+                - 'conv1_conv2': Freeze conv1 and conv2 blocks (recommended for VisDrone)
+                - 'conservative': Freeze early VGG layers (up to conv3_1)
+                - 'aggressive': Freeze most VGG backbone (up to conv4_3)
+                - 'backbone_only': Freeze entire VGG backbone, train only SSD heads
+        """
+        # First, unfreeze all parameters
+        for param in self.parameters():
+            param.requires_grad = True
+            
+        if freeze_level == 'none':
+            return
+        elif freeze_level == 'conv1_conv2':
+            # Freeze conv1 and conv2 blocks (layers 0-9)
+            freeze_up_to = 9
+        elif freeze_level == 'conservative':
+            # Freeze up to conv3_1 (layers 0-16)
+            freeze_up_to = 16
+        elif freeze_level == 'aggressive':
+            # Freeze up to conv4_3 (most of backbone)
+            freeze_up_to = len(self.features) - 1
+        elif freeze_level == 'backbone_only':
+            # Freeze entire backbone
+            for param in self.features.parameters():
+                param.requires_grad = False
+            for param in self.conv5_3_fc.parameters():
+                param.requires_grad = False
+            return
+        else:
+            raise ValueError(f"Unknown freeze_level: {freeze_level}")
+            
+        # Freeze specified layers
+        for i, layer in enumerate(self.features):
+            if i <= freeze_up_to:
+                for param in layer.parameters():
+                    param.requires_grad = False
 
     def compute_loss(
             self,

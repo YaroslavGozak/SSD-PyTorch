@@ -10,26 +10,33 @@ import xml.etree.ElementTree as ET
 # --- CONFIG ---
 COPY_IMAGES = False
 COPY_ANNOTATIONS = True
-ANNOTATIONS_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\SequenceAnnotation"
+ANNOTATIONS_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\SequenceAnnotations"
 ANNOTATIONS_OLD_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\annotations"
 IMAGES_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\sequences"
-IMAGES_OLD_DIR = "D:/Datasets/VisDrone2019-VID-test-dev/VisDrone2019-VID-test-dev/sequences"
+IMAGES_OLD_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\sequences"
 DISPLAY_INTERVAL = 0.01
 OBJECT_ID = 5
 # ----------------
 
 categories = [
-        {"id": 1, "name": "pedestrian"},
-        {"id": 2, "name": "people"},
-        {"id": 3, "name": "bicycle"},
-        {"id": 4, "name": "car"},
-        {"id": 5, "name": "van"},
-        {"id": 6, "name": "truck"},
-        {"id": 7, "name": "tricycle"},
-        {"id": 8, "name": "awning-tricycle"},
-        {"id": 9, "name": "bus"},
-        {"id": 10, "name": "motor"},
-    ]
+    {"id": 1, "name": "pedestrian"},
+    {"id": 2, "name": "people"},
+    {"id": 3, "name": "bicycle"},
+    {"id": 4, "name": "car"},
+    {"id": 5, "name": "van"},
+    {"id": 6, "name": "truck"},
+    {"id": 7, "name": "tricycle"},
+    {"id": 8, "name": "awning-tricycle"},
+    {"id": 9, "name": "bus"},
+    {"id": 10, "name": "motor"},
+]
+classes = [category['name'] for category in categories]
+# classes = sorted(classes)
+# We need to add background class as well with 0 index
+classes = ['background'] + classes
+
+label2idx = {classes[idx]: idx for idx in range(len(classes))}
+idx2label = {idx: classes[idx] for idx in range(len(classes))}
 
 def copy_and_rename(src_path, dest_folder, new_name):
     # 2) Ensure destination exists
@@ -96,6 +103,9 @@ if __name__ == "__main__":
                 df = df.reset_index()  # make sure indexes pair with number of rows
                 frames = {}
                 for index, row in df.iterrows():
+                    if int(row["class"]) > 10 or int(row["class"]) < 1:
+                        # 'Invalid class: {}'.format(row["class"])
+                        continue
                     frame_id = str(row["frame_id"])
                     frame_name = filename_no_ext + '_' + frame_id.zfill(7)
                     image_name = f"{frame_name}.jpg"
@@ -119,7 +129,7 @@ if __name__ == "__main__":
                         frames[frame_name] = frame
                     frame = frames[frame_name]
                     frame["annotation"]["object"].append({
-                        "name": row["object_id"],
+                        "name": idx2label[row["class"]],
                         "pose": "Unspecified",
                         "truncated": row["truncation"],
                         "bndbox":{
@@ -132,7 +142,7 @@ if __name__ == "__main__":
 
                 for fr_idx, key in enumerate(frames):
                     # Build XML tree
-                    print(f'Converting frame {fr_idx}/{len(frames)} of annotation {ann_idx}/{len(filenames)} to XML')
+                    print(f'Converting frame {fr_idx + 1}/{len(frames)} of annotation {ann_idx + 1}/{len(filenames)} to XML')
                     frame = frames[key]
                     root_key = next(iter(frame))
                     root = dict_to_xml(root_key, frame[root_key])

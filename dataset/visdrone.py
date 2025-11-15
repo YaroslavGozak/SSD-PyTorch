@@ -23,19 +23,6 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
     :return:
     """
 
-    categories = [
-        {"id": 1, "name": "pedestrian"},
-        {"id": 2, "name": "people"},
-        {"id": 3, "name": "bicycle"},
-        {"id": 4, "name": "car"},
-        {"id": 5, "name": "van"},
-        {"id": 6, "name": "truck"},
-        {"id": 7, "name": "tricycle"},
-        {"id": 8, "name": "awning-tricycle"},
-        {"id": 9, "name": "bus"},
-        {"id": 10, "name": "motor"},
-    ]
-
     im_infos = []
 
     for im_set in im_sets:
@@ -66,10 +53,6 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
 
                     for obj in ann_info.findall('object'):
                         det = {}
-                        try:
-                            label = label2idx[obj.find('name').text]
-                        except KeyError:
-                            continue
                         difficult = int(obj.find('truncated').text)
                         bbox_info = obj.find('bndbox')
                         bbox = [
@@ -78,9 +61,17 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
                             int(bbox_info.find('xmax').text) - 1,
                             int(bbox_info.find('ymax').text) - 1
                         ]
-                        det['label'] = label
                         det['bbox'] = bbox
                         det['difficult'] = difficult
+                        try:
+                            label = label2idx[obj.find('name').text]
+                            det['label'] = label
+                            if label == 0:
+                                print('Found background label for object {} in image {}. Skipping...'.format(ET.tostring(obj, encoding='unicode'), im_info['filename']))
+                                continue
+                        except KeyError:
+                            continue
+                        
                         # At test time eval does the job of ignoring difficult
                         detections.append(det)
 
@@ -90,7 +81,12 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
                     
                     im_info['detections'] = detections
                     im_infos.append(im_info)
+                # Iterate for every annotation file
+            # Iterating over sequence annotations
+        # Iterating over video sequence folders
     print('Total {} images found'.format(len(im_infos)))
+    if len(im_infos) == 0:
+        raise ValueError('No images found for the specified im_sets')
     return im_infos
 
 
@@ -100,7 +96,7 @@ class VisDroneDataset(Dataset):
 
         # Imagesets for this dataset instance (VOC2007/VOC2007+VOC2012/VOC2007-test)
         self.im_sets = im_sets
-        self.fname = '_v' #'trainval' if self.split == 'train' else 'test'
+        self.fname = 'trainval' if self.split == 'train' else 'test'
         self.im_size = im_size
         self.im_mean = [123.0, 117.0, 104.0]
         self.imagenet_mean = [0.485, 0.456, 0.406]
@@ -145,13 +141,12 @@ class VisDroneDataset(Dataset):
             {"id": 10, "name": "motor"},
         ]
         classes = [category['name'] for category in categories]
-        classes = sorted(classes)
+        # classes = sorted(classes)
         # We need to add background class as well with 0 index
         classes = ['background'] + classes
 
         self.label2idx = {classes[idx]: idx for idx in range(len(classes))}
         self.idx2label = {idx: classes[idx] for idx in range(len(classes))}
-        print(self.idx2label)
         
         self.images_info = load_images_and_anns(self.im_sets,
                                                 self.label2idx,
