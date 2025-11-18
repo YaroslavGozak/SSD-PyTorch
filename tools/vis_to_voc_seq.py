@@ -6,14 +6,18 @@ import shutil
 from PIL import Image
 import pandas as pd
 import xml.etree.ElementTree as ET
+import cv2
 
 # --- CONFIG ---
-COPY_IMAGES = False
-COPY_ANNOTATIONS = True
+COPY_IMAGES = True
+COPY_ANNOTATIONS = False
 ANNOTATIONS_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\SequenceAnnotations"
 ANNOTATIONS_OLD_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\annotations"
-IMAGES_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\sequences"
+IMAGES_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\ResizedSequences"
 IMAGES_OLD_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\sequences"
+IMG_SCALE_PX = 512
+
+# Preview settings
 DISPLAY_INTERVAL = 0.01
 OBJECT_ID = 5
 # ----------------
@@ -50,6 +54,35 @@ def copy_and_rename(src_path, dest_folder, new_name):
     new_path = os.path.join(dest_folder, new_name)
     os.rename(old_path, new_path)
 
+def copy_and_resize(src_path, dest_folder, new_name):
+    """
+    Copy an image from src_path to dest_folder with a new name, resizing it to a fixed scale.
+    """
+    # 2) Ensure destination exists
+    os.makedirs(dest_folder, exist_ok=True)
+
+    # Read image
+    img = cv2.imread(src_path)
+
+    # Check
+    if img is None:
+        raise ValueError("Image not found")
+
+    im_height = img.shape[0]
+    im_width = img.shape[1]
+    # --- Rescale factor ---
+    scale = IMG_SCALE_PX / max(im_width, im_height)
+
+    # Compute new size
+    new_width = int(im_width * scale)
+    new_height = int(im_height * scale)
+
+    # Resize
+    resized = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+
+    # Save
+    cv2.imwrite(os.path.join(dest_folder, new_name), resized)
+
 def dict_to_xml(tag, data, parent = None):
     """
     Recursively convert a dict or list into an XML Element.
@@ -84,15 +117,15 @@ if __name__ == "__main__":
     # 1. Read the images
     if COPY_IMAGES:
         for (dirpath, dirnames, filenames) in walk(IMAGES_OLD_DIR):
-            for dirname in dirnames:
+            for dir_idx, dirname in enumerate(dirnames):
                 image_paths = sorted(glob.glob(f"{dirpath}/{dirname}/*.jpg"))
                 if not image_paths:
                     raise RuntimeError(f'No images found in {dirpath}/{dirname}')
                 for idx, imgpath in enumerate(image_paths):
                     imgname = os.path.basename(imgpath)
-                    copy_and_rename(imgpath, IMAGES_DIR, dirname + '_' + imgname)
+                    copy_and_resize(imgpath, IMAGES_DIR + '/' + dirname, imgname)
                     if idx % 100 == 0:
-                        print(f'Copied {idx} images of {len(image_paths)}')
+                        print(f'Copied {idx + 1}/{len(image_paths)} of sequence {dir_idx + 1}/{len(dirnames)}')
 
     if COPY_ANNOTATIONS:
         for (_, _, filenames) in walk(ANNOTATIONS_OLD_DIR):
