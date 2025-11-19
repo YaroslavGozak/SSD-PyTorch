@@ -13,8 +13,8 @@ COPY_IMAGES = True
 COPY_ANNOTATIONS = False
 ANNOTATIONS_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\SequenceAnnotations"
 ANNOTATIONS_OLD_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\annotations"
-IMAGES_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\ResizedSequences"
-IMAGES_OLD_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\sequences"
+IMAGES_DIR = "D:\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\ResizedSequences"
+IMAGES_OLD_DIR = "D:\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\sequences"
 IMG_SCALE_PX = 512
 
 # Preview settings

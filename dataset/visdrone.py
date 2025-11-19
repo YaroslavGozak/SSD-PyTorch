@@ -34,7 +34,7 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
 
         for vid_idx, vid in enumerate(videos):
             print(f'Loading video {vid_idx + 1}/{num_videos}')
-            im_dir = os.path.join(im_set, 'sequences', vid)
+            im_dir = os.path.join(im_set, 'ResizedSequences', vid)
             for (_, _, filenames) in os.walk(os.path.join(im_set, "SequenceAnnotations", vid)):
                 for _, ann_file in enumerate(filenames):
                     im_info = {}
