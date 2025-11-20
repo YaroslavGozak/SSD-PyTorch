@@ -1,6 +1,7 @@
 from glob import glob
 import os
 from pathlib import Path
+from tools.utils import read_annotation_file
 import torch
 import torchvision.transforms.v2
 from torch.utils.data.dataset import Dataset
@@ -37,49 +38,15 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
             im_dir = os.path.join(im_set, 'ResizedSequences', vid)
             for (_, _, filenames) in os.walk(os.path.join(im_set, "SequenceAnnotations", vid)):
                 for _, ann_file in enumerate(filenames):
-                    im_info = {}
-                    ann_info = ET.parse(os.path.join(im_set, "SequenceAnnotations", vid, ann_file))
-                    root = ann_info.getroot()
-                    size = root.find('size')
-                    width = int(size.find('width').text)
-                    height = int(size.find('height').text)
-                    im_info['img_id'] = os.path.basename(ann_file).split('.xml')[0]
-                    im_info['filename'] = os.path.join(
-                        im_dir, '{}.jpg'.format(im_info['img_id'])
-                    )
-                    im_info['width'] = width
-                    im_info['height'] = height
-                    detections = []
-
-                    for obj in ann_info.findall('object'):
-                        det = {}
-                        difficult = int(obj.find('truncated').text)
-                        bbox_info = obj.find('bndbox')
-                        bbox = [
-                            int(bbox_info.find('xmin').text) - 1,
-                            int(bbox_info.find('ymin').text) - 1,
-                            int(bbox_info.find('xmax').text) - 1,
-                            int(bbox_info.find('ymax').text) - 1
-                        ]
-                        det['bbox'] = bbox
-                        det['difficult'] = difficult
-                        try:
-                            label = label2idx[obj.find('name').text]
-                            det['label'] = label
-                            if label == 0:
-                                print('Found background label for object {} in image {}. Skipping...'.format(ET.tostring(obj, encoding='unicode'), im_info['filename']))
-                                continue
-                        except KeyError:
-                            continue
-                        
-                        # At test time eval does the job of ignoring difficult
-                        detections.append(det)
+                    ann_dir = os.path.join(im_set, "SequenceAnnotations", vid)
+                    im_info, success = read_annotation_file(ann_dir, im_dir, ann_file, label2idx)
+                    if not success:
+                        continue
 
                     # Skip images with no detections
-                    if len(detections) == 0:
+                    if len(im_info.get('detections', [])) == 0:
                         continue
                     
-                    im_info['detections'] = detections
                     im_infos.append(im_info)
                 # Iterate for every annotation file
             # Iterating over sequence annotations

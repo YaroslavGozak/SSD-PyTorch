@@ -7,11 +7,9 @@ import random
 from tqdm import tqdm
 from dataset.visdrone import VisDroneDataset
 from model.ssd import SSD
-import torchvision
 from dataset.voc import VOCDataset
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
-from torch.cuda.amp import GradScaler, autocast
 
 if not torch.cuda.is_available():
     raise Exception('CUDA not available')
@@ -59,7 +57,8 @@ def train(args):
                                num_workers=8,  # 0 - 1 process, 4 or 8 - number of processes
                                pin_memory=True,  # Add this for faster GPU transfer
                                persistent_workers=True, # Keep workers alive between epochs
-                               prefetch_factor=2)  # Prefetch 2 batches per worker
+                               prefetch_factor=2  # Prefetch 2 batches per worker
+                               ) 
 
     # Instantiate model and load checkpoint if present
     model = SSD(config=config['model_params'],
@@ -135,12 +134,12 @@ def train(args):
             steps += 1
         optimizer.step()
         optimizer.zero_grad()
-        lr_scheduler.step()
+        lr_scheduler.step(i)
+        print('Learning rate for epoch {}: {:.6f}'.format(i+1, lr_scheduler.get_last_lr()[0]))
         epoch_time = time.time() - epoch_start_time
-        epoch_minutes = epoch_time / 60.0
-        epoch_hours = epoch_minutes / 60.0
+        epoch_minutes = epoch_time / 60 / 60
         print('Finished epoch {}/{}'.format(i+1, num_epochs))
-        print('Epoch execution time: {:.2f} hours, {:.2f} minutes'.format(epoch_hours, epoch_minutes))
+        print('Epoch execution time: {:.2f} minutes'.format(epoch_minutes))
         loss_output = ''
         loss_output += 'SSD Classification Loss : {:.4f}'.format(np.mean(ssd_classification_losses))
         loss_output += ' | SSD Localization Loss : {:.4f}'.format(np.mean(ssd_localization_losses))

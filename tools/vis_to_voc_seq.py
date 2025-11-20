@@ -2,19 +2,18 @@ import glob
 import os
 from os import walk
 from pathlib import Path
-import shutil
 from PIL import Image
 import pandas as pd
 import xml.etree.ElementTree as ET
 import cv2
 
 # --- CONFIG ---
-COPY_IMAGES = True
-COPY_ANNOTATIONS = False
-ANNOTATIONS_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\SequenceAnnotations"
-ANNOTATIONS_OLD_DIR = "D:\\Datasets\\VisDrone2019-VID-test-dev\\VisDrone2019-VID-test-dev\\annotations"
-IMAGES_DIR = "D:\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\ResizedSequences"
-IMAGES_OLD_DIR = "D:\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\sequences"
+COPY_IMAGES = False
+COPY_ANNOTATIONS = True
+ANNOTATIONS_DIR = "H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\SequenceAnnotations"
+ANNOTATIONS_OLD_DIR = "H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\annotations"
+IMAGES_DIR = "H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\ResizedSequences"
+IMAGES_OLD_DIR = "H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\sequences"
 IMG_SCALE_PX = 512
 
 # Preview settings
@@ -42,46 +41,34 @@ classes = ['background'] + classes
 label2idx = {classes[idx]: idx for idx in range(len(classes))}
 idx2label = {idx: classes[idx] for idx in range(len(classes))}
 
-def copy_and_rename(src_path, dest_folder, new_name):
-    # 2) Ensure destination exists
+def copy_and_resize(src_path, dest_folder, new_name, target_size):
+    """
+    Copy an image from src_path to dest_folder with a new name, resizing it to target size.
+    Returns the scale factor used for resizing.
+    """
+    # Ensure destination exists
     os.makedirs(dest_folder, exist_ok=True)
 
-    # 3) Copy the file into dest_folder
-    shutil.copy(src_path, dest_folder)
-
-    # 4) Rename it
-    old_path = os.path.join(dest_folder, os.path.basename(src_path))
-    new_path = os.path.join(dest_folder, new_name)
-    os.rename(old_path, new_path)
-
-def copy_and_resize(src_path, dest_folder, new_name):
-    """
-    Copy an image from src_path to dest_folder with a new name, resizing it to a fixed scale.
-    """
-    # 2) Ensure destination exists
-    os.makedirs(dest_folder, exist_ok=True)
-
-    # Read image
-    img = cv2.imread(src_path)
-
-    # Check
+    # Read image using PIL
+    img = Image.open(src_path)
     if img is None:
         raise ValueError("Image not found")
 
-    im_height = img.shape[0]
-    im_width = img.shape[1]
-    # --- Rescale factor ---
-    scale = IMG_SCALE_PX / max(im_width, im_height)
-
-    # Compute new size
-    new_width = int(im_width * scale)
-    new_height = int(im_height * scale)
-
-    # Resize
-    resized = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
-
-    # Save
-    cv2.imwrite(os.path.join(dest_folder, new_name), resized)
+    # Get original dimensions
+    original_width, original_height = img.size
+    
+    # Calculate scale to maintain aspect ratio
+    scale = target_size / max(original_width, original_height)
+    new_width = int(original_width * scale)
+    new_height = int(original_height * scale)
+    
+    # Resize image maintaining aspect ratio
+    resized_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    # Save resized image
+    resized_img.save(os.path.join(dest_folder, new_name))
+    
+    return scale, (original_width, original_height), (new_width, new_height)
 
 def dict_to_xml(tag, data, parent = None):
     """
@@ -114,78 +101,92 @@ def dict_to_xml(tag, data, parent = None):
     return elem
 
 if __name__ == "__main__":
-    # 1. Read the images
-    if COPY_IMAGES:
-        for (dirpath, dirnames, filenames) in walk(IMAGES_OLD_DIR):
-            for dir_idx, dirname in enumerate(dirnames):
-                image_paths = sorted(glob.glob(f"{dirpath}/{dirname}/*.jpg"))
-                if not image_paths:
-                    raise RuntimeError(f'No images found in {dirpath}/{dirname}')
-                for idx, imgpath in enumerate(image_paths):
-                    imgname = os.path.basename(imgpath)
-                    copy_and_resize(imgpath, IMAGES_DIR + '/' + dirname, imgname)
-                    if idx % 100 == 0:
-                        print(f'Copied {idx + 1}/{len(image_paths)} of sequence {dir_idx + 1}/{len(dirnames)}')
+    image_scales = {}
+    for (_, _, filenames) in walk(ANNOTATIONS_OLD_DIR):
+        for ann_idx, filename in enumerate(filenames):
+            filename_no_ext = Path(filename).stem
+            df = pd.read_csv(ANNOTATIONS_OLD_DIR + '/' + filename, 
+                             names=["frame_id", "object_id", "xpos", "ypos", "width", "height", "score", "class", "truncation", "occlusion"])
+            df = df.reset_index()  # make sure indexes pair with number of rows
+            frames = {}
+            video_dir = os.path.join(IMAGES_OLD_DIR, filename_no_ext)
+            for index, row in df.iterrows():
+                if int(row["class"]) > 10 or int(row["class"]) < 1:
+                    # 'Invalid class: {}'.format(row["class"])
+                    continue
+                frame_id = str(row["frame_id"])
+                frame_name = frame_id.zfill(7)
+                image_name = f"{frame_name}.jpg"
+                image_path = IMAGES_DIR + '/' + filename_no_ext + '/' + f"{image_name}"
 
-    if COPY_ANNOTATIONS:
-        for (_, _, filenames) in walk(ANNOTATIONS_OLD_DIR):
-            for ann_idx, filename in enumerate(filenames):
-                filename_no_ext = Path(filename).stem
-                df = pd.read_csv(ANNOTATIONS_OLD_DIR + '/' + filename, 
-                                 names=["frame_id", "object_id", "xpos", "ypos", "width", "height", "score", "class", "truncation", "occlusion"])
-                df = df.reset_index()  # make sure indexes pair with number of rows
-                frames = {}
-                for index, row in df.iterrows():
-                    if int(row["class"]) > 10 or int(row["class"]) < 1:
-                        # 'Invalid class: {}'.format(row["class"])
-                        continue
-                    frame_id = str(row["frame_id"])
-                    frame_name = filename_no_ext + '_' + frame_id.zfill(7)
-                    image_name = f"{frame_name}.jpg"
-                    if frame_name not in frames:
-                        im = Image.open(IMAGES_DIR + '/' + filename_no_ext + '/' + f"{frame_id.zfill(7)}.jpg")
-                        width, height = im.size
-                        frame = {
-                            "annotation": {
-                                "filename": image_name,
-                                "folder": "VisDrone2019",
-                                "size": {
-                                    "width": width,
-                                    "height": height,
-                                    "depth": 3
-                                },
-                                "object": [
-                                ],
-                                "folder": filename_no_ext
-                            }
+                if image_path not in image_scales:
+                    # If scale info is missing, we need to compute it
+                    orig_image_path = IMAGES_OLD_DIR + '/' + filename_no_ext + '/' + f"{image_name}"
+                    scale, orig_size, new_size = copy_and_resize(orig_image_path, IMAGES_DIR + '/' + filename_no_ext, image_name, IMG_SCALE_PX)
+                
+                    # Store scale info for coordinate transformation
+                    image_scales[image_path] = {
+                        'scale': scale,
+                        'orig_size': orig_size,
+                        'new_size': new_size
+                    }
+
+                if frame_name not in frames:
+                    scale_info = image_scales.get(image_path)
+                    frame = {
+                        "annotation": {
+                            "filename": image_name,
+                            "folder": filename_no_ext,
+                            "size": {
+                                "width": scale_info['new_size'][0],
+                                "height": scale_info['new_size'][1],
+                                "depth": 3
+                            },
+                            "object": [
+                            ]
                         }
-                        frames[frame_name] = frame
-                    frame = frames[frame_name]
-                    frame["annotation"]["object"].append({
-                        "name": idx2label[row["class"]],
-                        "pose": "Unspecified",
-                        "truncated": row["truncation"],
-                        "bndbox":{
-                            "xmin": row["xpos"],
-                            "ymin": row["ypos"],
-                            "xmax": row["xpos"] + row["width"],
-                            "ymax": row["ypos"] + row["height"]
-                        }
-                    })
+                    }
+                    frames[frame_name] = frame
+                
+                frame = frames[frame_name]
+                
+                # Get scale information for coordinate transformation
+                scale = scale_info['scale']
+                
+                # Scale the bounding box coordinates
+                scaled_xmin = int(row["xpos"] * scale)
+                scaled_ymin = int(row["ypos"] * scale)
+                scaled_xmax = int((row["xpos"] + row["width"]) * scale)
+                scaled_ymax = int((row["ypos"] + row["height"]) * scale)
+                
+                frame["annotation"]["object"].append({
+                    "name": idx2label[row["class"]],
+                    "pose": "Unspecified",
+                    "truncated": row["truncation"],
+                    "bndbox":{
+                        "xmin": scaled_xmin,
+                        "ymin": scaled_ymin,
+                        "xmax": scaled_xmax,
+                        "ymax": scaled_ymax
+                    }
+                })
+            print(f'Processed annotation {ann_idx + 1}/{len(filenames)}: {filename}')
 
-                for fr_idx, key in enumerate(frames):
-                    # Build XML tree
-                    print(f'Converting frame {fr_idx + 1}/{len(frames)} of annotation {ann_idx + 1}/{len(filenames)} to XML')
-                    frame = frames[key]
-                    root_key = next(iter(frame))
-                    root = dict_to_xml(root_key, frame[root_key])
-                    tree = ET.ElementTree(root)
-                    ET.indent(tree, space="\t", level=0)
+            
+            # Iterate over video frames and save video annotations
+            for fr_idx, key in enumerate(frames):
+                # Build XML tree
+                frame = frames[key]
+                root_key = next(iter(frame))
+                root = dict_to_xml(root_key, frame[root_key])
+                tree = ET.ElementTree(root)
+                ET.indent(tree, space="\t", level=0)
 
-                    # Write to file in video-specific folder
-                    video_annotations_dir = os.path.join(ANNOTATIONS_DIR, filename_no_ext)
-                    os.makedirs(video_annotations_dir, exist_ok=True)
-                    # Extract just the frame number from the key (e.g., "uav0000013_00000_v_0000001" -> "0000001")
-                    frame_number = key.split('_')[-1]
-                    file_location = os.path.join(video_annotations_dir, frame_number + '.xml')
-                    tree.write(file_location, encoding="utf-8", xml_declaration=False)                
+                # Write to file in video-specific folder
+                video_annotations_dir = os.path.join(ANNOTATIONS_DIR, filename_no_ext)
+                os.makedirs(video_annotations_dir, exist_ok=True)
+                # Extract just the frame number from the key (e.g., "uav0000013_00000_v_0000001" -> "0000001")
+                frame_number = key.split('_')[-1]
+                file_location = os.path.join(video_annotations_dir, frame_number + '.xml')
+                tree.write(file_location, encoding="utf-8", xml_declaration=False)      
+            print(f'Converted annotation {ann_idx + 1}/{len(filenames)} to XML')          

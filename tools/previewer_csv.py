@@ -4,8 +4,8 @@ import cv2
 import pandas as pd
 
 # --- CONFIG ---
-ANNOTATIONS_PATH = "H:/Projects/University/NeauralNetworks/Datasets/VisDrone2019-VID-train/VisDrone2019-VID-train/annotations/uav0000013_00000_v.txt"
-IMAGES_DIR = "H:/Projects/University/NeauralNetworks/Datasets/VisDrone2019-VID-train/VisDrone2019-VID-train/sequences/uav0000013_00000_v"
+ANNOTATIONS_PATH = "H:/Projects/University/NeauralNetworks/Datasets/VisDrone2019-VID-train/VisDrone2019-VID-train/SequenceAnnotations"
+IMAGES_DIR = "H:/Projects/University/NeauralNetworks/Datasets/VisDrone2019-VID-train/VisDrone2019-VID-train/ResizedSequences"
 DISPLAY_INTERVAL = 0.01
 OBJECT_ID = 5
 # ----------------
