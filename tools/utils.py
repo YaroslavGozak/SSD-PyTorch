@@ -49,5 +49,5 @@ def read_annotation_file(ann_dir, im_dir, ann_file, label2idx):
         # At test time eval does the job of ignoring difficult
         detections.append(det)
                     
-        im_info['detections'] = detections
-        return im_info, success
+    im_info['detections'] = detections
+    return im_info, success
