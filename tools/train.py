@@ -137,7 +137,7 @@ def train(args):
         lr_scheduler.step(i)
         print('Learning rate for epoch {}: {:.6f}'.format(i+1, lr_scheduler.get_last_lr()[0]))
         epoch_time = time.time() - epoch_start_time
-        epoch_minutes = epoch_time / 60 / 60
+        epoch_minutes = epoch_time / 60
         print('Finished epoch {}/{}'.format(i+1, num_epochs))
         print('Epoch execution time: {:.2f} minutes'.format(epoch_minutes))
         loss_output = ''

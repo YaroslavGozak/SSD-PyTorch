@@ -1,19 +1,14 @@
-import glob
+import argparse
 import os
 from os import walk
 from pathlib import Path
+
+import yaml
 from PIL import Image
 import pandas as pd
 import xml.etree.ElementTree as ET
-import cv2
 
 # --- CONFIG ---
-COPY_IMAGES = False
-COPY_ANNOTATIONS = True
-ANNOTATIONS_DIR = "H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\SequenceAnnotations"
-ANNOTATIONS_OLD_DIR = "H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\annotations"
-IMAGES_DIR = "H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\ResizedSequences"
-IMAGES_OLD_DIR = "H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\sequences"
 IMG_SCALE_PX = 512
 
 # Preview settings
@@ -100,7 +95,25 @@ def dict_to_xml(tag, data, parent = None):
         elem.text = str(data)
     return elem
 
-if __name__ == "__main__":
+def convert_vis_to_voc_seq(args):
+    # Read the config file #
+    with open(args.config_path, 'r') as file:
+        try:
+            config = yaml.safe_load(file)
+        except yaml.YAMLError as exc:
+            print(exc)
+    #########################
+
+    # Setup config
+    dataset_config = config['dataset_params']
+    split = args.split
+    im_set_dir = dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets']
+    ANNOTATIONS_OLD_DIR = im_set_dir[0] + "/annotations"
+    ANNOTATIONS_DIR = im_set_dir[0] + "/SequenceAnnotations"
+    IMAGES_OLD_DIR = im_set_dir[0] + "/sequences"
+    IMAGES_DIR = im_set_dir[0] + "/ResizedSequences"
+
+
     image_scales = {}
     for (_, _, filenames) in walk(ANNOTATIONS_OLD_DIR):
         for ann_idx, filename in enumerate(filenames):
@@ -110,19 +123,19 @@ if __name__ == "__main__":
             df = df.reset_index()  # make sure indexes pair with number of rows
             frames = {}
             video_dir = os.path.join(IMAGES_OLD_DIR, filename_no_ext)
-            for index, row in df.iterrows():
+            for _, row in df.iterrows():
                 if int(row["class"]) > 10 or int(row["class"]) < 1:
                     # 'Invalid class: {}'.format(row["class"])
                     continue
                 frame_id = str(row["frame_id"])
                 frame_name = frame_id.zfill(7)
                 image_name = f"{frame_name}.jpg"
-                image_path = IMAGES_DIR + '/' + filename_no_ext + '/' + f"{image_name}"
+                image_path = os.path.join(IMAGES_DIR, filename_no_ext, image_name)
 
                 if image_path not in image_scales:
                     # If scale info is missing, we need to compute it
-                    orig_image_path = IMAGES_OLD_DIR + '/' + filename_no_ext + '/' + f"{image_name}"
-                    scale, orig_size, new_size = copy_and_resize(orig_image_path, IMAGES_DIR + '/' + filename_no_ext, image_name, IMG_SCALE_PX)
+                    orig_image_path = os.path.join(video_dir, image_name)
+                    scale, orig_size, new_size = copy_and_resize(orig_image_path, os.path.join(IMAGES_DIR, filename_no_ext), image_name, IMG_SCALE_PX)
                 
                     # Store scale info for coordinate transformation
                     image_scales[image_path] = {
@@ -174,7 +187,7 @@ if __name__ == "__main__":
 
             
             # Iterate over video frames and save video annotations
-            for fr_idx, key in enumerate(frames):
+            for _, key in enumerate(frames):
                 # Build XML tree
                 frame = frames[key]
                 root_key = next(iter(frame))
@@ -189,4 +202,11 @@ if __name__ == "__main__":
                 frame_number = key.split('_')[-1]
                 file_location = os.path.join(video_annotations_dir, frame_number + '.xml')
                 tree.write(file_location, encoding="utf-8", xml_declaration=False)      
-            print(f'Converted annotation {ann_idx + 1}/{len(filenames)} to XML')          
+            print(f'Converted annotation {ann_idx + 1}/{len(filenames)} to XML')
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Arguments for VisDrone dataset converting to VOC-like format')
+    parser.add_argument('--config', dest='config_path', default='config/vis-drone.yaml', type=str)
+    parser.add_argument('--split', dest='split', default='train', type=str)
+    args = parser.parse_args()
+    convert_vis_to_voc_seq(args)        
