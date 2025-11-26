@@ -1,6 +1,7 @@
 from glob import glob
 import os
 from pathlib import Path
+from random import shuffle
 from tools.utils import read_annotation_file
 import torch
 import torchvision.transforms.v2
@@ -24,16 +25,17 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
     :return:
     """
 
-    im_infos = []
+    videos = []
 
     for im_set in im_sets:
         # im_names = []
         # Fetch all image names in txt file for this imageset
 
-        videos = sorted(os.listdir(os.path.join(im_set, "SequenceAnnotations")))
-        num_videos = len(videos)
+        video_dirs = sorted(os.listdir(os.path.join(im_set, "SequenceAnnotations")))
+        num_videos = len(video_dirs)
 
-        for vid_idx, vid in enumerate(videos):
+        for vid_idx, vid in enumerate(video_dirs):
+            frames = []
             print(f'Loading video {vid_idx + 1}/{num_videos}')
             im_dir = os.path.join(im_set, 'ResizedSequences', vid)
             for (_, _, filenames) in os.walk(os.path.join(im_set, "SequenceAnnotations", vid)):
@@ -47,14 +49,16 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
                     if len(im_info.get('detections', [])) == 0:
                         continue
                     
-                    im_infos.append(im_info)
+                    frames.append(im_info)
                 # Iterate for every annotation file
             # Iterating over sequence annotations
+            if len(frames) > 0:
+                videos.append({'video_id': vid_idx, 'frames': frames})
         # Iterating over video sequence folders
-    print('Total {} images found'.format(len(im_infos)))
-    if len(im_infos) == 0:
-        raise ValueError('No images found for the specified im_sets')
-    return im_infos
+    print('Total {} images found'.format(sum([len(video['frames']) for video in videos])))
+    if len(videos) == 0:
+        raise ValueError('No videos found for the specified im_sets')
+    return videos
 
 
 class VisDroneDataset(Dataset):
@@ -115,16 +119,34 @@ class VisDroneDataset(Dataset):
         self.label2idx = {classes[idx]: idx for idx in range(len(classes))}
         self.idx2label = {idx: classes[idx] for idx in range(len(classes))}
         
-        self.images_info = load_images_and_anns(self.im_sets,
+        self.videos = load_images_and_anns(self.im_sets,
                                                 self.label2idx,
                                                 self.fname)
+        self.pair_indices = []
+        for idx, video in enumerate(self.videos):
+            num_frames = len(video['frames'])
+            for i in range(num_frames - 1):
+                self.pair_indices.append({'video_id': idx, 'frame_pair': (video['frames'][i], video['frames'][i + 1])})
+        shuffle(self.pair_indices)
 
 
     def __len__(self):
-        return len(self.images_info)
+        return len(self.pair_indices)
 
     def __getitem__(self, index):
-        im_info = self.images_info[index]
+        
+        pair_info = self.pair_indices[index]
+        frame_pair = pair_info['frame_pair']
+
+        frame_info_1 = frame_pair[0]
+        frame_info_2 = frame_pair[1]
+
+        im_tensor1, targets1, filename1 = self.get_im_and_targets(frame_info_1)
+        _, targets2, _ = self.get_im_and_targets(frame_info_2)
+        
+        return im_tensor1, targets1, filename1, targets2
+    
+    def get_im_and_targets(self, im_info):
         im = read_image(im_info['filename'])
 
         # Get annotations for this image

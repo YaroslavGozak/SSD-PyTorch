@@ -95,13 +95,14 @@ def train(args):
         epoch_start_time = time.time()
         ssd_classification_losses = []
         ssd_localization_losses = []
-        for idx, (ims, targets, _) in enumerate(tqdm(train_dataset_loader)):
+        for idx, (ims, targets, _, prev_targets) in enumerate(tqdm(train_dataset_loader)):
+
             # Asynchronous GPU transfer for faster throughput
             for target in targets:
                 target['boxes'] = target['bboxes'].float().to(device, non_blocking=True)
                 del target['bboxes']
                 target['labels'] = target['labels'].long().to(device, non_blocking=True)
-            
+                
             # Stack images and transfer to GPU asynchronously
             images = torch.stack([im.float() for im in ims], dim=0).to(device, non_blocking=True)
             batch_losses, _ = model(images, targets)
@@ -131,6 +132,7 @@ def train(args):
             if torch.isnan(loss):
                 print('Loss is becoming nan. Exiting')
                 exit(0)
+
             steps += 1
         optimizer.step()
         optimizer.zero_grad()
