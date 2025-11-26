@@ -199,7 +199,7 @@ def generate_default_boxes(feat, aspect_ratios, scales):
     return dboxes
 
 
-class SSD(nn.Module):
+class SSDMobileNet(nn.Module):
     r"""
     Main Class for SSD. Does the following steps
     to generate detections/losses.
