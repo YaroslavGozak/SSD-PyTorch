@@ -198,14 +198,40 @@ def generate_default_boxes(feat, aspect_ratios, scales):
         dboxes.append(dboxes_in_image.to(feat[0].device))
     return dboxes
 
+def generate_anchors_for_roi(W_roi, H_roi, H_feat, W_feat, scales_norm, aspect_ratios):
+    default_boxes = []
+    
+    for i in range(H_feat):
+        for j in range(W_feat):
+            cx = (j + 0.5) / W_feat * W_roi
+            cy = (i + 0.5) / H_feat * H_roi
+            for s_norm in scales_norm:
+                s = s_norm * min(W_roi, H_roi)
+                for a in aspect_ratios:
+                    w = s * (a ** 0.5)
+                    h = s / (a ** 0.5)
+                    default_boxes.append((cx, cy, w, h))
+    return default_boxes
 
-class SSDMobileNet(nn.Module):
+def decode_boxes(pred_offsets, anchors, sig_xy, sig_w):
+    # pred_offsets: [N_anchors, 4]
+    boxes = []
+    for (dx, dy, dw, dh), (cx_a, cy_a, w_a, h_a) in zip(pred_offsets, anchors):
+        cx = cx_a + dx * sig_xy * w_a
+        cy = cy_a + dy * sig_xy * h_a
+        w = w_a * math.exp(dw * sig_w)
+        h = h_a * math.exp(dh * sig_w)
+        boxes.append((cx, cy, w, h))
+    return boxes
+
+
+class RoiSSDMobileNet(nn.Module):
     r"""
     Main Class for SSD. Does the following steps
     to generate detections/losses.
     During initialization
-    1. Load VGG Imagenet pretrained model
-    2. Extract Backbone from VGG and add extra conv layers
+    1. Load MobileNetV2 Imagenet pretrained model
+    2. Extract Backbone from MobileNetV2 and add extra conv layers
     3. Add class prediction and bbox transformation prediction layers
     4. Initialize all conv2d layers
 
