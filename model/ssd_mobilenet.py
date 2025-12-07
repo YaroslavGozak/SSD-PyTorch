@@ -260,7 +260,7 @@ class SSDMobileNet(nn.Module):
             param.requires_grad = False
 
         # Scale parameter for block 13 output (equivalent to conv4_3)
-        self.scale_weight = nn.Parameter(torch.ones(160) * 20) # 160 channels in block 13
+        self.scale_weight = nn.Parameter(torch.ones(96) * 20) # 160 channels in block 13
 
         ###################################
         # Conv5_3 + Conv for fc6 and fc 7 #

@@ -6,8 +6,8 @@ import yaml
 import random
 from tqdm import tqdm
 from dataset.visdrone import VisDroneDataset
-from model.ssd import SSD
-from dataset.voc import VOCDataset
+from dataset.visdroneroissd import VisDroneRoiSsdDataset
+from model.roissd import RoiSSD
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
@@ -47,21 +47,21 @@ def train(args):
     if device == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
-    dataset = VisDroneDataset('train',
+    dataset = VisDroneRoiSsdDataset('train',
                      im_sets=dataset_config['train_im_sets'],
                      im_size=dataset_config['im_size'])
     train_dataset_loader = DataLoader(dataset,
                                batch_size=train_config['batch_size'],
                                shuffle=True,
                                collate_fn=collate_function,
-                               num_workers=8,  # 0 - 1 process, 4 or 8 - number of processes
+                               num_workers=1,  # 0 - 1 process, 4 or 8 - number of processes
                                pin_memory=True,  # Add this for faster GPU transfer
                                persistent_workers=True, # Keep workers alive between epochs
                                prefetch_factor=2  # Prefetch 2 batches per worker
                                ) 
 
     # Instantiate model and load checkpoint if present
-    model = SSD(config=config['model_params'],
+    model = RoiSSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
     model.to(device)
     model.train()

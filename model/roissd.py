@@ -198,40 +198,14 @@ def generate_default_boxes(feat, aspect_ratios, scales):
         dboxes.append(dboxes_in_image.to(feat[0].device))
     return dboxes
 
-def generate_anchors_for_roi(W_roi, H_roi, H_feat, W_feat, scales_norm, aspect_ratios):
-    default_boxes = []
-    
-    for i in range(H_feat):
-        for j in range(W_feat):
-            cx = (j + 0.5) / W_feat * W_roi
-            cy = (i + 0.5) / H_feat * H_roi
-            for s_norm in scales_norm:
-                s = s_norm * min(W_roi, H_roi)
-                for a in aspect_ratios:
-                    w = s * (a ** 0.5)
-                    h = s / (a ** 0.5)
-                    default_boxes.append((cx, cy, w, h))
-    return default_boxes
 
-def decode_boxes(pred_offsets, anchors, sig_xy, sig_w):
-    # pred_offsets: [N_anchors, 4]
-    boxes = []
-    for (dx, dy, dw, dh), (cx_a, cy_a, w_a, h_a) in zip(pred_offsets, anchors):
-        cx = cx_a + dx * sig_xy * w_a
-        cy = cy_a + dy * sig_xy * h_a
-        w = w_a * math.exp(dw * sig_w)
-        h = h_a * math.exp(dh * sig_w)
-        boxes.append((cx, cy, w, h))
-    return boxes
-
-
-class RoiSSDMobileNet(nn.Module):
+class RoiSSD(nn.Module):
     r"""
     Main Class for SSD. Does the following steps
     to generate detections/losses.
     During initialization
-    1. Load MobileNetV2 Imagenet pretrained model
-    2. Extract Backbone from MobileNetV2 and add extra conv layers
+    1. Load VGG Imagenet pretrained model
+    2. Extract Backbone from VGG and add extra conv layers
     3. Add class prediction and bbox transformation prediction layers
     4. Initialize all conv2d layers
 
@@ -265,28 +239,30 @@ class RoiSSDMobileNet(nn.Module):
         self.detections_per_img = config['detections_per_img']
 
         # Load imagenet pretrained vgg network
-        backbone = torchvision.models.mobilenet_v2(
-            weights=torchvision.models.MobileNet_V2_Weights.IMAGENET1K_V1
+        backbone = torchvision.models.vgg16(
+            weights=torchvision.models.VGG16_Weights.IMAGENET1K_V1
         )
 
-        # MobileNetV2 feature extraction points
-        # Block indices for different scales:
-        # - Block 3: 32x32 feature maps (channels: 32)  
-        # - Block 6: 16x16 feature maps (channels: 64)
-        # - Block 13: 8x8 feature maps (channels: 160)
-        # - Final: 4x4 feature maps (channels: 1280)
-        
-        # Extract features up to block 13 (equivalent to conv4_3 in VGG)
-        self.features_low = nn.Sequential(*backbone.features[:7])   # Up to block 3
-        self.features_mid = nn.Sequential(*backbone.features[7:14]) # Blocks 4-13
-        self.features_high = nn.Sequential(*backbone.features[14:]) # Final blocks
-        
-        # Freeze early layers for fine-tuning
-        for param in self.features_low.parameters():
-            param.requires_grad = False
+        # Get all max pool indexes to determine different stages
+        max_pool_pos = [idx for idx, layer in enumerate(list(backbone.features))
+                        if isinstance(layer, nn.MaxPool2d)]
+        max_pool_stage_3_pos = max_pool_pos[-3]  # for vgg16 this would be 16
+        max_pool_stage_4_pos = max_pool_pos[-2]  # for vgg16 this would be 23
 
-        # Scale parameter for block 13 output (equivalent to conv4_3)
-        self.scale_weight = nn.Parameter(torch.ones(160) * 20) # 160 channels in block 13
+        backbone.features[max_pool_stage_3_pos].ceil_mode = True
+        # otherwise vgg conv4_3 output will be 37x37
+        self.features = nn.Sequential(*backbone.features[:max_pool_stage_4_pos])
+        
+        # Freeze conv1 and conv2 layers for fine-tuning
+        # Conv1: layers 0-4 (conv1_1, relu, conv1_2, relu, maxpool)
+        # Conv2: layers 5-9 (conv2_1, relu, conv2_2, relu, maxpool)
+        for i, layer in enumerate(self.features):
+            if i <= 9:  # Freeze conv1 and conv2 blocks (layers 0-9)
+                for param in layer.parameters():
+                    param.requires_grad = False
+
+        # Learnable scale parameter for conv4_3 feature map
+        self.scale_weight = nn.Parameter(torch.ones(512) * 20)
 
         ###################################
         # Conv5_3 + Conv for fc6 and fc 7 #
@@ -296,14 +272,17 @@ class RoiSSDMobileNet(nn.Module):
         # but here we are just adding new layers
         # and not copying fc6 and fc7 weights by
         # subsampling
-        # Replace VGG's fc6/fc7 equivalent - use final MobileNetV2 features
-        # MobileNetV2 ends with 1280 channels, so we build from there
-        self.fcs = nn.Sequential(
-            nn.Conv2d(in_channels=1280, out_channels=1024, kernel_size=3, 
-                    padding=1, dilation=1),
+        fcs = nn.Sequential(
+            nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(in_channels=512, out_channels=1024, kernel_size=3,
+                      padding=6, dilation=6),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels=1024, out_channels=1024, kernel_size=1),
             nn.ReLU(inplace=True),
+        )
+        self.conv5_3_fc = nn.Sequential(
+            *backbone.features[max_pool_stage_4_pos:-1],
+            fcs,
         )
 
         ##########################
@@ -344,7 +323,7 @@ class RoiSSDMobileNet(nn.Module):
         )
 
         # Must match conv4_3, fcs, conv8_2, conv9_2, conv10_2, conv11_2
-        out_channels = [160, 1024, 512, 256, 256, 256]
+        out_channels = [512, 1024, 512, 256, 256, 256]
 
         #####################
         # Prediction Layers #
@@ -367,7 +346,7 @@ class RoiSSDMobileNet(nn.Module):
         #############################
         # Conv Layer Initialization #
         #############################
-        for layer in self.fcs.modules():
+        for layer in fcs.modules():
             if isinstance(layer, nn.Conv2d):
                 torch.nn.init.xavier_uniform_(layer.weight)
                 if layer.bias is not None:
@@ -526,34 +505,54 @@ class RoiSSDMobileNet(nn.Module):
                                cls_loss[background_idxs].sum()) / N,
         }
 
+    def get_max_feature_layer_by_roi_size(self, min_dim):
+        print(min_dim)
+        L_R = 6
+        if min_dim <= 32:
+            L_R = 1      # conv4_3 only
+        elif min_dim <= 64:
+            L_R = 2      # conv4_3 + conv7
+        elif min_dim <= 96:
+            L_R = 3      # + conv8_2
+        elif min_dim <= 140:
+            L_R = 4      # + conv9_2
+        elif min_dim <= 268:
+            L_R = 5      # + conv10_2
+        else:
+            L_R = 6      # full pyramid
+        return L_R
+
     def forward(self, x, targets=None):
-        # Extract features at different scales from MobileNetV2
-        low_features = self.features_low(x)      # Early features
-        mid_features = self.features_mid(low_features)  # Block 13 output (like conv4_3)
-        high_features = self.features_high(mid_features) # Final MobileNetV2 output
+        w_r, h_r = x.shape[3], x.shape[2]
+        # s_r = math.sqrt(w_r*h_r)
+        s_r = min(w_r, h_r)
+        max_depth = self.get_max_feature_layer_by_roi_size(s_r)
+        if max_depth < 6:
+            print('s_r: {}, max_depth: {}'.format(s_r, max_depth))
+        # Call everything till conv4_3 layers first
+        conv_4_3_out = self.features(x)
 
-        # Scale block 13 output (equivalent to conv4_3 scaling)
-        mid_features_scaled = (self.scale_weight.view(1, -1, 1, 1) *
-                                torch.nn.functional.normalize(mid_features))
+        # Scale conv4_3 output using learnt norm scale
+        conv_4_3_out_scaled = (self.scale_weight.view(1, -1, 1, 1) *
+                               torch.nn.functional.normalize(conv_4_3_out))
 
-        # Process final features through fc-like layers
-        conv_fc_out = self.fcs(high_features)
+        outputs = [conv_4_3_out_scaled]
 
-        # Additional conv layers
-        conv8_2_out = self.conv8_2(conv_fc_out)
-        conv9_2_out = self.conv9_2(conv8_2_out)
-        conv10_2_out = self.conv10_2(conv9_2_out)
-        conv11_2_out = self.conv11_2(conv10_2_out)
-
-        # Feature maps for predictions
-        outputs = [
-            mid_features_scaled,  # ~19x19 (from block 13)
-            conv_fc_out,         # ~10x10 (processed final features)
-            conv8_2_out,         # ~5x5
-            conv9_2_out,         # ~3x3  
-            conv10_2_out,        # ~2x2
-            conv11_2_out,        # ~1x1
-        ]
+        if max_depth >= 2:
+            conv_5_3_fc_out = self.conv5_3_fc(conv_4_3_out)
+            outputs.append(conv_5_3_fc_out)
+        if max_depth >= 3:
+            conv8_2_out = self.conv8_2(conv_5_3_fc_out)
+            outputs.append(conv8_2_out)
+        if max_depth >= 4:
+            conv9_2_out = self.conv9_2(conv8_2_out)
+            outputs.append(conv9_2_out)
+        if max_depth >= 5:
+            conv10_2_out = self.conv10_2(conv9_2_out)
+            outputs.append(conv10_2_out)
+        if max_depth >= 6:
+            conv11_2_out = self.conv11_2(conv10_2_out)
+            outputs.append(conv11_2_out)
 
         # Classification and bbox regression for all feature maps
         cls_logits = []
@@ -583,7 +582,9 @@ class RoiSSDMobileNet(nn.Module):
         bbox_reg_deltas = torch.cat(bbox_reg_deltas, dim=1)  # (B, 8732, 4)
 
         # Generate default_boxes for all feature maps
-        default_boxes = generate_default_boxes(outputs, self.aspect_ratios, self.scales)
+        scales_used = self.scales[:len(outputs)+1]
+        aspect_used = self.aspect_ratios[:len(outputs)]
+        default_boxes = generate_default_boxes(outputs, aspect_used, scales_used)
         # default_boxes -> List[Tensor of shape 8732 x 4]
         # len(default_boxes) = Batch size
 
