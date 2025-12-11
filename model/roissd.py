@@ -506,7 +506,6 @@ class RoiSSD(nn.Module):
         }
 
     def get_max_feature_layer_by_roi_size(self, min_dim):
-        print(min_dim)
         L_R = 6
         if min_dim <= 32:
             L_R = 1      # conv4_3 only
@@ -527,8 +526,6 @@ class RoiSSD(nn.Module):
         # s_r = math.sqrt(w_r*h_r)
         s_r = min(w_r, h_r)
         max_depth = self.get_max_feature_layer_by_roi_size(s_r)
-        if max_depth < 6:
-            print('s_r: {}, max_depth: {}'.format(s_r, max_depth))
         # Call everything till conv4_3 layers first
         conv_4_3_out = self.features(x)
 

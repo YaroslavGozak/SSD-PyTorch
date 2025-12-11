@@ -16,6 +16,7 @@ if __name__ == '__main__':
     for merger_func, label in [(simple_roi_merge, "Simple"), (simple_roi_merge_v2, "Simple_v2"), (greedy_roi_merge, "Greedy")]:
         print(f"Benchmarking {label} merger...")
         image_paths = sorted(glob.glob(f"{IMG_DIR}/*.jpg"))
+        ims_num = len(image_paths)
         start_time = time.time()
         process = psutil.Process(os.getpid())
         start_mem = process.memory_info().rss / (1024 ** 2)
@@ -31,4 +32,4 @@ if __name__ == '__main__':
 
     print("Benchmark Results:")
     for label, (t, m) in results.items():
-        print(f"{label}: Time {t:.2f}s, Memory {m:.2f}MB")
+        print(f"{label}: Time {t/ims_num:.4f}s/im, Memory {m:.2f}MB")

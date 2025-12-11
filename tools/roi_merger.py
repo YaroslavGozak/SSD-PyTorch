@@ -15,6 +15,7 @@ beta = {
 }
 
 # Thresholds for determining L_R from s_R = sqrt(w*h)
+@staticmethod
 def __compute_L(s_R):
     if s_R <= 64:
         return 1
@@ -33,10 +34,12 @@ def __compute_L(s_R):
 # ---------------------------------------------
 # Convenient helper functions
 # ---------------------------------------------
-def __area(r):
+@staticmethod
+def area(r):
     x1, y1, x2, y2 = r
     return max(0.0, x2 - x1) * max(0.0, y2 - y1)
 
+@staticmethod
 def __bbox_union(a, b):
     x11, y11, x12, y12 = a
     x21, y21, x22, y22 = b
@@ -47,6 +50,7 @@ def __bbox_union(a, b):
         max(y12, y22),
     )
 
+@staticmethod
 def __compute_cost_params(r):
     """Повертає (A_R, L_R, beta(L_R))"""
     x1, y1, x2, y2 = r
@@ -57,6 +61,7 @@ def __compute_cost_params(r):
     L_R = __compute_L(s_R)
     return A, L_R, beta[L_R]
 
+@staticmethod
 def __IoU(a, b):
     """Compute IoU between two boxes."""
     ax1, ay1, ax2, ay2 = a
@@ -67,10 +72,10 @@ def __IoU(a, b):
     inter_x2 = min(ax2, bx2)
     inter_y2 = min(ay2, by2)
     
-    inter_area = __area((inter_x1, inter_y1, inter_x2, inter_y2))
+    inter_area = area((inter_x1, inter_y1, inter_x2, inter_y2))
     
-    a_area = __area((ax1, ay1, ax2, ay2))
-    b_area = __area((bx1, by1, bx2, by2))
+    a_area = area((ax1, ay1, ax2, ay2))
+    b_area = area((bx1, by1, bx2, by2))
     
     union = a_area + b_area - inter_area
     if union <= 0:
@@ -154,7 +159,7 @@ def simple_roi_merge_v2(rois, area_ratio_max: float = 1.4):
         # Start new cluster with ROI_i
         cluster_box = boxes[i]
         used[i] = True
-        cur_area = __area(boxes[i])
+        cur_area = area(boxes[i])
 
         merged_any = True
         while merged_any:
@@ -163,13 +168,13 @@ def simple_roi_merge_v2(rois, area_ratio_max: float = 1.4):
                 if used[j]:
                     continue
 
-                cand_area = __area(boxes[j])
+                cand_area = area(boxes[j])
                 if cand_area <= 0:
                     continue
 
                 # new union
                 u_box = __bbox_union(cluster_box, boxes[j])
-                u_area = __area(u_box)
+                u_area = area(u_box)
 
                 #  coefficient "how much the ROI has been inflated"
                 denom = (cur_area + cand_area)
@@ -185,7 +190,7 @@ def simple_roi_merge_v2(rois, area_ratio_max: float = 1.4):
             merged.append(cluster_box)
     return merged
 
-def greedy_roi_merge(rois, area_ratio_max: float = 1.4):  # A_union / (A_i + A_j) <= 1.4 => merge ok)
+def greedy_roi_merge(rois, area_ratio_max: float = 1.9, tau = 5000.0):  # A_union / (A_i + A_j) <= 1.4 => merge ok)
     """
     rois: list of ROIs [(x1,y1,x2,y2), ...]
     tau: threshold (K/c_full), additional launch costs
@@ -216,7 +221,7 @@ def greedy_roi_merge(rois, area_ratio_max: float = 1.4):  # A_union / (A_i + A_j
     # Prepare all pairs
     # Represent ROIs by their indices in clusters
     while True:
-        # best_delta = -1e18
+        best_delta = -1e18
         best_pair = None
         best_union = None
 
@@ -229,26 +234,19 @@ def greedy_roi_merge(rois, area_ratio_max: float = 1.4):  # A_union / (A_i + A_j
             rj = clusters[j]
 
             delta, r_u = compute_delta(ri, rj)
-
-            r_u = __bbox_union(ri, rj)
-            u_area = __area(r_u)
-            cand_area = __area(ri) + __area(rj)
+            u_area = area(r_u)
+            cand_area = area(ri) + area(rj)
             #  coefficient "how much the ROI has been inflated"
             if cand_area <= 0:
                 continue
             ratio = u_area / cand_area
 
-            if ratio <= area_ratio_max:
+            # Check if this is good: Δ > τ
+            if delta > tau and delta > best_delta and ratio <= area_ratio_max:
                 # beneficial to merge
-                # best_delta = delta
+                best_delta = delta
                 best_pair = (i, j)
                 best_union = r_u
-
-            # Check if this is good: Δ > τ
-            # if delta > tau and delta > best_delta:
-            #     best_delta = delta
-            #     best_pair = (i, j)
-            #     best_union = r_u
 
         # If no pair is good — stop
         if best_pair is None:

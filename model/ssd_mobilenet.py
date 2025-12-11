@@ -318,7 +318,7 @@ class SSDMobileNet(nn.Module):
         )
 
         # Must match conv4_3, fcs, conv8_2, conv9_2, conv10_2, conv11_2
-        out_channels = [160, 1024, 512, 256, 256, 256]
+        out_channels = [96, 1024, 512, 256, 256, 256]
 
         #####################
         # Prediction Layers #
@@ -517,7 +517,7 @@ class SSDMobileNet(nn.Module):
         conv8_2_out = self.conv8_2(conv_fc_out)
         conv9_2_out = self.conv9_2(conv8_2_out)
         conv10_2_out = self.conv10_2(conv9_2_out)
-        conv11_2_out = self.conv11_2(conv10_2_out)
+        # conv11_2_out = self.conv11_2(conv10_2_out)
 
         # Feature maps for predictions
         outputs = [
@@ -526,7 +526,7 @@ class SSDMobileNet(nn.Module):
             conv8_2_out,         # ~5x5
             conv9_2_out,         # ~3x3  
             conv10_2_out,        # ~2x2
-            conv11_2_out,        # ~1x1
+            # conv11_2_out,        # ~1x1
         ]
 
         # Classification and bbox regression for all feature maps

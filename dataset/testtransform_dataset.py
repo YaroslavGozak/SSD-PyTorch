@@ -143,7 +143,7 @@ class TestTransformDataset():
             [detection['difficult']for detection in im_info['detections']])
         
         bboxes = [self.add_padding_to_bbox(bbox, im.shape[-1], im.shape[-2], self.alpha_w, self.alpha_h, self.delta_x, self.delta_y) for bbox in targets['bboxes'].tolist()]
-        rois = greedy_roi_merge(bboxes)
+        rois = greedy_roi_merge(bboxes, tau=123456)
         greedy_merge_im = im.clone()
         greedy_merge_targets = {}
         greedy_merge_targets['bboxes'] = tv_tensors.BoundingBoxes(

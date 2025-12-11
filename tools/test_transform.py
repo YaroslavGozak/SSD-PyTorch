@@ -7,6 +7,8 @@ from dataset.visdroneroissd import VisDroneRoiSsdDataset
 from torch.utils.data.dataloader import DataLoader
 import matplotlib.pyplot as plt
 
+from tools.roi_merger import area
+
 if not torch.cuda.is_available():
     raise Exception('CUDA not available')
 else:
@@ -32,7 +34,7 @@ def test_transform():
     
     dataset = TestTransformDataset(512)
 
-    (im, target, transformed_im, simple_targets, simple_v2_targets, greedy_targets) = dataset.get_image("H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\ResizedSequences\\uav0000124_00944_v\\0000030.jpg")
+    (im, target, transformed_im, simple_targets, simple_v2_targets, greedy_targets) = dataset.get_image("H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\ResizedSequences\\uav0000140_01590_v\\0000030.jpg")
     
     im = prep(im)
     transformed_im = prep(transformed_im)
@@ -49,6 +51,12 @@ def test_transform():
         ax[0,0].add_patch(rect)
         ax[0,0].text(xmin, ymin - 5, dataset.idx2label.get(label, str(label)),
                    color='green', fontsize=10, backgroundcolor='white')
+    ax[0,0].text(im.shape[1] - 50, 15, str(len(bboxes)),
+                   color='green', fontsize=10, backgroundcolor='white')
+    ax[0,0].text(im.shape[1] - 50, 35, f'Area: {sum(area(box) for box in bboxes):.0f}',
+                   color='green', fontsize=10, backgroundcolor='white')
+    ax[0,0].text(im.shape[1] - 50, 55, f'Image area: {im.shape[1] * im.shape[0]:.0f}',
+                   color='green', fontsize=10, backgroundcolor='white')
 
     ax[1,0].imshow(transformed_im)
     ax[1,0].set_title('Simple v2 merge Image')
@@ -60,6 +68,10 @@ def test_transform():
         rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
                              fill=False, color='red', linewidth=2)
         ax[1,0].add_patch(rect)
+    ax[1,0].text(im.shape[1] - 50, 15, str(len(transformed_bboxes)),
+                   color='green', fontsize=10, backgroundcolor='white')
+    ax[1,0].text(im.shape[1] - 50, 35, f'Area: {sum(area(box) for box in transformed_bboxes):.0f}',
+                   color='green', fontsize=10, backgroundcolor='white')
         
     ax[1,1].imshow(im)
     ax[1,1].set_title('Simple merge Image')
@@ -71,17 +83,25 @@ def test_transform():
         rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
                              fill=False, color='red', linewidth=2)
         ax[1,1].add_patch(rect)
+    ax[1,1].text(im.shape[1] - 50, 15, str(len(simple_bboxes)),
+                   color='green', fontsize=10, backgroundcolor='white')
+    ax[1,1].text(im.shape[1] - 50, 35, f'Area: {sum(area(box) for box in simple_bboxes):.0f}',
+                   color='green', fontsize=10, backgroundcolor='white')
         
     ax[0,1].imshow(im)
     ax[0,1].set_title('Greedy merge Image')
     ax[0,1].axis('off')
-    transformed_bboxes = greedy_targets['bboxes'].cpu().numpy()
-    print('transformed_boxes', transformed_bboxes)
-    for box in transformed_bboxes:
+    greedy_bboxes = greedy_targets['bboxes'].cpu().numpy()
+    print('greedy_boxes', greedy_bboxes)
+    for box in greedy_bboxes:
         xmin, ymin, xmax, ymax = box
         rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
                              fill=False, color='red', linewidth=2)
         ax[0,1].add_patch(rect)
+    ax[0,1].text(im.shape[1] - 50, 15, str(len(greedy_bboxes)),
+                   color='green', fontsize=10, backgroundcolor='white')
+    ax[0,1].text(im.shape[1] - 50, 35, f'Area: {sum(area(box) for box in greedy_bboxes):.0f}',
+                   color='green', fontsize=10, backgroundcolor='white')
         
     plt.tight_layout()
     plt.show()
