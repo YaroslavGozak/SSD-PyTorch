@@ -9,6 +9,7 @@ from torch.utils.data.dataset import Dataset
 import xml.etree.ElementTree as ET
 from torchvision import tv_tensors
 from torchvision.io import read_image
+from tqdm import tqdm
 
 def labels_getter(transform_input):
     return (transform_input[1]["labels"], transform_input[1]["difficult"])
@@ -36,12 +37,15 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
 
         for vid_idx, vid in enumerate(video_dirs):
             frames = []
-            print(f'Loading video {vid_idx + 1}/{num_videos}')
+            print(f'Loading video {vid_idx + 1}/{num_videos}: {vid}')
             im_dir = os.path.join(im_set, 'ResizedSequences', vid)
-            for (_, _, filenames) in os.walk(os.path.join(im_set, "SequenceAnnotations", vid)):
-                for _, ann_file in enumerate(filenames):
-                    ann_dir = os.path.join(im_set, "SequenceAnnotations", vid)
-                    im_info, success = read_annotation_file(ann_dir, im_dir, ann_file, label2idx)
+            ann_dir = os.path.join(im_set, "SequenceAnnotations", vid)
+            for (_, _, filenames) in os.walk(ann_dir):
+                filenames = sorted(filenames)  # Sort for consistent ordering
+                print(f'Found {len(filenames)} annotation files in video {vid}')
+                for _, ann_file in enumerate(tqdm(filenames, desc=f'Processing {vid} frames')):
+                    im_file = ann_file.replace('.xml', '.jpg')
+                    im_info, success = read_annotation_file(os.path.join(ann_dir, ann_file), os.path.join(im_dir, im_file), label2idx)
                     if not success:
                         continue
 
@@ -54,6 +58,7 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
             # Iterating over sequence annotations
             if len(frames) > 0:
                 videos.append({'video_id': vid_idx, 'frames': frames})
+            break
         # Iterating over video sequence folders
     print('Total {} images found'.format(sum([len(video['frames']) for video in videos])))
     if len(videos) == 0:

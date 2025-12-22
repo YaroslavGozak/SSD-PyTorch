@@ -7,9 +7,13 @@ import random
 from tqdm import tqdm
 from dataset.visdrone import VisDroneDataset
 from dataset.visdroneroissd import VisDroneRoiSsdDataset
+from dataset.voc import VOCDataset
+from dataset.ytbb import YTBBDataset
 from model.roissd import RoiSSD
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
+
+from model.ssd import SSD
 
 if not torch.cuda.is_available():
     raise Exception('CUDA not available')
@@ -47,22 +51,40 @@ def train(args):
     if device == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
-    dataset = VisDroneRoiSsdDataset('train',
+    if str(train_config['task_name']).startswith('vis-drone'):
+        dataset = VisDroneDataset('train',
                      im_sets=dataset_config['train_im_sets'],
                      im_size=dataset_config['im_size'])
+    elif str(train_config['task_name']).startswith('ytbb'):
+        dataset = YTBBDataset('train',
+                     root_dir=dataset_config['root_dir'],
+                     im_size=dataset_config['im_size'])
+    elif str(train_config['task_name']).startswith('voc'):
+        dataset = VOCDataset('train',
+                     im_sets=dataset_config['train_im_sets'],
+                     im_size=dataset_config['im_size'])
+    else:
+        raise Exception('Unknown task name {}'.format(train_config['task_name']))
     train_dataset_loader = DataLoader(dataset,
                                batch_size=train_config['batch_size'],
                                shuffle=True,
                                collate_fn=collate_function,
-                               num_workers=1,  # 0 - 1 process, 4 or 8 - number of processes
-                               pin_memory=True,  # Add this for faster GPU transfer
-                               persistent_workers=True, # Keep workers alive between epochs
-                               prefetch_factor=2  # Prefetch 2 batches per worker
+                            #    num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
+                            #    pin_memory=True,  # Add this for faster GPU transfer
+                            #    persistent_workers=True, # Keep workers alive between epochs
+                            #    prefetch_factor=2  # Prefetch 2 batches per worker
                                ) 
 
     # Instantiate model and load checkpoint if present
-    model = RoiSSD(config=config['model_params'],
+    if str(train_config['task_name']).endswith('ssd'):
+        model = SSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
+    elif str(train_config['task_name']).endswith('roissd'):
+        model = RoiSSD(config=config['model_params'],
+                num_classes=dataset_config['num_classes'])
+    else:
+        raise Exception('Unknown task name {}'.format(train_config['task_name']))
+    
     model.to(device)
     model.train()
     if os.path.exists(os.path.join(train_config['task_name'],
@@ -95,13 +117,18 @@ def train(args):
         epoch_start_time = time.time()
         ssd_classification_losses = []
         ssd_localization_losses = []
-        for idx, (ims, targets, _, prev_targets) in enumerate(tqdm(train_dataset_loader)):
+        for idx, (ims, targets, _) in enumerate(tqdm(train_dataset_loader, desc='Training epoch {}'.format(i+1) )):
 
             # Asynchronous GPU transfer for faster throughput
             for target in targets:
-                target['boxes'] = target['bboxes'].float().to(device, non_blocking=True)
-                del target['bboxes']
-                target['labels'] = target['labels'].long().to(device, non_blocking=True)
+                try:
+                    target['boxes'] = target['bboxes'].float().to(device, non_blocking=True)
+                    del target['bboxes']
+                    target['labels'] = target['labels'].long().to(device, non_blocking=True)
+                except Exception as e:
+                    print(targets)
+                    print(target)
+                    raise e
                 
             # Stack images and transfer to GPU asynchronously
             images = torch.stack([im.float() for im in ims], dim=0).to(device, non_blocking=True)
