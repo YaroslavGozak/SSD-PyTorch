@@ -39,7 +39,6 @@ class RandomROICrop(torch.nn.Module):
             return image, target
 
         if torch.rand(1).item() > self.p:
-            print("RandomROICrop: Skipping crop based on probability p.")
             return image, target
 
         if isinstance(image, torch.Tensor):

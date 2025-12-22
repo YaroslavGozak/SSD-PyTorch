@@ -9,7 +9,7 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 
 # --- CONFIG ---
-IMG_SCALE_PX = 512
+IMG_SCALE_PX = 1138
 
 # Preview settings
 DISPLAY_INTERVAL = 0.01

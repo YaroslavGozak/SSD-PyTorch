@@ -56,7 +56,9 @@ def read_annotation_file(ann_path, im_path, label2idx):
     """Reads an annotation file and returns its content as a list of lines.
 
     Args:
-        path (str): The path to the annotation file.
+        ann_path (str): The path to the annotation file.
+        im_path (str): The path to the image file.
+        label2idx (dict): A dictionary mapping label names to indices.
     """
     im_info = {}
     ann_info = ET.parse(ann_path)
@@ -91,6 +93,7 @@ def read_annotation_file(ann_path, im_path, label2idx):
                 success = False
                 return im_info, success
         except KeyError:
+            print('Label not found for object {} in image {}. Skipping...'.format(ET.tostring(obj, encoding='unicode'), im_info['filename']))
             success = False
             return im_info, success
                         
