@@ -224,6 +224,27 @@ def create_xml_annotation(image_path, annotations, video_id, image_width=FRAME_W
     
     return xml_path
 
+def read_existing_frames():
+    """Read already downloaded frames from train.txt and val.txt files."""
+    existing_frames = set()
+    
+    for split_file in ['train.txt', 'val.txt']:
+        split_path = os.path.join(OUTPUT_DIR, split_file)
+        if os.path.exists(split_path):
+            try:
+                with open(split_path, 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            existing_frames.add(line)
+                print(f"Found {len([l for l in open(split_path, 'r') if l.strip()])} existing frames in {split_file}")
+            except Exception as e:
+                print(f"Warning: Could not read {split_file}: {e}")
+        else:
+            print(f"Split file {split_file} does not exist yet")
+    
+    return existing_frames
+
 def process_csv_file(split):
     """Process the YouTube-BB CSV file and download frames."""
     assert split in ['train', 'val'], "Split must be 'train' or 'val'"
@@ -234,7 +255,7 @@ def process_csv_file(split):
         return
     
     print(f"Reading CSV file: {file_path}")
-    
+        
     # Read CSV file
     df = pd.read_csv(file_path, names=[
         'youtube_id', 'timestamp_ms', 'class_id', 'class_name', 
@@ -242,13 +263,31 @@ def process_csv_file(split):
     ])
     
     print(f"Found {len(df)} annotations")
+
+    # Read existing frames to avoid reprocessing
+    existing_frames = read_existing_frames()
+    print(f"Total existing frames to skip: {len(existing_frames)}")
     
-    # Group annotations by video_id and timestamp
+    # Group annotations by video_id and timestamp, filtering out existing frames
     frame_annotations = defaultdict(list)
+    skipped_count = 0
+    
     for _, row in df.iterrows():
-        key = (row['youtube_id'], row['timestamp_ms'])
+        video_id = row['youtube_id']
+        timestamp_ms = row['timestamp_ms']
+        
+        # Create the frame identifier as it would appear in train.txt/val.txt
+        frame_id = f"{video_id}/{int(timestamp_ms):06d}"
+        
+        # Skip if frame already exists in train.txt or val.txt
+        if frame_id in existing_frames:
+            skipped_count += 1
+            continue
+            
+        key = (video_id, timestamp_ms)
         frame_annotations[key].append(row.to_dict())
     
+    print(f"Skipped {skipped_count} already downloaded annotations")
     print(f"Processing {len(frame_annotations)} unique frames")
     
     # Group frames by video_id for efficient processing
@@ -261,11 +300,7 @@ def process_csv_file(split):
         frame_filename = f"{int(timestamp_ms):06d}.jpg"
         frame_path = os.path.join(video_img_dir, frame_filename)
         
-        # Skip if frame already exists
-        if os.path.exists(frame_path):
-            print(f"Frame already exists: {video_id}/{frame_filename}")
-            continue
-            
+        # Since we already filtered out existing frames, we can proceed directly
         video_frames[video_id].append({
             'timestamp_ms': timestamp_ms,
             'frame_path': frame_path,
