@@ -4,6 +4,7 @@ import os
 import numpy as np
 import yaml
 import random
+import csv
 from tqdm import tqdm
 from dataset.visdrone import VisDroneDataset
 from dataset.visdroneroissd import VisDroneRoiSsdDataset
@@ -69,10 +70,10 @@ def train(args):
                                batch_size=train_config['batch_size'],
                                shuffle=True,
                                collate_fn=collate_function,
-                            #    num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
-                            #    pin_memory=True,  # Add this for faster GPU transfer
-                            #    persistent_workers=True, # Keep workers alive between epochs
-                            #    prefetch_factor=2  # Prefetch 2 batches per worker
+                               num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
+                               pin_memory=True,  # Add this for faster GPU transfer
+                               persistent_workers=True, # Keep workers alive between epochs
+                               prefetch_factor=2  # Prefetch 2 batches per worker
                                ) 
 
     # Instantiate model and load checkpoint if present
@@ -177,6 +178,20 @@ def train(args):
                                 train_config['ckpt_name']))
         torch.save(i, os.path.join(train_config['task_name'],
                                 'epoch.pth'))
+        
+        # Save losses to CSV file
+        csv_file_path = os.path.join(train_config['task_name'], 'training_losses.csv')
+        file_exists = os.path.exists(csv_file_path)
+        
+        with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            
+            # Write header if file doesn't exist
+            if not file_exists:
+                writer.writerow(['epoch', 'classification_loss', 'detection_loss'])
+            
+            # Write current epoch data
+            writer.writerow([i+1, np.mean(ssd_classification_losses), np.mean(ssd_localization_losses)])
     print('Done Training...')
 
 
