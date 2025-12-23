@@ -8,6 +8,8 @@ from torchvision.io import read_image
 from tqdm import tqdm
 from itertools import islice
 
+def labels_getter(transform_input):
+    return (transform_input[1]["labels"], transform_input[1]["difficult"])
 
 def load_images_and_anns(root_dir, label2idx, ann_fname):
     r"""
@@ -131,8 +133,7 @@ class YTBBDataset(Dataset):
                 torchvision.transforms.v2.RandomHorizontalFlip(p=0.5),
                 torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
                 torchvision.transforms.v2.SanitizeBoundingBoxes(
-                    labels_getter=lambda transform_input:
-                    (transform_input[1]["labels"], transform_input[1]["difficult"])),
+                    labels_getter=labels_getter),
                 torchvision.transforms.v2.ToPureTensor(),
                 torchvision.transforms.v2.ToDtype(torch.float32, scale=True),
                 # torchvision.transforms.v2.Normalize(mean=self.imagenet_mean,

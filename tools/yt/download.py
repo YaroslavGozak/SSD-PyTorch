@@ -293,19 +293,13 @@ def process_csv_file(split):
     # Group frames by video_id for efficient processing
     video_frames = defaultdict(list)
     for (video_id, timestamp_ms), annotations in frame_annotations.items():
-        # Create video-specific image directory
-        video_img_dir = os.path.join(IMAGES_DIR, video_id)
-        os.makedirs(video_img_dir, exist_ok=True)
-        
         frame_filename = f"{int(timestamp_ms):06d}.jpg"
-        frame_path = os.path.join(video_img_dir, frame_filename)
         
-        # Since we already filtered out existing frames, we can proceed directly
+        # Store frame info without creating directories yet
         video_frames[video_id].append({
             'timestamp_ms': timestamp_ms,
-            'frame_path': frame_path,
-            'annotations': annotations,
-            'filename': frame_filename
+            'frame_filename': frame_filename,
+            'annotations': annotations
         })
     
     print(f"Need to process {len(video_frames)} videos")
@@ -334,8 +328,16 @@ def process_csv_file(split):
             
             print(f"✓ Downloaded video {video_id}")
             
-            # Prepare frame extraction requests
-            frame_requests = [(frame['timestamp_ms'], frame['frame_path']) for frame in frames]
+            # Create video-specific image directory only after successful download
+            video_img_dir = os.path.join(IMAGES_DIR, video_id)
+            os.makedirs(video_img_dir, exist_ok=True)
+            
+            # Prepare frame extraction requests with full paths
+            frame_requests = []
+            for frame in frames:
+                frame_path = os.path.join(video_img_dir, frame['frame_filename'])
+                frame['frame_path'] = frame_path  # Update frame dict with full path
+                frame_requests.append((frame['timestamp_ms'], frame_path))
             
             # Extract all frames from this video
             extracted_count = extract_frames_from_video(video_path, video_id, frame_requests)
@@ -348,7 +350,7 @@ def process_csv_file(split):
                     xml_path = create_xml_annotation(frame['frame_path'], frame['annotations'], video_id)
                     print(f"✓ Created annotation: {video_id}/{os.path.basename(xml_path)}")
                     successful_downloads += 1
-                    video_frame = f"{video_id}/{os.path.splitext(frame['filename'])[0]}"
+                    video_frame = f"{video_id}/{os.path.splitext(frame['frame_filename'])[0]}"
                     txt_frames.append(video_frame)
                 else:
                     failed_downloads += 1
