@@ -5,6 +5,7 @@ import numpy as np
 import yaml
 import random
 import csv
+import torchvision
 from tqdm import tqdm
 from dataset.visdrone import VisDroneDataset
 from dataset.visdroneroissd import VisDroneRoiSsdDataset
@@ -14,7 +15,7 @@ from model.roissd import RoiSSD
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
-from model.ssd import SSD
+from model.ssd import SSD, generate_ignore_regions
 
 if not torch.cuda.is_available():
     raise Exception('CUDA not available')
@@ -86,6 +87,10 @@ def train(args):
     else:
         raise Exception('Unknown task name {}'.format(train_config['task_name']))
     
+    pretrained_detector = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
+    pretrained_detector.to(device)
+    pretrained_detector.eval()
+    
     model.to(device)
     model.train()
     if os.path.exists(os.path.join(train_config['task_name'],
@@ -133,7 +138,32 @@ def train(args):
                 
             # Stack images and transfer to GPU asynchronously
             images = torch.stack([im.float() for im in ims], dim=0).to(device, non_blocking=True)
-            batch_losses, _ = model(images, targets)
+
+            if dataset.__class__.__name__ == 'YTBBDataset':
+                # 1. Run pre-trained detector (e.g., yolov5, coco-ssd) on images
+                with torch.no_grad():
+                    detector_outputs = []
+                    detector_outputs_raw = pretrained_detector(images)  # returns list of dicts with 'boxes'
+                    for i, det in enumerate(detector_outputs_raw):
+                        boxes = det['boxes']
+                        scores = det['scores']
+                        keep = scores > 0.5
+                        boxes = boxes[keep]
+                        # Get image size for normalization
+                        im = ims[i]
+                        h, w = im.shape[-2:]
+                        norm = torch.tensor([w, h, w, h], device=boxes.device, dtype=boxes.dtype)
+                        if boxes.numel() > 0:
+                            boxes = boxes / norm
+                        detector_outputs.append({'boxes': boxes})
+                # 2. Generate ignore regions
+                ignore_regions = generate_ignore_regions(detector_outputs, targets, iou_threshold=0.5)
+                # print(f"Generated ignore regions for detector_outputs {detector_outputs} \nand targets {targets} \n: {ignore_regions}")
+                batch_losses, _ = model(images, targets, ignore_regions)
+            else:
+                ignore_regions = None
+                batch_losses, _ = model(images, targets)
+
             loss = batch_losses['classification']
             loss += batch_losses['bbox_regression']
 

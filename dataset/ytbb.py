@@ -1,4 +1,5 @@
 import os
+from random import shuffle
 import torch
 import torchvision.transforms.v2
 from torch.utils.data.dataset import Dataset
@@ -100,6 +101,9 @@ def load_images_and_anns(root_dir, label2idx, ann_fname):
                 continue
             im_info['detections'] = detections
             im_infos.append(im_info)
+
+            # if len(im_infos) > 99:
+            #     break
             
         except ET.ParseError as e:
             print(f"Error parsing XML file {xml_path}: {e}")
@@ -174,6 +178,7 @@ class YTBBDataset(Dataset):
             raise FileNotFoundError(f"Annotation file not found: {ann_path}")
             
         self.images_info = load_images_and_anns(root_dir, self.label2idx, ann_path)
+        shuffle(self.images_info)
 
     def __len__(self):
         return len(self.images_info)
