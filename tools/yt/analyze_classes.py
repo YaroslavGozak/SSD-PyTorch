@@ -11,9 +11,12 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict, Counter
 from pathlib import Path
 
-# Configuration - update these paths to match your dataset
-OUTPUT_DIR = r"D:\\YouTube\\ytbb_dataset"
-ANNOTATIONS_DIR = os.path.join(OUTPUT_DIR, "SequenceAnnotations")
+import yaml
+
+from tools.yt.utils import YTConfig
+
+config = YTConfig()
+
 
 def parse_xml_annotation(xml_path):
     """
@@ -46,8 +49,8 @@ def analyze_class_distribution():
     print("YouTube-BB Dataset Class Distribution Analyzer")
     print("=" * 50)
     
-    if not os.path.exists(ANNOTATIONS_DIR):
-        print(f"Annotations directory not found: {ANNOTATIONS_DIR}")
+    if not os.path.exists(config.annotations_dir):
+        print(f"Annotations directory not found: {config.annotations_dir}")
         return
     
     # Dictionary to store class counts
@@ -56,11 +59,11 @@ def analyze_class_distribution():
     total_files = 0
     processed_videos = 0
     
-    print(f"Scanning annotations directory: {ANNOTATIONS_DIR}")
+    print(f"Scanning annotations directory: {config.annotations_dir}")
     
     # Walk through all video directories
-    for annotation_dir in os.listdir(ANNOTATIONS_DIR):
-        annotation_path = os.path.join(ANNOTATIONS_DIR, annotation_dir)
+    for annotation_dir in os.listdir(config.annotations_dir):
+        annotation_path = os.path.join(config.annotations_dir, annotation_dir)
         
         if not os.path.isdir(annotation_path):
             continue
@@ -147,7 +150,7 @@ def save_class_distribution_csv(class_counts, total_annotations):
         print("No data to save to CSV.")
         return
     
-    csv_path = os.path.join(OUTPUT_DIR, 'class_distribution.csv')
+    csv_path = os.path.join(config.root_dir, 'class_distribution.csv')
     
     try:
         import csv
@@ -175,15 +178,15 @@ def analyze_by_video():
     print("\nPer-Video Class Analysis:")
     print("=" * 30)
     
-    if not os.path.exists(ANNOTATIONS_DIR):
-        print(f"Annotations directory not found: {ANNOTATIONS_DIR}")
+    if not os.path.exists(config.annotations_dir):
+        print(f"Annotations directory not found: {config.annotations_dir}")
         return
     
     video_class_stats = {}
     
     # Walk through all video directories
-    for video_dir in os.listdir(ANNOTATIONS_DIR):
-        video_path = os.path.join(ANNOTATIONS_DIR, video_dir)
+    for video_dir in os.listdir(config.annotations_dir):
+        video_path = os.path.join(config.annotations_dir, video_dir)
         
         if not os.path.isdir(video_path):
             continue
@@ -222,7 +225,7 @@ def analyze_by_video():
 
 def main():
     """Main function to run the class distribution analysis."""
-    
+   
     # Perform main analysis
     class_counts, total_annotations = analyze_class_distribution()
     
@@ -233,7 +236,7 @@ def main():
         # Perform per-video analysis
         analyze_by_video()
         
-        print(f"\nAnalysis complete! Results saved to {OUTPUT_DIR}")
+        print(f"\nAnalysis complete! Results saved to {config.root_dir}")
     
 if __name__ == "__main__":
     main()

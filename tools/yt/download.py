@@ -21,26 +21,69 @@ import subprocess
 import tempfile
 from pathlib import Path
 import xml.etree.ElementTree as ET
-from collections import defaultdict
+from collections import defaultdict, Counter
+
+from tools.yt.utils import YTConfig
 
 # Configuration
-CSV_TRAIN_FILE = r"D:\\YouTube\\yt_bb_detection_train.csv\\youtube_boundingboxes_detection_train.csv"
-CSV_VAL_FILE = r"D:\\YouTube\\yt_bb_detection_validation.csv\\youtube_boundingboxes_detection_validation.csv"
-OUTPUT_DIR = r"D:\\YouTube\\ytbb_dataset"
-IMAGES_DIR = os.path.join(OUTPUT_DIR, "ResizedSequences")
-ANNOTATIONS_DIR = os.path.join(OUTPUT_DIR, "SequenceAnnotations")
+CSV_TRAIN_FILE = r"D:\\Datasets\\YouTube\\yt_bb_detection_train.csv\\youtube_boundingboxes_detection_train.csv"
+CSV_VAL_FILE = r"D:\\Datasets\\YouTube\\yt_bb_detection_validation.csv\\youtube_boundingboxes_detection_validation.csv"
+CSV_TRAIN_BALANCED_FILE = r"D:\\Datasets\\YouTube\\yt_bb_detection_train.csv\\youtube_boundingboxes_detection_train_balanced.csv"
+CSV_VAL_BALANCED_FILE = r"D:\\Datasets\\YouTube\\yt_bb_detection_validation.csv\\youtube_boundingboxes_detection_validation_balanced.csv"
+def create_balanced_csv(input_csv, output_csv, max_per_class=3000, min_per_class=1000, verbose=True):
+    """
+    Create a balanced CSV file by sampling up to max_per_class rows per class.
+    Args:
+        input_csv: Path to the input CSV file
+        output_csv: Path to the output balanced CSV file
+        max_per_class: Maximum number of samples per class (if None, use min class count)
+        min_per_class: Minimum number of samples per class to keep (if None, use min class count)
+        verbose: Print stats
+    Returns:
+        None
+    """
+
+    if not os.path.exists(input_csv):
+        print(f"CSV file not found: {input_csv}. Skipping balancing")
+        return
+
+    # Read CSV
+    df = pd.read_csv(input_csv, names=[
+        'youtube_id', 'timestamp_ms', 'class_id', 'class_name', 
+        'object_id', 'object_presence', 'xmin', 'xmax', 'ymin', 'ymax'
+    ])
+    # Only keep present objects
+    df = df[df['object_presence'] == 'present']
+    class_counts = df['class_name'].value_counts()
+    if verbose:
+        print(f"Class distribution in {os.path.basename(input_csv)}:")
+        print(class_counts)
+    # Determine number per class
+    if max_per_class is None:
+        max_per_class = min(class_counts.min(), min_per_class)
+    balanced_df = (
+        df.groupby('class_name', group_keys=False)
+        .apply(lambda x: x.sample(n=min(len(x), max_per_class), random_state=42))
+    )
+    if verbose:
+        print(f"Balanced class distribution (max {max_per_class} per class):")
+        print(balanced_df['class_name'].value_counts())
+        print(f"Writing balanced CSV: {output_csv} ({len(balanced_df)} rows)")
+    # Write to new CSV
+    balanced_df.to_csv(output_csv, index=False, header=False)
 MAX_VIDEOS = None  # Limit for testing, set to None for all videos
 FRAME_WIDTH = 640  # Target frame width
 FRAME_HEIGHT = 480  # Target frame height
 
+config = YTConfig()
+
 def setup_directories():
     """Create output directories if they don't exist."""
-    os.makedirs(IMAGES_DIR, exist_ok=True)
-    os.makedirs(ANNOTATIONS_DIR, exist_ok=True)
+    os.makedirs(config.ims_dir, exist_ok=True)
+    os.makedirs(config.annotations_dir, exist_ok=True)
     print(f"Output directories created:")
-    print(f"  Images: {IMAGES_DIR}")
-    print(f"  Annotations: {ANNOTATIONS_DIR}")
-
+    print(f"  Images: {config.ims_dir}")
+    print(f"  Annotations: {config.annotations_dir}")
 def check_dependencies():
     """Check if required tools are installed."""
     try:
@@ -213,7 +256,7 @@ def create_xml_annotation(image_path, annotations, video_id, image_width=FRAME_W
         ET.SubElement(bndbox, "ymax").text = str(ymax)
     
     # Create video-specific annotation directory
-    video_ann_dir = os.path.join(ANNOTATIONS_DIR, video_id)
+    video_ann_dir = os.path.join(config.annotations_dir, video_id)
     os.makedirs(video_ann_dir, exist_ok=True)
     
     # Save XML file in video-specific subdirectory
@@ -229,7 +272,7 @@ def read_existing_frames():
     existing_frames = set()
     
     for split_file in ['train.txt', 'val.txt']:
-        split_path = os.path.join(OUTPUT_DIR, split_file)
+        split_path = os.path.join(config.root_dir, split_file)
         if os.path.exists(split_path):
             try:
                 with open(split_path, 'r') as f:
@@ -245,78 +288,81 @@ def read_existing_frames():
     
     return existing_frames
 
-def process_csv_file(split):
-    """Process the YouTube-BB CSV file and download frames."""
+def process_csv_file(split, balanced=True):
+    """Process the YouTube-BB CSV file and download frames, optionally using a balanced CSV."""
     assert split in ['train', 'val'], "Split must be 'train' or 'val'"
-    file_path = CSV_TRAIN_FILE if split == 'train' else CSV_VAL_FILE
+    if balanced:
+        file_path = CSV_TRAIN_BALANCED_FILE if split == 'train' else CSV_VAL_BALANCED_FILE
+    else:
+        file_path = CSV_TRAIN_FILE if split == 'train' else CSV_VAL_FILE
 
     if not os.path.exists(file_path):
         print(f"CSV file not found: {file_path}")
         return
-    
+
     print(f"Reading CSV file: {file_path}")
-        
+
     # Read CSV file
     df = pd.read_csv(file_path, names=[
         'youtube_id', 'timestamp_ms', 'class_id', 'class_name', 
         'object_id', 'object_presence', 'xmin', 'xmax', 'ymin', 'ymax'
     ])
-    
+
     print(f"Found {len(df)} annotations")
 
     # Read existing frames to avoid reprocessing
     existing_frames = read_existing_frames()
     print(f"Total existing frames to skip: {len(existing_frames)}")
-    
+
     # Group annotations by video_id and timestamp, filtering out existing frames
     frame_annotations = defaultdict(list)
     skipped_count = 0
-    
+
     for _, row in df.iterrows():
         video_id = row['youtube_id']
         timestamp_ms = row['timestamp_ms']
-        
+
         # Create the frame identifier as it would appear in train.txt/val.txt
         frame_id = f"{video_id}/{int(timestamp_ms):06d}"
-        
+
         # Skip if frame already exists in train.txt or val.txt
         if frame_id in existing_frames:
             skipped_count += 1
             continue
-            
+
         key = (video_id, timestamp_ms)
         frame_annotations[key].append(row.to_dict())
-    
+
     print(f"Skipped {skipped_count} already downloaded annotations")
     print(f"Processing {len(frame_annotations)} unique frames")
-    
+
     # Group frames by video_id for efficient processing
     video_frames = defaultdict(list)
     for (video_id, timestamp_ms), annotations in frame_annotations.items():
         frame_filename = f"{int(timestamp_ms):06d}.jpg"
-        
+
         # Store frame info without creating directories yet
         video_frames[video_id].append({
             'timestamp_ms': timestamp_ms,
             'frame_filename': frame_filename,
             'annotations': annotations
         })
-    
+
     print(f"Need to process {len(video_frames)} videos")
-    
+
     successful_downloads = 0
     failed_downloads = 0
     processed_videos = 0
-    
+
     # Process each video
     for video_id, frames in video_frames.items():
         if MAX_VIDEOS and processed_videos >= MAX_VIDEOS:
             print(f"Reached maximum video limit ({MAX_VIDEOS})")
             break
-            
+
         processed_videos += 1
         print(f"\nProcessing video {processed_videos}/{min(len(video_frames), MAX_VIDEOS or len(video_frames))}: {video_id} ({len(frames)} frames)")
-        
+
         # Create temporary directory for this video
         with tempfile.TemporaryDirectory() as temp_dir:
             # Download the video once
@@ -325,25 +371,25 @@ def process_csv_file(split):
                 print(f"Failed to download video {video_id}")
                 failed_downloads += len(frames)
                 continue
-            
+
             print(f"✓ Downloaded video {video_id}")
-            
+
             # Create video-specific image directory only after successful download
-            video_img_dir = os.path.join(IMAGES_DIR, video_id)
+            video_img_dir = os.path.join(config.ims_dir, video_id)
             os.makedirs(video_img_dir, exist_ok=True)
-            
+
             # Prepare frame extraction requests with full paths
             frame_requests = []
             for frame in frames:
                 frame_path = os.path.join(video_img_dir, frame['frame_filename'])
                 frame['frame_path'] = frame_path  # Update frame dict with full path
                 frame_requests.append((frame['timestamp_ms'], frame_path))
-            
+
             # Extract all frames from this video
             extracted_count = extract_frames_from_video(video_path, video_id, frame_requests)
-            
+
             # Create XML annotations for successfully extracted frames
-            # Also add frmaes to test/val split file
+            # Also add frames to test/val split file
             txt_frames = []
             for frame in frames:
                 if os.path.exists(frame['frame_path']):
@@ -355,10 +401,10 @@ def process_csv_file(split):
                 else:
                     failed_downloads += 1
             # Append to file
-            with open(os.path.join(OUTPUT_DIR, f'{split}.txt'), 'a') as f:
+            with open(os.path.join(config.root_dir, f'{split}.txt'), 'a') as f:
                 for txt_frame in txt_frames:
                     f.write(txt_frame + '\n')
-    
+
     print(f"\nDownload complete!")
     print(f"Processed videos: {processed_videos}")
     print(f"Successful frames: {successful_downloads}")
@@ -372,8 +418,8 @@ def create_split_files(split):
     video_frames = {}
     
     # Collect all video IDs and their frames
-    for video_id in os.listdir(IMAGES_DIR):
-        video_dir = os.path.join(IMAGES_DIR, video_id)
+    for video_id in os.listdir(config.ims_dir):
+        video_dir = os.path.join(config.ims_dir, video_id)
         if os.path.isdir(video_dir):
             frames = []
             for frame_file in os.listdir(video_dir):
@@ -404,12 +450,12 @@ def create_split_files(split):
         val_frames.extend(video_frames[video_id])
     
     # Write train.txt
-    with open(os.path.join(OUTPUT_DIR, 'train.txt'), 'w') as f:
+    with open(os.path.join(config.root_dir, 'train.txt'), 'w') as f:
         for video_frame in train_frames:
             f.write(video_frame + '\n')
     
     # Write val.txt
-    with open(os.path.join(OUTPUT_DIR, 'val.txt'), 'w') as f:
+    with open(os.path.join(config.root_dir, 'val.txt'), 'w') as f:
         for video_frame in val_frames:
             f.write(video_frame + '\n')
     
@@ -420,27 +466,33 @@ def create_split_files(split):
     print(f"  Val videos: {val_videos[:5]}{'...' if len(val_videos) > 5 else ''}")
 
 def main():
-    """Main function to download YouTube-BB dataset."""
-    print("YouTube-BB Dataset Downloader")
+    """Main function to download YouTube-BB dataset with class balancing."""
+    print("YouTube-BB Dataset Downloader (Balanced)")
     print("=" * 40)
-    
+
     # Check dependencies
     if not check_dependencies():
         sys.exit(1)
-    
+
     # Setup directories
     setup_directories()
-    
-    # Process the CSV file and download frames
-    process_csv_file('train')
-    process_csv_file('val')
-    
-    # Create train/val split files
+
+    # Step 1: Create balanced CSVs for train and val
+    print("\n--- Balancing train CSV ---")
+    create_balanced_csv(CSV_TRAIN_FILE, CSV_TRAIN_BALANCED_FILE, min_per_class=1000)
+    print("\n--- Balancing val CSV ---")
+    create_balanced_csv(CSV_VAL_FILE, CSV_VAL_BALANCED_FILE, min_per_class=200)
+
+    # Step 2: Process the balanced CSVs and download frames
+    process_csv_file('train', balanced=True)
+    process_csv_file('val', balanced=True)
+
+    # Optionally: create train/val split files (video-level split)
     # create_split_files()
-    
+
     print("\nDataset download completed!")
-    print(f"Images saved to: {IMAGES_DIR}")
-    print(f"Annotations saved to: {ANNOTATIONS_DIR}")
+    print(f"Images saved to: {config.ims_dir}")
+    print(f"Annotations saved to: {config.annotations_dir}")
 
 if __name__ == "__main__":
     main()
