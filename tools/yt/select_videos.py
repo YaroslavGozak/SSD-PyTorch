@@ -10,20 +10,19 @@ from collections import defaultdict
 import random
 import shutil
 
+from tools.yt.utils import read_config
+
 # Configuration
-OUTPUT_DIR = r"D:\\YouTube\\ytbb_dataset"
-ANNOTATIONS_DIR = os.path.join(OUTPUT_DIR, "SequenceAnnotations")
-IMAGES_DIR = os.path.join(OUTPUT_DIR, "ResizedSequences")
 TARGET_DATASET_SIZE = 0.5  # Keep 50% of videos
 MIN_FRAMES_PER_CLASS = 1000  # Minimum frames to keep per class
 MAX_FRAMES_PER_CLASS = 10000  # Maximum frames to keep per class
 
-def analyze_video_classes():
+def analyze_video_classes(annotations_dir):
     """Analyze which classes each video contains and frame counts."""
     video_class_counts = defaultdict(lambda: defaultdict(int))
     
-    for video_id in os.listdir(ANNOTATIONS_DIR):
-        video_ann_dir = os.path.join(ANNOTATIONS_DIR, video_id)
+    for video_id in os.listdir(annotations_dir):
+        video_ann_dir = os.path.join(annotations_dir, video_id)
         if not os.path.isdir(video_ann_dir):
             continue
             
@@ -106,11 +105,14 @@ def select_videos_for_balanced_dataset(video_class_counts):
     
     return selected_videos, class_frame_counts
 
-def create_balanced_dataset():
+def create_balanced_dataset(output_dir):
     """Create a balanced subset of the dataset."""
     
+    annotations_dir = os.path.join(output_dir, "SequenceAnnotations")
+    ims_dir = os.path.join(output_dir, "ResizedSequences")
+
     print("Analyzing video classes...")
-    video_class_counts = analyze_video_classes()
+    video_class_counts = analyze_video_classes(annotations_dir)
     
     print(f"Found {len(video_class_counts)} videos")
     
@@ -130,26 +132,26 @@ def create_balanced_dataset():
     print(f"\nTotal frames: {total_frames}")
     
     # Create backup directories
-    backup_annotations = os.path.join(OUTPUT_DIR, "SequenceAnnotations_backup")
-    backup_images = os.path.join(OUTPUT_DIR, "ResizedSequences_backup")
+    backup_annotations = os.path.join(output_dir, "SequenceAnnotations_backup")
+    backup_images = os.path.join(output_dir, "ResizedSequences_backup")
     
     if not os.path.exists(backup_annotations):
         print("Creating backup...")
-        shutil.copytree(ANNOTATIONS_DIR, backup_annotations)
-        shutil.copytree(IMAGES_DIR, backup_images)
+        shutil.copytree(annotations_dir, backup_annotations)
+        shutil.copytree(ims_dir, backup_images)
         print("✓ Backup created")
     
     # Remove non-selected videos
     removed_videos = 0
-    for video_id in os.listdir(ANNOTATIONS_DIR):
+    for video_id in os.listdir(annotations_dir):
         if video_id not in selected_videos:
             # Remove from annotations
-            video_ann_path = os.path.join(ANNOTATIONS_DIR, video_id)
+            video_ann_path = os.path.join(annotations_dir, video_id)
             if os.path.exists(video_ann_path):
                 shutil.rmtree(video_ann_path)
             
             # Remove from images
-            video_img_path = os.path.join(IMAGES_DIR, video_id)
+            video_img_path = os.path.join(ims_dir, video_id)
             if os.path.exists(video_img_path):
                 shutil.rmtree(video_img_path)
             
@@ -158,13 +160,15 @@ def create_balanced_dataset():
     print(f"✓ Removed {removed_videos} videos")
     
     # Update train.txt and val.txt files
-    update_split_files(selected_videos)
+    update_split_files(selected_videos, output_dir)
 
-def update_split_files(selected_videos):
+def update_split_files(selected_videos, output_dir):
     """Update train.txt and val.txt to only include selected videos."""
+
+    ims_dir = os.path.join(output_dir, "ResizedSequences")
     
     for split_file in ['train.txt', 'val.txt']:
-        split_path = os.path.join(OUTPUT_DIR, split_file)
+        split_path = os.path.join(output_dir, split_file)
         if os.path.exists(split_path):
             # Read existing entries
             with open(split_path, 'r') as f:
@@ -176,7 +180,7 @@ def update_split_files(selected_videos):
                 video_id = line.split('/')[0]
                 if video_id in selected_videos:
                     # Verify the files still exist
-                    img_path = os.path.join(IMAGES_DIR, f"{line}.jpg")
+                    img_path = os.path.join(ims_dir, f"{line}.jpg")
                     if os.path.exists(img_path):
                         filtered_lines.append(line)
             
@@ -189,4 +193,9 @@ def update_split_files(selected_videos):
 
 if __name__ == "__main__":
     random.seed(42)  # For reproducible results
-    create_balanced_dataset()
+
+    config = read_config()
+    dataset_config = config['dataset_params']
+    output_dir = dataset_config['root_dir']
+
+    create_balanced_dataset(output_dir)
