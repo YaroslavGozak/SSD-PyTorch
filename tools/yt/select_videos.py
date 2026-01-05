@@ -10,7 +10,7 @@ from collections import defaultdict
 import random
 import shutil
 
-from tools.yt.utils import read_config
+from tools.yt.utils import YTConfig
 
 # Configuration
 TARGET_DATASET_SIZE = 0.5  # Keep 50% of videos
@@ -194,8 +194,6 @@ def update_split_files(selected_videos, output_dir):
 if __name__ == "__main__":
     random.seed(42)  # For reproducible results
 
-    config = read_config()
-    dataset_config = config['dataset_params']
-    output_dir = dataset_config['root_dir']
+    config = YTConfig()
 
-    create_balanced_dataset(output_dir)
+    create_balanced_dataset(config.root_dir)

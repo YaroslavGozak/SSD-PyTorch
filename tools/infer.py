@@ -5,6 +5,8 @@ import os
 import yaml
 import random
 from tqdm import tqdm
+from dataset.ytbb import YTBBDataset
+from model.roissd import RoiSSD
 from model.ssd import SSD
 import numpy as np
 import cv2
@@ -178,11 +180,27 @@ def load_model_and_dataset(args):
     model_config = config['model_params']
     train_config = config['train_params']
 
-    dataset = VisDroneDataset('test',
-                     im_sets=dataset_config['test_im_sets'])
+    if str(train_config['task_name']).startswith('vis-drone'):
+        dataset = VisDroneDataset('test',
+                     im_sets=dataset_config['test_im_sets'],
+                     im_size=dataset_config['im_size'])
+    elif str(train_config['task_name']).startswith('ytbb'):
+        dataset = YTBBDataset('test',
+                     root_dir=dataset_config['root_dir'],
+                     im_size=dataset_config['im_size'])
+    elif str(train_config['task_name']).startswith('voc'):
+        dataset = VOCDataset('test',
+                     im_sets=dataset_config['test_im_sets'],
+                     im_size=dataset_config['im_size'])
+    else:
+        raise Exception('Unknown task name {}'.format(train_config['task_name']))
     test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    model = SSD(config=model_config,
+    if str(train_config['task_name']).endswith('ssd'):
+        model = SSD(config=config['model_params'],
+                num_classes=dataset_config['num_classes'])
+    elif str(train_config['task_name']).endswith('roissd'):
+        model = RoiSSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
     model.to(device=torch.device(device))
     model.eval()
