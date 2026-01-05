@@ -3,6 +3,31 @@ import torch
 import math
 import torchvision
 
+# Helper to generate ignore_regions from detector outputs
+def generate_ignore_regions(detector_outputs, gt_targets, iou_threshold=0.5):
+    """
+    Generate ignore regions for a batch of images.
+    Args:
+        detector_outputs: list of dicts, each with key 'boxes' (Tensor[N, 4], normalized [0,1])
+        gt_targets: list of dicts, each with key 'boxes' (Tensor[M, 4], normalized [0,1])
+        iou_threshold: float, IoU threshold to consider a detector box as overlapping GT
+    Returns:
+        ignore_regions: list of Tensors [K, 4] (normalized [0,1]) for each image
+    """
+    ignore_regions = []
+    for det, gt in zip(detector_outputs, gt_targets):
+        det_boxes = det['boxes']
+        gt_boxes = gt['boxes']
+        if gt_boxes.numel() == 0 or det_boxes.numel() == 0:
+            ignore_regions.append(None)
+            continue
+        ious = get_iou(det_boxes, gt_boxes)  # (N_det, N_gt)
+        max_iou, _ = ious.max(dim=1)
+        # Keep detector boxes that do NOT overlap with any GT (likely missing annotation)
+        ignore_mask = max_iou < iou_threshold
+        ignore_boxes = det_boxes[ignore_mask]
+        ignore_regions.append(ignore_boxes if ignore_boxes.numel() > 0 else None)
+    return ignore_regions
 
 def get_iou(boxes1, boxes2):
     r"""
@@ -418,6 +443,7 @@ class RoiSSD(nn.Module):
             bbox_regression,
             default_boxes,
             matched_idxs,
+            ignore_regions=None
     ):
         # Counting all the foreground default_boxes for computing N in loss equation
         num_foreground = 0
@@ -425,13 +451,13 @@ class RoiSSD(nn.Module):
         bbox_loss = []
         # classification targets for all batch images(for ALL default_boxes)
         cls_targets = []
-        for (
+        for batch_idx, (
             targets_per_image,
             bbox_regression_per_image,
             cls_logits_per_image,
             default_boxes_per_image,
             matched_idxs_per_image,
-        ) in zip(targets, bbox_regression, cls_logits, default_boxes, matched_idxs):
+        ) in enumerate(zip(targets, bbox_regression, cls_logits, default_boxes, matched_idxs)):
             # Foreground default_boxes -> matched_idx >=0
             # Background default_boxes -> matched_idx = -1
             fg_idxs_per_image = torch.where(matched_idxs_per_image >= 0)[0]
@@ -445,6 +471,7 @@ class RoiSSD(nn.Module):
                 foreground_matched_idxs_per_image
             ]
             bbox_regression_per_image = bbox_regression_per_image[fg_idxs_per_image, :]
+            init_default_boxes_per_image = default_boxes_per_image.clone() # clone to preserve all default boxes
             default_boxes_per_image = default_boxes_per_image[fg_idxs_per_image, :]
             target_regression = boxes_to_transformation_targets(
                 matched_gt_boxes_per_image,
@@ -455,6 +482,13 @@ class RoiSSD(nn.Module):
                                                    target_regression,
                                                    reduction='sum')
             )
+
+            ignore_mask = torch.zeros(init_default_boxes_per_image.size(0), dtype=torch.bool, device=init_default_boxes_per_image.device)
+            if ignore_regions is not None and ignore_regions[batch_idx] is not None:
+                # ignore_regions[batch_idx]: Tensor of shape [N_ignore, 4] in x1y1x2y2, normalized [0,1]
+                iou_with_ignore = get_iou(init_default_boxes_per_image, ignore_regions[batch_idx])
+                max_iou_per_box, _ = iou_with_ignore.max(dim=1)  # shape: (N,)
+                ignore_mask = max_iou_per_box > 0.5  # shape: (N,), bool
 
             # Get classification target for ALL default_boxes
             # For all default_boxes set it as 0 first
@@ -468,6 +502,7 @@ class RoiSSD(nn.Module):
             gt_classes_target[fg_idxs_per_image] = targets_per_image["labels"][
                 foreground_matched_idxs_per_image
             ]
+            gt_classes_target[ignore_mask] = -1  # Mark ignored boxes
             cls_targets.append(gt_classes_target)
 
         # Aggregated bbox loss and classification targets
@@ -478,10 +513,14 @@ class RoiSSD(nn.Module):
         # Calculate classification loss for ALL default_boxes
         num_classes = cls_logits.size(-1)
         cls_loss = torch.nn.functional.cross_entropy(cls_logits.view(-1, num_classes),
-                                                     cls_targets.view(-1),
+                                                     torch.clamp(cls_targets.view(-1), min=0),  # clamp -1 to 0 for loss, will mask later
                                                      reduction="none").view(
             cls_targets.size()
         )
+
+        # Mask out ignored boxes from loss
+        ignore_mask = (cls_targets == -1)
+        cls_loss[ignore_mask] = 0.0
 
         # Hard Negative Mining
         foreground_idxs = cls_targets > 0
@@ -521,7 +560,7 @@ class RoiSSD(nn.Module):
             L_R = 6      # full pyramid
         return L_R
 
-    def forward(self, x, targets=None):
+    def forward(self, x, targets=None, ignore_regions=None):
         w_r, h_r = x.shape[3], x.shape[2]
         # s_r = math.sqrt(w_r*h_r)
         s_r = min(w_r, h_r)
@@ -628,7 +667,7 @@ class RoiSSD(nn.Module):
                 )
                 matched_idxs.append(matches)
             losses = self.compute_loss(targets, cls_logits, bbox_reg_deltas,
-                                       default_boxes, matched_idxs)
+                                       default_boxes, matched_idxs, ignore_regions)
         else:
             # For test time we do the following:
             # 1. Convert default_boxes to boxes using predicted bbox regression deltas
