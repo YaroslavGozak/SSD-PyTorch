@@ -29,6 +29,7 @@ def generate_ignore_regions(detector_outputs, gt_targets, iou_threshold=0.5):
         ignore_regions.append(ignore_boxes if ignore_boxes.numel() > 0 else None)
     return ignore_regions
 
+
 def get_iou(boxes1, boxes2):
     r"""
     IOU between two sets of boxes

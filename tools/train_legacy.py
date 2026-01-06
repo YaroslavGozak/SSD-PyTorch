@@ -5,6 +5,7 @@ import numpy as np
 import yaml
 import random
 from tqdm import tqdm
+from model.roissd import RoiSSD
 from model.ssd import SSD
 import torchvision
 from dataset.voc import VOCDataset
@@ -51,7 +52,7 @@ def train(args):
                                collate_fn=collate_function)
 
     # Instantiate model and load checkpoint if present
-    model = SSD(config=config['model_params'],
+    model = RoiSSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
     model.to(device)
     model.train()

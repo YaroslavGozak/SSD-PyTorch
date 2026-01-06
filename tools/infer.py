@@ -180,26 +180,26 @@ def load_model_and_dataset(args):
     model_config = config['model_params']
     train_config = config['train_params']
 
-    if str(train_config['task_name']).startswith('vis-drone'):
+    if str(train_config['dataset']) == 'vis-drone':
         dataset = VisDroneDataset('test',
                      im_sets=dataset_config['test_im_sets'],
                      im_size=dataset_config['im_size'])
-    elif str(train_config['task_name']).startswith('ytbb'):
+    elif str(train_config['dataset']) == 'ytbb':
         dataset = YTBBDataset('test',
                      root_dir=dataset_config['root_dir'],
                      im_size=dataset_config['im_size'])
-    elif str(train_config['task_name']).startswith('voc'):
+    elif str(train_config['dataset']) == 'voc':
         dataset = VOCDataset('test',
                      im_sets=dataset_config['test_im_sets'],
                      im_size=dataset_config['im_size'])
     else:
-        raise Exception('Unknown task name {}'.format(train_config['task_name']))
+        raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
     test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    if str(train_config['task_name']).endswith('ssd'):
+    if str(train_config['model']) == 'ssd':
         model = SSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
-    elif str(train_config['task_name']).endswith('roissd'):
+    elif str(train_config['model']) == 'roissd':
         model = RoiSSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
     model.to(device=torch.device(device))

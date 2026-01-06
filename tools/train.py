@@ -53,20 +53,20 @@ def train(args):
     if device == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
-    if str(train_config['task_name']).startswith('vis-drone'):
+    if str(train_config['dataset']) == 'vis-drone':
         dataset = VisDroneDataset('train',
                      im_sets=dataset_config['train_im_sets'],
                      im_size=dataset_config['im_size'])
-    elif str(train_config['task_name']).startswith('ytbb'):
+    elif str(train_config['dataset']) == 'ytbb':
         dataset = YTBBDataset('train',
                      root_dir=dataset_config['root_dir'],
                      im_size=dataset_config['im_size'])
-    elif str(train_config['task_name']).startswith('voc'):
+    elif str(train_config['dataset']) == 'voc':
         dataset = VOCDataset('train',
                      im_sets=dataset_config['train_im_sets'],
                      im_size=dataset_config['im_size'])
     else:
-        raise Exception('Unknown task name {}'.format(train_config['task_name']))
+        raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
     train_dataset_loader = DataLoader(dataset,
                                batch_size=train_config['batch_size'],
                                shuffle=True,
@@ -78,14 +78,14 @@ def train(args):
                                ) 
 
     # Instantiate model and load checkpoint if present
-    if str(train_config['task_name']).endswith('ssd'):
+    if str(train_config['model']) == 'ssd':
         model = SSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
-    elif str(train_config['task_name']).endswith('roissd'):
+    elif str(train_config['model']) == 'roissd':
         model = RoiSSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
     else:
-        raise Exception('Unknown task name {}'.format(train_config['task_name']))
+        raise Exception('Unknown model name {}'.format(train_config['model']))
     
     pretrained_detector = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     pretrained_detector.to(device)

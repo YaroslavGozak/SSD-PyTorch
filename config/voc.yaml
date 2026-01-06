@@ -23,6 +23,8 @@ model_params:
   nms_threshold : 0.45
 
 train_params:
+  model: 'ssd'
+  dataset: 'voc'
   task_name: 'voc-ssd'
   seed: 1111
   acc_steps: 1
