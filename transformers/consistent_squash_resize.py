@@ -12,9 +12,9 @@ class ConsistentSquashResize(torch.nn.Module):
     This preserves consistency in the normalized full-frame square space.
     """
 
-    def __init__(self, S: int, min_size: int = 1):
+    def __init__(self, size: int, min_size: int = 1):
         super().__init__()
-        self.S = int(S)
+        self.size = int(size)
         self.min_size = int(min_size)
 
     def forward(self, image, target=None):
@@ -26,8 +26,8 @@ class ConsistentSquashResize(torch.nn.Module):
         H0, W0 = target["orig_size"]
         _, H, W = F.get_dimensions(image)
 
-        sx = self.S / float(W0)
-        sy = self.S / float(H0)
+        sx = self.size / float(W0)
+        sy = self.size / float(H0)
 
         out_w = max(self.min_size, int(round(W * sx)))
         out_h = max(self.min_size, int(round(H * sy)))
