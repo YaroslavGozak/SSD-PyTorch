@@ -90,7 +90,7 @@ class VOCDataset(Dataset):
                 torchvision.transforms.v2.RandomZoomOut(fill=self.im_mean),
                 torchvision.transforms.v2.RandomIoUCrop(),
                 torchvision.transforms.v2.RandomHorizontalFlip(p=0.5),
-                ConsistentSquashResize(size=self.im_size),
+                torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
                 torchvision.transforms.v2.SanitizeBoundingBoxes(
                     labels_getter=lambda transform_input:
                     (transform_input[1]["labels"], transform_input[1]["difficult"])),

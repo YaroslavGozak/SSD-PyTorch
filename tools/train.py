@@ -8,14 +8,13 @@ import csv
 import torchvision
 from tqdm import tqdm
 from dataset.visdrone import VisDroneDataset
-from dataset.visdroneroissd import VisDroneRoiSsdDataset
 from dataset.voc import VOCDataset
 from dataset.ytbb import YTBBDataset
 from model.roissd import RoiSSD
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
-from model.ssd import SSD, generate_ignore_regions
+from model.ssd import SSD
 
 if not torch.cuda.is_available():
     raise Exception('CUDA not available')
@@ -71,10 +70,10 @@ def train(args):
                                batch_size=train_config['batch_size'],
                                shuffle=True,
                                collate_fn=collate_function,
-                               num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
+                               num_workers=0,  # Set to 0 for Windows compatibility (lambda pickling issue)
                                pin_memory=True,  # Add this for faster GPU transfer
-                               persistent_workers=True, # Keep workers alive between epochs
-                               prefetch_factor=2  # Prefetch 2 batches per worker
+                               # persistent_workers=True, # Disabled when num_workers=0
+                               # prefetch_factor=2  # Disabled when num_workers=0
                                ) 
 
     # Instantiate model and load checkpoint if present
@@ -140,6 +139,7 @@ def train(args):
             images = torch.stack([im.float() for im in ims], dim=0).to(device, non_blocking=True)
 
             if dataset.__class__.__name__ == 'YTBBDataset':
+                from model.roissd import generate_ignore_regions
                 # 1. Run pre-trained detector (e.g., yolov5, coco-ssd) on images
                 with torch.no_grad():
                     detector_outputs = []

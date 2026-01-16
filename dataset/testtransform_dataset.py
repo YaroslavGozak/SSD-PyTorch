@@ -22,6 +22,7 @@ def load_image_and_ann(im_path, label2idx):
 
     ann_path = im_path.replace('ResizedSequences', 'SequenceAnnotations').replace('.jpg', '.xml')
     im_info, success = read_annotation_file(ann_path, im_path, label2idx)
+    print(im_info)
     if not success:
         return None, False
 
@@ -29,7 +30,7 @@ def load_image_and_ann(im_path, label2idx):
     if len(im_info.get('detections', [])) == 0:
         return None, False
 
-    return im_info
+    return im_info, True
 
 
 class TestTransformDataset():
@@ -55,10 +56,10 @@ class TestTransformDataset():
         self.transforms = {
             'train': torchvision.transforms.v2.Compose([
                 torchvision.transforms.v2.RandomPhotometricDistort(),
-                torchvision.transforms.v2.RandomZoomOut(fill=self.im_mean),
+                # torchvision.transforms.v2.RandomZoomOut(fill=self.im_mean),
                 # torchvision.transforms.v2.RandomIoUCrop(),
                 torchvision.transforms.v2.RandomHorizontalFlip(p=0.5),
-                torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
+                # torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
                 # torchvision.transforms.v2.SanitizeBoundingBoxes(
                 #     labels_getter=labels_getter),
                 RandomROICrop(
@@ -72,24 +73,50 @@ class TestTransformDataset():
                 ),
                 torchvision.transforms.v2.ToPureTensor(),
                 torchvision.transforms.v2.ToDtype(torch.float32, scale=True),
-                torchvision.transforms.v2.Normalize(mean=self.imagenet_mean,
-                                                    std=self.imagenet_std)
+                # torchvision.transforms.v2.Normalize(mean=self.imagenet_mean,
+                #                                     std=self.imagenet_std)
             ])
         }
 
         # Extract class names from categories list
+        # categories = [
+        #     {"id": 1, "name": "pedestrian"},
+        #     {"id": 2, "name": "people"},
+        #     {"id": 3, "name": "bicycle"},
+        #     {"id": 4, "name": "car"},
+        #     {"id": 5, "name": "van"},
+        #     {"id": 6, "name": "truck"},
+        #     {"id": 7, "name": "tricycle"},
+        #     {"id": 8, "name": "awning-tricycle"},
+        #     {"id": 9, "name": "bus"},
+        #     {"id": 10, "name": "motor"},
+        # ]
         categories = [
-            {"id": 1, "name": "pedestrian"},
-            {"id": 2, "name": "people"},
-            {"id": 3, "name": "bicycle"},
-            {"id": 4, "name": "car"},
-            {"id": 5, "name": "van"},
-            {"id": 6, "name": "truck"},
-            {"id": 7, "name": "tricycle"},
-            {"id": 8, "name": "awning-tricycle"},
-            {"id": 9, "name": "bus"},
-            {"id": 10, "name": "motor"},
+            {"id": 1,  "name": "person"},
+            {"id": 2,  "name": "bird"},
+            {"id": 3,  "name": "bicycle"},
+            {"id": 4,  "name": "boat"},
+            {"id": 5,  "name": "bus"},
+            {"id": 6,  "name": "bear"},
+            {"id": 7,  "name": "cow"},
+            {"id": 8,  "name": "cat"},
+            {"id": 9,  "name": "giraffe"},
+            {"id": 10, "name": "horse"},
+            {"id": 11, "name": "motorcycle"},
+            {"id": 12, "name": "knife"},
+            {"id": 13, "name": "car"},
+            {"id": 14, "name": "airplane"},
+            {"id": 15, "name": "skateboard"},
+            {"id": 16, "name": "train"},
+            {"id": 17, "name": "truck"},
+            {"id": 18, "name": "zebra"},
+            {"id": 19, "name": "elephant"},
+            {"id": 20, "name": "dog"},
+            {"id": 21, "name": "umbrella"},
+            {"id": 22, "name": "sheep"},
+            {"id": 23, "name": "surfboard"},
         ]
+
         classes = [category['name'] for category in categories]
         # classes = sorted(classes)
         # We need to add background class as well with 0 index
@@ -100,10 +127,13 @@ class TestTransformDataset():
 
 
     def get_image(self, im_path):
-        im_info = load_image_and_ann(im_path, self.label2idx)
-        im, targets, transformed_im, simple_targets, _, simple_v2_targets, _, greedy_targets = self.__get_im_and_targets(im_info)
+        im_info, success = load_image_and_ann(im_path, self.label2idx)
+        if not success:
+            raise RuntimeError(f"Could not load image and annotations for {im_path}. {im_info}")
+        print(im_info)
+        im, targets, simple_im, simple_targets, _, simple_v2_targets, _, greedy_targets, transformed_im, transformed_targets  = self.__get_im_and_targets(im_info)
         
-        return im, targets, transformed_im, simple_targets, simple_v2_targets, greedy_targets
+        return im, targets, simple_im, simple_targets, simple_v2_targets, greedy_targets, transformed_im, transformed_targets
     
     def __get_im_and_targets(self, im_info):
         im = read_image(im_info['filename'])
@@ -143,7 +173,7 @@ class TestTransformDataset():
             [detection['difficult']for detection in im_info['detections']])
         
         bboxes = [self.add_padding_to_bbox(bbox, im.shape[-1], im.shape[-2], self.alpha_w, self.alpha_h, self.delta_x, self.delta_y) for bbox in targets['bboxes'].tolist()]
-        rois = greedy_roi_merge(bboxes, tau=123456)
+        rois = greedy_roi_merge(bboxes, tau=2500)
         greedy_merge_im = im.clone()
         greedy_merge_targets = {}
         greedy_merge_targets['bboxes'] = tv_tensors.BoundingBoxes(
@@ -155,13 +185,13 @@ class TestTransformDataset():
             [detection['difficult']for detection in im_info['detections']])
 
         # Transform the image and targets
-        # transformed_info = self.transforms['train'](im, targets)
-        # transformed_im, transformed_targets = transformed_info
+        transformed_info = self.transforms['train'](im, targets)
+        transformed_im, transformed_targets = transformed_info
 
         # h, w = transformed_im.shape[-2:]
         # wh_tensor = torch.as_tensor([[w, h, w, h]]).expand_as(transformed_targets['bboxes'])
         # transformed_targets['bboxes'] = transformed_targets['bboxes'] / wh_tensor
-        return im, targets, simple_merge_im, simple_merge_targets, simple_merge_v2_im, simple_merge_v2_targets, greedy_merge_im, greedy_merge_targets
+        return im, targets, simple_merge_im, simple_merge_targets, simple_merge_v2_im, simple_merge_v2_targets, greedy_merge_im, greedy_merge_targets, transformed_im, transformed_targets
     
     def add_padding_to_bbox(self, bbox, im_width, im_height, alpha_w, alpha_h, delta_x, delta_y):
         x1, y1, x2, y2 = bbox

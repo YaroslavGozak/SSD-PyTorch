@@ -26,11 +26,19 @@ class ConsistentSquashResize(torch.nn.Module):
         H0, W0 = target["orig_size"]
         _, H, W = F.get_dimensions(image)
 
-        sx = self.size / float(W0)
-        sy = self.size / float(H0)
+        # If image is larger than original size in any dimension (e.g., due to RandomZoomOut),
+        # fall back to hard resize to target size to avoid inconsistent scaling
+        if H > H0 or W > W0:
+            out_h = out_w = self.size
+            # print(f'ConsistentSquashResize: Input larger than orig_size, using hard resize: orig_size=({H0},{W0}) input_size=({H},{W}) -> output_size=({out_h},{out_w})')
+        else:
+            # Use consistent squash resize for crops/patches smaller than or equal to original size
+            sx = self.size / float(W0)
+            sy = self.size / float(H0)
 
-        out_w = max(self.min_size, int(round(W * sx)))
-        out_h = max(self.min_size, int(round(H * sy)))
+            out_w = max(self.min_size, int(round(W * sx)))
+            out_h = max(self.min_size, int(round(H * sy)))
+            # print(f'ConsistentSquashResize: orig_size=({H0},{W0}) input_size=({H},{W}) -> output_size=({out_h},{out_w})')
 
         # Resize image
         image = F.resize(image, size=[out_h, out_w], interpolation=torchvision.transforms.InterpolationMode.BILINEAR, antialias=True)

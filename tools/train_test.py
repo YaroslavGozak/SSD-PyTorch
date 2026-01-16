@@ -119,7 +119,7 @@ def train(args):
                 
             if torch.isnan(loss):
                 print('Loss is becoming nan. Check what might be going wrong')
-                # exit(0)
+                exit(0)
             steps += 1
         lr_scheduler.step()
         print('Finished epoch {}'.format(i+1))
