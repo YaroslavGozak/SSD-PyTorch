@@ -9,6 +9,11 @@ from torchvision.io import read_image
 from transformers.consistent_squash_resize import ConsistentSquashResize
 
 
+def _labels_getter(transform_input):
+    """Helper function for SanitizeBoundingBoxes to extract labels and difficult flags."""
+    return (transform_input[1]["labels"], transform_input[1]["difficult"])
+
+
 def load_images_and_anns(im_sets, label2idx, ann_fname):
     r"""
     Method to get the xml files and for each file
@@ -90,10 +95,9 @@ class VOCDataset(Dataset):
                 torchvision.transforms.v2.RandomZoomOut(fill=self.im_mean),
                 torchvision.transforms.v2.RandomIoUCrop(),
                 torchvision.transforms.v2.RandomHorizontalFlip(p=0.5),
-                ConsistentSquashResize(size=self.im_size),
+                torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
                 torchvision.transforms.v2.SanitizeBoundingBoxes(
-                    labels_getter=lambda transform_input:
-                    (transform_input[1]["labels"], transform_input[1]["difficult"])),
+                    labels_getter=_labels_getter),
                 torchvision.transforms.v2.ToPureTensor(),
                 torchvision.transforms.v2.ToDtype(torch.float32, scale=True),
                 torchvision.transforms.v2.Normalize(mean=self.imagenet_mean,
