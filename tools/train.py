@@ -10,7 +10,7 @@ from tqdm import tqdm
 from dataset.visdrone import VisDroneDataset
 from dataset.voc import VOCDataset
 from dataset.ytbb import YTBBDataset
-from model.roissd import RoiSSD
+from model.roissd import RoiSSD, generate_ignore_regions
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 

@@ -8,11 +8,9 @@ from torchvision.io import read_image
 
 from transformers.consistent_squash_resize import ConsistentSquashResize
 
-
 def _labels_getter(transform_input):
     """Helper function for SanitizeBoundingBoxes to extract labels and difficult flags."""
     return (transform_input[1]["labels"], transform_input[1]["difficult"])
-
 
 def load_images_and_anns(im_sets, label2idx, ann_fname):
     r"""
@@ -76,7 +74,7 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
     return im_infos
 
 
-class VOCDataset(Dataset):
+class VOCSquashResizeDataset(Dataset):
     def __init__(self, split, im_sets, im_size=300):
         self.split = split
 
@@ -95,7 +93,7 @@ class VOCDataset(Dataset):
                 torchvision.transforms.v2.RandomZoomOut(fill=self.im_mean),
                 torchvision.transforms.v2.RandomIoUCrop(),
                 torchvision.transforms.v2.RandomHorizontalFlip(p=0.5),
-                torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
+                ConsistentSquashResize(size=self.im_size),
                 torchvision.transforms.v2.SanitizeBoundingBoxes(
                     labels_getter=_labels_getter),
                 torchvision.transforms.v2.ToPureTensor(),
@@ -105,7 +103,7 @@ class VOCDataset(Dataset):
 
             ]),
             'test': torchvision.transforms.v2.Compose([
-                torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
+                ConsistentSquashResize(size=self.im_size),
                 torchvision.transforms.v2.ToPureTensor(),
                 torchvision.transforms.v2.ToDtype(torch.float32, scale=True),
                 torchvision.transforms.v2.Normalize(mean=self.imagenet_mean,
