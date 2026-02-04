@@ -209,9 +209,24 @@ def load_model_and_dataset(args):
                                        train_config['ckpt_name'])), \
         "No checkpoint exists at {}".format(os.path.join(train_config['task_name'],
                                                          train_config['ckpt_name']))
-    model.load_state_dict(torch.load(os.path.join(train_config['task_name'],
-                                                       train_config['ckpt_name']),
-                                     map_location=device))
+    # Load checkpoint if it exists (after creating optimizer and scheduler)
+    if os.path.exists(os.path.join(train_config['task_name'],
+                                   train_config['ckpt_name'])):
+        print('Loading checkpoint as one exists')
+        checkpoint = torch.load(
+            os.path.join(train_config['task_name'],
+                         train_config['ckpt_name']),
+            map_location=device)
+        
+        # Handle both old format (state_dict only) and new format (full checkpoint)
+        if isinstance(checkpoint, dict) and 'model' in checkpoint:
+            model.load_state_dict(checkpoint['model'])
+            print('Restored optimizer and scheduler state')
+        else:
+            # Old format - just model state_dict
+            model.load_state_dict(checkpoint)
+            print('Loaded model only (old checkpoint format)')
+
     return model, dataset, test_dataset_loader, config
 
 
@@ -348,7 +363,7 @@ if __name__ == '__main__':
     parser.add_argument('--config', dest='config_path',
                         default='config/voc.yaml', type=str)
     parser.add_argument('--evaluate', dest='evaluate',
-                        default=False, type=bool)
+                        default=True, type=bool)
     parser.add_argument('--infer_samples', dest='infer_samples',
                         default=True, type=bool)
     args = parser.parse_args()

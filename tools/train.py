@@ -71,10 +71,10 @@ def train(args):
                                batch_size=train_config['batch_size'],
                                shuffle=True,
                                collate_fn=collate_function,
-                               num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
-                               pin_memory=True,  # Add this for faster GPU transfer
-                               persistent_workers=True, # Keep workers alive between epochs
-                               prefetch_factor=2  # Prefetch 2 batches per worker
+                            #    num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
+                            #    pin_memory=True,  # Add this for faster GPU transfer
+                            #    persistent_workers=True, # Keep workers alive between epochs
+                            #    prefetch_factor=2  # Prefetch 2 batches per worker
                                ) 
 
     # Instantiate model and load checkpoint if present
@@ -93,14 +93,7 @@ def train(args):
     
     model.to(device)
     model.train()
-    if os.path.exists(os.path.join(train_config['task_name'],
-                                   train_config['ckpt_name'])):
-        print('Loading checkpoint as one exists')
-        model.load_state_dict(torch.load(
-            os.path.join(train_config['task_name'],
-                         train_config['ckpt_name']),
-            map_location=device))
-
+    
     if not os.path.exists(train_config['task_name']):
         os.mkdir(train_config['task_name'])
 
@@ -108,6 +101,26 @@ def train(args):
                                 params=model.parameters(),
                                 weight_decay=5E-4, momentum=0.9)
     lr_scheduler = MultiStepLR(optimizer, milestones=train_config['lr_steps'], gamma=0.5)
+    
+    # Load checkpoint if it exists (after creating optimizer and scheduler)
+    if os.path.exists(os.path.join(train_config['task_name'],
+                                   train_config['ckpt_name'])):
+        print('Loading checkpoint as one exists')
+        checkpoint = torch.load(
+            os.path.join(train_config['task_name'],
+                         train_config['ckpt_name']),
+            map_location=device)
+        
+        # Handle both old format (state_dict only) and new format (full checkpoint)
+        if isinstance(checkpoint, dict) and 'model' in checkpoint:
+            model.load_state_dict(checkpoint['model'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            lr_scheduler.load_state_dict(checkpoint['scheduler'])
+            print('Restored optimizer and scheduler state')
+        else:
+            # Old format - just model state_dict
+            model.load_state_dict(checkpoint)
+            print('Loaded model only (old checkpoint format)')
     acc_steps = train_config['acc_steps']
     num_epochs = train_config['num_epochs']
     steps = 0
@@ -179,7 +192,7 @@ def train(args):
             loss.backward()
 
             if (idx + 1) % acc_steps == 0:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Clip gradient to prevent exploding gradient
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Clip gradient to prevent exploding gradient
                 optimizer.step()
                 optimizer.zero_grad()
             if steps % train_config['log_steps'] == 0:
@@ -194,7 +207,7 @@ def train(args):
             steps += 1
         optimizer.step()
         optimizer.zero_grad()
-        lr_scheduler.step(i)
+        lr_scheduler.step()
         print('Learning rate for epoch {}: {:.6f}'.format(i+1, lr_scheduler.get_last_lr()[0]))
         epoch_time = time.time() - epoch_start_time
         epoch_minutes = epoch_time / 60
@@ -204,7 +217,15 @@ def train(args):
         loss_output += 'SSD Classification Loss : {:.4f}'.format(np.mean(ssd_classification_losses))
         loss_output += ' | SSD Localization Loss : {:.4f}'.format(np.mean(ssd_localization_losses))
         print(loss_output)
-        torch.save(model.state_dict(), os.path.join(train_config['task_name'],
+        
+        # Save full checkpoint with optimizer and scheduler state
+        checkpoint = {
+            'model': model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'scheduler': lr_scheduler.state_dict(),
+            'epoch': i
+        }
+        torch.save(checkpoint, os.path.join(train_config['task_name'],
                                 train_config['ckpt_name']))
         torch.save(i, os.path.join(train_config['task_name'],
                                 'epoch.pth'))
