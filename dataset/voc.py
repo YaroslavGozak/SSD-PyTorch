@@ -7,6 +7,8 @@ from torchvision import tv_tensors
 from torchvision.io import read_image
 
 from transformers.consistent_squash_resize import ConsistentSquashResize
+from transformers.resize_longer_edge import ResizeLongerEdge
+from transformers.pad_square import PadToSquare
 
 
 def _labels_getter(transform_input):
@@ -72,6 +74,8 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
 
             im_info['detections'] = detections
             im_infos.append(im_info)
+            if len(im_infos) >= 15:
+                break
     print('Total {} images found'.format(len(im_infos)))
     return im_infos
 
@@ -95,7 +99,8 @@ class VOCDataset(Dataset):
                 torchvision.transforms.v2.RandomZoomOut(fill=self.im_mean),
                 torchvision.transforms.v2.RandomIoUCrop(),
                 torchvision.transforms.v2.RandomHorizontalFlip(p=0.5),
-                torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
+                ResizeLongerEdge(size=self.im_size),
+                PadToSquare(size=self.im_size, fill=self.im_mean), # short side
                 torchvision.transforms.v2.SanitizeBoundingBoxes(
                     labels_getter=_labels_getter),
                 torchvision.transforms.v2.ToPureTensor(),
