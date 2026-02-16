@@ -1,7 +1,106 @@
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import numpy as np
+
 import torch.nn as nn
 import torch
 import math
 import torchvision
+
+def visualize_image_with_boxes(image_tensor, targets, default_boxes=None, matched_idxs=None, save_path='debug_nan.png'):
+    """
+    Visualize image with bounding boxes and save to file.
+    Args:
+        image_tensor: (C, H, W) tensor, normalized with ImageNet stats
+        targets: dict with 'boxes' (normalized [0,1]) and 'labels'
+        default_boxes: optional, default boxes to visualize
+    """
+    # Denormalize image (reverse ImageNet normalization)
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    
+    # Move to CPU and denormalize
+    img = image_tensor.cpu() * std + mean
+    img = torch.clamp(img, 0, 1)
+    
+    # Convert to numpy and transpose to (H, W, C)
+    img_np = img.permute(1, 2, 0).numpy()
+    
+    # Create figure and axis
+    fig, ax = plt.subplots(1, figsize=(12, 12))
+    ax.imshow(img_np)
+    
+    # Get image dimensions
+    h, w = img_np.shape[:2]
+    
+    # Draw bounding boxes
+    if 'boxes' in targets and len(targets['boxes']) > 0:
+        boxes = targets['boxes'].cpu().numpy()
+        labels = targets['labels'].cpu().numpy() if 'labels' in targets else None
+        
+        for i, box in enumerate(boxes):
+            # Convert normalized coordinates to pixel coordinates
+            x1, y1, x2, y2 = box
+            x1, x2 = x1 * w, x2 * w
+            y1, y2 = y1 * h, y2 * h
+            
+            width = x2 - x1
+            height = y2 - y1
+            
+            # Create rectangle patch
+            rect = patches.Rectangle(
+                (x1, y1), width, height,
+                linewidth=2, edgecolor='green', facecolor='none'
+            )
+            ax.add_patch(rect)
+            
+            # Add label if available
+            if labels is not None:
+                label_text = f'Class {labels[i]}'
+                ax.text(x1, y1-5, label_text, 
+                       bbox=dict(boxstyle='round', facecolor='green', alpha=0.5),
+                       fontsize=10, color='white')
+                
+    # Draw matched default boxes (RED)
+    if default_boxes is not None and matched_idxs is not None:
+        default_boxes = default_boxes.cpu().numpy()
+        matched_idxs = matched_idxs.cpu().numpy()
+        
+        # Only draw foreground default boxes (matched_idx >= 0)
+        foreground_mask = matched_idxs >= 0
+        matched_default_boxes = default_boxes[foreground_mask]
+        matched_gt_idxs = matched_idxs[foreground_mask]
+        
+        for i, (box, gt_idx) in enumerate(zip(matched_default_boxes, matched_gt_idxs)):
+            # Convert normalized coordinates to pixel coordinates
+            x1, y1, x2, y2 = box
+            x1, x2 = x1 * w, x2 * w
+            y1, y2 = y1 * h, y2 * h
+            
+            width = x2 - x1
+            height = y2 - y1
+            
+            # Create rectangle patch for matched default boxes (RED)
+            rect = patches.Rectangle(
+                (x1, y1), width, height,
+                linewidth=2, edgecolor='red', facecolor='none', linestyle='--', alpha=0.7
+            )
+            ax.add_patch(rect)
+            
+            # Add label showing which GT it matched to
+            if i < 10:  # Only label first 10 to avoid clutter
+                match_text = f'Match GT{gt_idx}'
+                ax.text(x1, y2+2, match_text, 
+                       bbox=dict(boxstyle='round', facecolor='red', alpha=0.5),
+                       fontsize=8, color='white')
+    
+    ax.axis('off')
+    plt.title(f'Image with {len(targets["boxes"]) if "boxes" in targets else 0} boxes')
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f'Saved debug visualization to {save_path}')
+
 
 # Helper to generate ignore_regions from detector outputs
 def generate_ignore_regions(detector_outputs, gt_targets, iou_threshold=0.5):
@@ -143,33 +242,35 @@ def apply_regression_pred_to_default_boxes(box_transform_pred,
     return pred_boxes
 
 
-def generate_default_boxes(feat, aspect_ratios, scales):
+def generate_default_boxes(features, aspect_ratios, scales, image_size):
     r"""
     Method to generate default_boxes for all feature maps of the image
     :param feat: List[(Tensor of shape B x C x Feat_H x Feat x W)]
     :param aspect_ratios: List[List[float]] aspect ratios for each feature map
     :param scales: List[float] scales for each feature map
+    :param image_size: tuple (height, width) of actual input image
     :return: default_boxes : List[(Tensor of shape N x 4)] default_boxes over all
             feature maps aggregated for each batch image
     """
 
+    img_h, img_w = image_size
     # List to store default boxes for all feature maps
     default_boxes = []
-    for k in range(len(feat)):
+    for feat_idx in range(len(features)):
         # We first add the aspect ratio 1 and scale (sqrt(scale[k])*sqrt(scale[k+1])
-        s_prime_k = math.sqrt(scales[k] * scales[k + 1])
+        s_prime_k = math.sqrt(scales[feat_idx] * scales[feat_idx + 1])
         wh_pairs = [[s_prime_k, s_prime_k]]
 
         # Adding all possible w,h pairs according to
         # aspect ratio of the feature map k
-        for ar in aspect_ratios[k]:
+        for ar in aspect_ratios[feat_idx]:
             sq_ar = math.sqrt(ar)
-            w = scales[k] * sq_ar
-            h = scales[k] / sq_ar
+            w = scales[feat_idx] * sq_ar
+            h = scales[feat_idx] / sq_ar
 
             wh_pairs.extend([[w, h]])
 
-        feat_h, feat_w = feat[k].shape[-2:]
+        feat_h, feat_w = features[feat_idx].shape[-2:]
 
         # These shifts will be the centre of each of the default boxes
         shifts_x = ((torch.arange(0, feat_w) + 0.5) / feat_w).to(torch.float32)
@@ -208,7 +309,7 @@ def generate_default_boxes(feat, aspect_ratios, scales):
     # and also convert cx,cy,w,h format of
     # default boxes to x1,y1,x2,y2
     dboxes = []
-    for _ in range(feat[0].size(0)):
+    for _ in range(features[0].size(0)):
         dboxes_in_image = default_boxes
         # x1 = cx - 0.5 * width
         # y1 = cy - 0.5 * height
@@ -221,7 +322,9 @@ def generate_default_boxes(feat, aspect_ratios, scales):
             ],
             -1,
         )
-        dboxes.append(dboxes_in_image.to(feat[0].device))
+        # Clamp default boxes to valid [0, 1] range to prevent out-of-bounds boxes
+        dboxes_in_image = dboxes_in_image.clamp(min=0.0, max=1.0)
+        dboxes.append(dboxes_in_image.to(features[0].device))
     return dboxes
 
 
@@ -357,7 +460,7 @@ class RoiSSD(nn.Module):
         self.bbox_reg_heads = nn.ModuleList()
         for channels, aspect_ratio in zip(out_channels, self.aspect_ratios):
             # extra 1 is added for scale of sqrt(sk*sk+1)
-            self.bbox_reg_heads.append(nn.Conv2d(channels, 4 * (len(aspect_ratio)+1),
+            self.bbox_reg_heads.append(nn.Conv2d(channels, 4 * (len(aspect_ratio) + 1),
                                                  kernel_size=3,
                                                  padding=1))
 
@@ -496,7 +599,14 @@ class RoiSSD(nn.Module):
             L_R = 6      # full pyramid
         return L_R
 
-    def forward(self, x, targets=None):
+    def forward(self, x, targets=None, ignore_regions=None):
+        # Check input
+        if torch.isnan(x).any() or torch.isinf(x).any():
+            print("NaN/Inf in input!")
+            print(f"  Input range: [{x.min().item():.6f}, {x.max().item():.6f}]")
+            visualize_image_with_boxes(x, targets, save_path='debug_backbone_nan.png')
+            raise RuntimeError("Invalid input to model")
+        
         w_r, h_r = x.shape[3], x.shape[2]
         # s_r = math.sqrt(w_r*h_r)
         s_r = min(w_r, h_r)
@@ -504,9 +614,31 @@ class RoiSSD(nn.Module):
         # Call everything till conv4_3 layers first
         conv_4_3_out = self.features(x)
 
-        # Scale conv4_3 output using learnt norm scale
-        conv_4_3_out_scaled = (self.scale_weight.view(1, -1, 1, 1) *
-                               torch.nn.functional.normalize(conv_4_3_out))
+        # Check conv4_3 output before normalization
+        if torch.isnan(conv_4_3_out).any() or torch.isinf(conv_4_3_out).any():
+            print("NaN/Inf in conv_4_3_out BEFORE normalization!")
+            print(f"  Range: [{conv_4_3_out.min().item():.6f}, {conv_4_3_out.max().item():.6f}]")
+            visualize_image_with_boxes(x, targets, save_path='debug_backbone_nan.png')
+            raise RuntimeError("NaN in backbone features")
+
+         # Scale conv4_3 output using learnt norm scale
+        # Add epsilon and clamping to prevent NaN
+        conv_4_3_out_norm = torch.nn.functional.normalize(conv_4_3_out, p=2, dim=1, eps=1e-12)
+        
+        # Check for NaN/Inf after normalization
+        if torch.isnan(conv_4_3_out_norm).any() or torch.isinf(conv_4_3_out_norm).any():
+            print("NaN/Inf detected after normalization!")
+            print(f"  conv_4_3_out range: [{conv_4_3_out.min().item():.6f}, {conv_4_3_out.max().item():.6f}]")
+            print(f"  conv_4_3_out contains NaN: {torch.isnan(conv_4_3_out).any()}")
+            print(f"  conv_4_3_out contains Inf: {torch.isinf(conv_4_3_out).any()}")
+            # Replace NaN/Inf with zeros
+            conv_4_3_out_norm = torch.where(
+                torch.isnan(conv_4_3_out_norm) | torch.isinf(conv_4_3_out_norm),
+                torch.zeros_like(conv_4_3_out_norm),
+                conv_4_3_out_norm
+            )
+        
+        conv_4_3_out_scaled = self.scale_weight.view(1, -1, 1, 1) * conv_4_3_out_norm
 
         outputs = [conv_4_3_out_scaled]
 
@@ -530,6 +662,12 @@ class RoiSSD(nn.Module):
         cls_logits = []
         bbox_reg_deltas = []
         for i, features in enumerate(outputs):
+            # Debug: Check for NaN in features before prediction heads
+            if torch.isnan(features).any():
+                print(f"NaN detected in features at layer {i}!")
+                print(f"  Feature shape: {features.shape}")
+                print(f"  NaN count: {torch.isnan(features).sum().item()}")
+            
             cls_feat_i = self.cls_heads[i](features)
             bbox_reg_feat_i = self.bbox_reg_heads[i](features)
 
@@ -556,7 +694,7 @@ class RoiSSD(nn.Module):
         # Generate default_boxes for all feature maps
         scales_used = self.scales[:len(outputs)+1]
         aspect_used = self.aspect_ratios[:len(outputs)]
-        default_boxes = generate_default_boxes(outputs, aspect_used, scales_used)
+        default_boxes = generate_default_boxes(outputs, aspect_used, scales_used, image_size=(h_r, w_r))
         # default_boxes -> List[Tensor of shape 8732 x 4]
         # len(default_boxes) = Batch size
 
@@ -604,6 +742,78 @@ class RoiSSD(nn.Module):
                 matched_idxs.append(matches)
             losses = self.compute_loss(targets, cls_logits, bbox_reg_deltas,
                                        default_boxes, matched_idxs)
+            if torch.isnan(losses['classification']):
+                # Visualize each image in the batch
+                for idx, (img_tensor, target, dboxes, matched_idx, bbox_reg_per_img) in enumerate(zip(x, targets, default_boxes, matched_idxs, bbox_reg_deltas)):
+                    print(f"\nImage {idx}:")
+                    print(f"  Image shape: {img_tensor.shape}")
+                    print(f"  Image range: [{img_tensor.min().item():.3f}, {img_tensor.max().item():.3f}]")
+                    print(f"  Num GT boxes: {len(target['boxes'])}")
+                    print(f"  Num matched anchors: {(matched_idx >= 0).sum().item()}")
+                    print(f"  Total default boxes: {len(dboxes)}")
+                    
+                    # Check for invalid values in regression predictions
+                    if torch.isnan(bbox_reg_per_img).any():
+                        print(f"  *** NaN in bbox regression predictions! ***")
+                    if torch.isinf(bbox_reg_per_img).any():
+                        print(f"  *** Inf in bbox regression predictions! ***")
+                    
+                    if len(target['boxes']) > 0:
+                        print(f"  GT boxes range: [{target['boxes'].min().item():.3f}, {target['boxes'].max().item():.3f}]")
+                        print(f"  Labels: {target['labels'].tolist()}")
+                        
+                        # Check matched boxes for issues
+                        fg_mask = matched_idx >= 0
+                        if fg_mask.sum() > 0:
+                            matched_dboxes = dboxes[fg_mask]
+                            matched_gt_boxes = target['boxes'][matched_idx[fg_mask]]
+                            
+                            # Check for degenerate default boxes
+                            dbox_widths = matched_dboxes[:, 2] - matched_dboxes[:, 0]
+                            dbox_heights = matched_dboxes[:, 3] - matched_dboxes[:, 1]
+                            if (dbox_widths <= 0).any() or (dbox_heights <= 0).any():
+                                print(f"  *** Degenerate default boxes found! ***")
+                                print(f"    Min width: {dbox_widths.min().item():.6f}")
+                                print(f"    Min height: {dbox_heights.min().item():.6f}")
+                            
+                            # Check for degenerate GT boxes
+                            gt_widths = matched_gt_boxes[:, 2] - matched_gt_boxes[:, 0]
+                            gt_heights = matched_gt_boxes[:, 3] - matched_gt_boxes[:, 1]
+                            if (gt_widths <= 0).any() or (gt_heights <= 0).any():
+                                print(f"  *** Degenerate GT boxes found! ***")
+                                print(f"    Min GT width: {gt_widths.min().item():.6f}")
+                                print(f"    Min GT height: {gt_heights.min().item():.6f}")
+                            
+                            # Check for problematic ratios in bbox regression
+                            ratio_w = gt_widths / dbox_widths
+                            ratio_h = gt_heights / dbox_heights
+                            print(f"  Width ratio (gt/dbox) range: [{ratio_w.min().item():.4f}, {ratio_w.max().item():.4f}]")
+                            print(f"  Height ratio (gt/dbox) range: [{ratio_h.min().item():.4f}, {ratio_h.max().item():.4f}]")
+                            
+                            # The log of these ratios is used in loss - check if any are problematic
+                            if (ratio_w <= 0).any() or (ratio_h <= 0).any():
+                                print(f"  *** Negative or zero ratios - will cause NaN in log! ***")
+                    
+                    # Find one of the largest default boxes
+                    box_areas = (dboxes[:, 2] - dboxes[:, 0]) * (dboxes[:, 3] - dboxes[:, 1])
+                    largest_box_idx = torch.argmax(box_areas)
+                    largest_box = dboxes[largest_box_idx:largest_box_idx+1]
+                    largest_matched_idx = torch.tensor([matched_idx[largest_box_idx]])
+                    
+                    print(f"  Largest default box index: {largest_box_idx.item()}")
+                    print(f"  Largest default box: {largest_box[0].tolist()}")
+                    print(f"  Largest default box area: {box_areas[largest_box_idx].item():.4f}")
+                    print(f"  Is matched: {largest_matched_idx[0].item() >= 0}")
+                    
+                    # Save visualization
+                    save_path = f'debug_nan_image_{idx}.png'
+                    visualize_image_with_boxes(img_tensor, target, dboxes, matched_idx, save_path)
+                    save_path_largest = f'debug_nan_image_{idx}_largest_box.png'
+                    visualize_image_with_boxes(img_tensor, target, largest_box, largest_matched_idx, save_path_largest)
+                
+                print("=" * 80)
+                raise RuntimeError("NaN loss detected - see debug output above")
+                
         else:
             # For test time we do the following:
             # 1. Convert default_boxes to boxes using predicted bbox regression deltas
@@ -620,7 +830,7 @@ class RoiSSD(nn.Module):
                 boxes = apply_regression_pred_to_default_boxes(bbox_deltas_i,
                                                                default_boxes_i)
                 # Ensure all values are between 0-1
-                boxes.clamp_(min=0., max=1.)
+                boxes = boxes.clamp(min=0., max=1.)
 
                 pred_boxes = []
                 pred_scores = []
