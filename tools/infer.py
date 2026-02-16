@@ -177,7 +177,6 @@ def load_model_and_dataset(args):
     ########################
 
     dataset_config = config['dataset_params']
-    model_config = config['model_params']
     train_config = config['train_params']
 
     if str(train_config['dataset']) == 'vis-drone':
@@ -191,7 +190,8 @@ def load_model_and_dataset(args):
     elif str(train_config['dataset']) == 'voc':
         dataset = VOCDataset('test',
                      im_sets=dataset_config['test_im_sets'],
-                     im_size=dataset_config['im_size'])
+                     im_size=dataset_config['im_size'],
+                     transform_name=dataset_config['transform_name'])
     else:
         raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
     test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
@@ -205,17 +205,15 @@ def load_model_and_dataset(args):
     model.to(device=torch.device(device))
     model.eval()
 
-    assert os.path.exists(os.path.join(train_config['task_name'],
-                                       train_config['ckpt_name'])), \
-        "No checkpoint exists at {}".format(os.path.join(train_config['task_name'],
-                                                         train_config['ckpt_name']))
+    model_task_path = os.path.join('trained_models', train_config['task_name'])
+    model_checkpoint_path = os.path.join(model_task_path, train_config['ckpt_name'])
+    assert os.path.exists(model_checkpoint_path), \
+        "No checkpoint exists at {}".format(model_checkpoint_path)
     # Load checkpoint if it exists (after creating optimizer and scheduler)
-    if os.path.exists(os.path.join(train_config['task_name'],
-                                   train_config['ckpt_name'])):
+    if os.path.exists(model_checkpoint_path):
         print('Loading checkpoint as one exists')
         checkpoint = torch.load(
-            os.path.join(train_config['task_name'],
-                         train_config['ckpt_name']),
+            model_checkpoint_path,
             map_location=device)
         
         # Handle both old format (state_dict only) and new format (full checkpoint)
@@ -231,8 +229,9 @@ def load_model_and_dataset(args):
 
 
 def infer(args):
-    if not os.path.exists('samples'):
-        os.mkdir('samples')
+    samples_path = args.samples_path if args.samples_path else 'samples'
+    if not os.path.exists(samples_path):
+        os.mkdir(samples_path)
 
     model, dataset_dataset, test_dataset_loader, config = load_model_and_dataset(args)
     conf_threshold = config['train_params']['infer_conf_threshold']
@@ -270,7 +269,7 @@ def infer(args):
                         color=[0, 0, 0],
                         fontFace=cv2.FONT_HERSHEY_PLAIN)
         cv2.addWeighted(gt_im_copy, 0.7, gt_im, 0.3, 0, gt_im)
-        cv2.imwrite('samples/output_ssd_gt_{}.png'.format(i), gt_im)
+        cv2.imwrite(os.path.join(samples_path, 'output_ssd_gt_{}.png'.format(i)), gt_im)
 
         # Getting predictions from trained model
         boxes = ssd_detections[0]['boxes']
@@ -303,7 +302,7 @@ def infer(args):
                         color=[0, 0, 0],
                         fontFace=cv2.FONT_HERSHEY_PLAIN)
         cv2.addWeighted(im_copy, 0.7, im, 0.3, 0, im)
-        cv2.imwrite('samples/output_ssd_{}.jpg'.format(i), im)
+        cv2.imwrite(os.path.join(samples_path, 'output_ssd_{}.jpg'.format(i)), im)
 
     print('Done Detecting...')
 
@@ -357,6 +356,31 @@ def evaluate_map(args):
                                                 all_aps[voc.idx2label[idx]]))
     print('Mean Average Precision : {:.4f}'.format(mean_ap))
 
+    model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
+    # Write results to map.txt
+    map_file_path = os.path.join(model_task_path, 'mAp.txt')
+    with open(map_file_path, 'w') as f:
+        f.write('Class Wise Average Precisions\n')
+        f.write('=' * 50 + '\n')
+        for idx in range(len(voc.idx2label)):
+            ap_value = all_aps[voc.idx2label[idx]]
+            f.write('AP for class {} = {:.4f}\n'.format(voc.idx2label[idx], ap_value))
+        f.write('=' * 50 + '\n')
+        f.write('Mean Average Precision : {:.4f}\n'.format(mean_ap))
+    
+    print(f'Results saved to {map_file_path}')
+
+def infer_and_evaluate(args):
+    with torch.no_grad():
+        if args.infer_samples:
+            infer(args)
+        else:
+            print('Not Inferring for samples as `infer_samples` argument is False')
+
+        if args.evaluate:
+            evaluate_map(args)
+        else:
+            print('Not Evaluating as `evaluate` argument is False')
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Arguments for ssd inference')
@@ -368,13 +392,4 @@ if __name__ == '__main__':
                         default=True, type=bool)
     args = parser.parse_args()
 
-    with torch.no_grad():
-        if args.infer_samples:
-            infer(args)
-        else:
-            print('Not Inferring for samples as `infer_samples` argument is False')
-
-        if args.evaluate:
-            evaluate_map(args)
-        else:
-            print('Not Evaluating as `evaluate` argument is False')
+    infer_and_evaluate(args)

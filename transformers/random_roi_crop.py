@@ -152,10 +152,31 @@ class RandomROICrop(torch.nn.Module):
             return image, target
 
         new_boxes = new_boxes[keep]
-        new_target = target.copy()
-        new_target["bboxes"] = new_boxes
 
+        # Update canvas_size for the cropped image
+        from torchvision import tv_tensors
+        
+        # Recreate BoundingBoxes with updated canvas_size
+        if hasattr(boxes, 'format'):
+            # If original boxes were tv_tensors.BoundingBoxes
+            new_boxes = tv_tensors.BoundingBoxes(
+                new_boxes,
+                format=boxes.format,
+                canvas_size=(crop_h, crop_w)  # Updated canvas size
+            )
+        
+        # Create new target dict
+        new_target = dict(target)
+        
+        # Handle both "boxes" and "bboxes" keys
+        if "boxes" in target:
+            new_target["boxes"] = new_boxes
+        if "bboxes" in target:
+            new_target["bboxes"] = new_boxes
+        
         if "labels" in target:
             new_target["labels"] = target["labels"][keep]
+        if "difficult" in target:
+            new_target["difficult"] = target["difficult"][keep]
 
         return image_cropped, new_target

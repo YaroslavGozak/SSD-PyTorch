@@ -279,14 +279,6 @@ class RoiSSD(nn.Module):
         # otherwise vgg conv4_3 output will be 37x37
         self.features = nn.Sequential(*backbone.features[:max_pool_stage_4_pos])
         
-        # Freeze conv1 and conv2 layers for fine-tuning
-        # Conv1: layers 0-4 (conv1_1, relu, conv1_2, relu, maxpool)
-        # Conv2: layers 5-9 (conv2_1, relu, conv2_2, relu, maxpool)
-        for i, layer in enumerate(self.features):
-            if i <= 9:  # Freeze conv1 and conv2 blocks (layers 0-9)
-                for param in layer.parameters():
-                    param.requires_grad = False
-
         # Learnable scale parameter for conv4_3 feature map
         self.scale_weight = nn.Parameter(torch.ones(512) * 20)
 
@@ -394,49 +386,6 @@ class RoiSSD(nn.Module):
             if module.bias is not None:
                 torch.nn.init.constant_(module.bias, 0.0)
 
-    def set_freeze_level(self, freeze_level='conv1_conv2'):
-        """
-        Control which layers to freeze for fine-tuning
-        
-        Args:
-            freeze_level (str): 
-                - 'none': Train all layers
-                - 'conv1_conv2': Freeze conv1 and conv2 blocks (recommended for VisDrone)
-                - 'conservative': Freeze early VGG layers (up to conv3_1)
-                - 'aggressive': Freeze most VGG backbone (up to conv4_3)
-                - 'backbone_only': Freeze entire VGG backbone, train only SSD heads
-        """
-        # First, unfreeze all parameters
-        for param in self.parameters():
-            param.requires_grad = True
-            
-        if freeze_level == 'none':
-            return
-        elif freeze_level == 'conv1_conv2':
-            # Freeze conv1 and conv2 blocks (layers 0-9)
-            freeze_up_to = 9
-        elif freeze_level == 'conservative':
-            # Freeze up to conv3_1 (layers 0-16)
-            freeze_up_to = 16
-        elif freeze_level == 'aggressive':
-            # Freeze up to conv4_3 (most of backbone)
-            freeze_up_to = len(self.features) - 1
-        elif freeze_level == 'backbone_only':
-            # Freeze entire backbone
-            for param in self.features.parameters():
-                param.requires_grad = False
-            for param in self.conv5_3_fc.parameters():
-                param.requires_grad = False
-            return
-        else:
-            raise ValueError(f"Unknown freeze_level: {freeze_level}")
-            
-        # Freeze specified layers
-        for i, layer in enumerate(self.features):
-            if i <= freeze_up_to:
-                for param in layer.parameters():
-                    param.requires_grad = False
-
     def compute_loss(
             self,
             targets,
@@ -444,7 +393,6 @@ class RoiSSD(nn.Module):
             bbox_regression,
             default_boxes,
             matched_idxs,
-            ignore_regions=None
     ):
         # Counting all the foreground default_boxes for computing N in loss equation
         num_foreground = 0
@@ -452,13 +400,13 @@ class RoiSSD(nn.Module):
         bbox_loss = []
         # classification targets for all batch images(for ALL default_boxes)
         cls_targets = []
-        for batch_idx, (
+        for (
             targets_per_image,
             bbox_regression_per_image,
             cls_logits_per_image,
             default_boxes_per_image,
             matched_idxs_per_image,
-        ) in enumerate(zip(targets, bbox_regression, cls_logits, default_boxes, matched_idxs)):
+        ) in zip(targets, bbox_regression, cls_logits, default_boxes, matched_idxs):
             # Foreground default_boxes -> matched_idx >=0
             # Background default_boxes -> matched_idx = -1
             fg_idxs_per_image = torch.where(matched_idxs_per_image >= 0)[0]
@@ -472,7 +420,6 @@ class RoiSSD(nn.Module):
                 foreground_matched_idxs_per_image
             ]
             bbox_regression_per_image = bbox_regression_per_image[fg_idxs_per_image, :]
-            init_default_boxes_per_image = default_boxes_per_image.clone() # clone to preserve all default boxes
             default_boxes_per_image = default_boxes_per_image[fg_idxs_per_image, :]
             target_regression = boxes_to_transformation_targets(
                 matched_gt_boxes_per_image,
@@ -483,13 +430,6 @@ class RoiSSD(nn.Module):
                                                    target_regression,
                                                    reduction='sum')
             )
-
-            ignore_mask = torch.zeros(init_default_boxes_per_image.size(0), dtype=torch.bool, device=init_default_boxes_per_image.device)
-            if ignore_regions is not None and ignore_regions[batch_idx] is not None:
-                # ignore_regions[batch_idx]: Tensor of shape [N_ignore, 4] in x1y1x2y2, normalized [0,1]
-                iou_with_ignore = get_iou(init_default_boxes_per_image, ignore_regions[batch_idx])
-                max_iou_per_box, _ = iou_with_ignore.max(dim=1)  # shape: (N,)
-                ignore_mask = max_iou_per_box > 0.5  # shape: (N,), bool
 
             # Get classification target for ALL default_boxes
             # For all default_boxes set it as 0 first
@@ -503,7 +443,6 @@ class RoiSSD(nn.Module):
             gt_classes_target[fg_idxs_per_image] = targets_per_image["labels"][
                 foreground_matched_idxs_per_image
             ]
-            gt_classes_target[ignore_mask] = -1  # Mark ignored boxes
             cls_targets.append(gt_classes_target)
 
         # Aggregated bbox loss and classification targets
@@ -514,14 +453,10 @@ class RoiSSD(nn.Module):
         # Calculate classification loss for ALL default_boxes
         num_classes = cls_logits.size(-1)
         cls_loss = torch.nn.functional.cross_entropy(cls_logits.view(-1, num_classes),
-                                                     torch.clamp(cls_targets.view(-1), min=0),  # clamp -1 to 0 for loss, will mask later
+                                                     cls_targets.view(-1),
                                                      reduction="none").view(
             cls_targets.size()
         )
-
-        # Mask out ignored boxes from loss
-        ignore_mask = (cls_targets == -1)
-        cls_loss[ignore_mask] = 0.0
 
         # Hard Negative Mining
         foreground_idxs = cls_targets > 0
@@ -561,7 +496,7 @@ class RoiSSD(nn.Module):
             L_R = 6      # full pyramid
         return L_R
 
-    def forward(self, x, targets=None, ignore_regions=None):
+    def forward(self, x, targets=None):
         w_r, h_r = x.shape[3], x.shape[2]
         # s_r = math.sqrt(w_r*h_r)
         s_r = min(w_r, h_r)
@@ -668,7 +603,7 @@ class RoiSSD(nn.Module):
                 )
                 matched_idxs.append(matches)
             losses = self.compute_loss(targets, cls_logits, bbox_reg_deltas,
-                                       default_boxes, matched_idxs, ignore_regions)
+                                       default_boxes, matched_idxs)
         else:
             # For test time we do the following:
             # 1. Convert default_boxes to boxes using predicted bbox regression deltas

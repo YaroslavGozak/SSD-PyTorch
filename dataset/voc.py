@@ -1,4 +1,7 @@
 import os
+from dataset.transforms.letterbox_transform import LetterboxTransform
+from dataset.transforms.resize_longer_edge_test_transform import ResizeLongerEdgeTestTransform
+from dataset.transforms.ssd_transform import SsdTransform
 import torch
 import torchvision.transforms.v2
 from torch.utils.data.dataset import Dataset
@@ -6,17 +9,8 @@ import xml.etree.ElementTree as ET
 from torchvision import tv_tensors
 from torchvision.io import read_image
 
-from transformers.consistent_squash_resize import ConsistentSquashResize
-from transformers.resize_longer_edge import ResizeLongerEdge
-from transformers.pad_square import PadToSquare
 
-
-def _labels_getter(transform_input):
-    """Helper function for SanitizeBoundingBoxes to extract labels and difficult flags."""
-    return (transform_input[1]["labels"], transform_input[1]["difficult"])
-
-
-def load_images_and_anns(im_sets, label2idx, ann_fname):
+def load_images_and_anns(im_sets, label2idx, ann_fname, split, task=None):
     r"""
     Method to get the xml files and for each file
     get all the objects and their ground truth detection
@@ -25,6 +19,7 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
     :param label2idx: Class Name to index mapping for dataset
     :param ann_fname: txt file containing image names{trainval.txt/test.txt}
     :param split: train/test
+    :param task: Optional task parameter
     :return:
     """
     im_infos = []
@@ -74,15 +69,22 @@ def load_images_and_anns(im_sets, label2idx, ann_fname):
 
             im_info['detections'] = detections
             im_infos.append(im_info)
-            if len(im_infos) >= 15:
+            if task == 'demo' and len(im_infos) >= 10:
                 break
     print('Total {} images found'.format(len(im_infos)))
     return im_infos
 
 
 class VOCDataset(Dataset):
-    def __init__(self, split, im_sets, im_size=300):
+
+    def _labels_getter(self, transform_input):
+        """Helper function for SanitizeBoundingBoxes to extract labels and difficult flags."""
+        return (transform_input[1]["labels"], transform_input[1]["difficult"])
+    
+    def __init__(self, split, im_sets, im_size=300, transform_name='ssd', task=None):
         self.split = split
+        self.task = task
+        self.transform_name = transform_name
 
         # Imagesets for this dataset instance (VOC2007/VOC2007+VOC2012/VOC2007-test)
         self.im_sets = im_sets
@@ -93,30 +95,14 @@ class VOCDataset(Dataset):
         self.imagenet_std = [0.229, 0.224, 0.225]
 
         # Train and test transformations
-        self.transforms = {
-            'train': torchvision.transforms.v2.Compose([
-                torchvision.transforms.v2.RandomPhotometricDistort(),
-                torchvision.transforms.v2.RandomZoomOut(fill=self.im_mean),
-                torchvision.transforms.v2.RandomIoUCrop(),
-                torchvision.transforms.v2.RandomHorizontalFlip(p=0.5),
-                ResizeLongerEdge(size=self.im_size),
-                PadToSquare(size=self.im_size, fill=self.im_mean), # short side
-                torchvision.transforms.v2.SanitizeBoundingBoxes(
-                    labels_getter=_labels_getter),
-                torchvision.transforms.v2.ToPureTensor(),
-                torchvision.transforms.v2.ToDtype(torch.float32, scale=True),
-                torchvision.transforms.v2.Normalize(mean=self.imagenet_mean,
-                                                    std=self.imagenet_std)
-
-            ]),
-            'test': torchvision.transforms.v2.Compose([
-                torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
-                torchvision.transforms.v2.ToPureTensor(),
-                torchvision.transforms.v2.ToDtype(torch.float32, scale=True),
-                torchvision.transforms.v2.Normalize(mean=self.imagenet_mean,
-                                                    std=self.imagenet_std)
-            ]),
-        }
+        if self.transform_name == 'ssd':
+            self.transforms = SsdTransform(im_size, self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
+        elif self.transform_name == 'letterbox':
+            self.transforms = LetterboxTransform(im_size, self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
+        elif self.transform_name == 'resize_longer_edge':
+            self.transforms = ResizeLongerEdgeTestTransform(im_size, self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
+        else:
+            raise Exception('Unknown transform name "{}"'.format(self.transform_name))
 
         classes = [
             'person', 'bird', 'cat', 'cow', 'dog', 'horse', 'sheep',
@@ -132,7 +118,9 @@ class VOCDataset(Dataset):
         print(self.idx2label)
         self.images_info = load_images_and_anns(self.im_sets,
                                                 self.label2idx,
-                                                self.fname)
+                                                self.fname,
+                                                self.split,
+                                                self.task)
 
     def __len__(self):
         return len(self.images_info)

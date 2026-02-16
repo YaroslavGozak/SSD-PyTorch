@@ -1,13 +1,16 @@
-import torch
 import argparse
-import yaml
-from tqdm import tqdm
-from dataset.testtransform_dataset import TestTransformDataset
-from dataset.visdroneroissd import VisDroneRoiSsdDataset
-from torch.utils.data.dataloader import DataLoader
-import matplotlib.pyplot as plt
+import glob
 
+import yaml
+from dataset.voc import VOCDataset
+import torch
+import matplotlib.pyplot as plt
+import tqdm
+
+from dataset.ytbb import YTBBDataset
 from tools.roi_merger import area
+
+IMG_DIR = "D:\\YouTube\\ytbb_dataset\\ResizedSequences\\AAB6lO-XiKE"
 
 if not torch.cuda.is_available():
     raise Exception('CUDA not available')
@@ -25,87 +28,80 @@ def collate_function(data):
     return tuple(zip(*data))
 
 
-def test_transform():
+def test_transform(args):
     def prep(img):
         img = img.cpu().detach()
         if img.ndim == 3:           # RGB or grayscale
             img = img.permute(1, 2, 0)
         return img.numpy()
     
-    dataset = TestTransformDataset(512)
+    # Read the config file #
+    with open(args.config_path, 'r') as file:
+        try:
+            config = yaml.safe_load(file)
+        except yaml.YAMLError as exc:
+            print(exc)
+    print(config)
+    #########################
 
-    (im, target, transformed_im, simple_targets, simple_v2_targets, greedy_targets) = dataset.get_image("H:\\Projects\\University\\NeuralNetworks_ModelsAndDatasets\\Datasets\\VisDrone2019-VID-train\\VisDrone2019-VID-train\\ResizedSequences\\uav0000140_01590_v\\0000030.jpg")
-    
-    im = prep(im)
-    transformed_im = prep(transformed_im)
-    fig, ax = plt.subplots(2, 2, figsize=(12, 6))
-    ax[0,0].imshow(im)
-    ax[0,0].set_title('Original Image')
-    ax[0,0].axis('off')
-    bboxes = target['bboxes'].cpu().numpy()
-    print('original_boxes', bboxes)
-    for box, label in zip(bboxes, target['labels'].cpu().numpy()):
-        xmin, ymin, xmax, ymax = box
-        rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
-                             fill=False, color='green', linewidth=2)
-        ax[0,0].add_patch(rect)
-        ax[0,0].text(xmin, ymin - 5, dataset.idx2label.get(label, str(label)),
-                   color='green', fontsize=10, backgroundcolor='white')
-    ax[0,0].text(im.shape[1] - 50, 15, str(len(bboxes)),
-                   color='green', fontsize=10, backgroundcolor='white')
-    ax[0,0].text(im.shape[1] - 50, 35, f'Area: {sum(area(box) for box in bboxes):.0f}',
-                   color='green', fontsize=10, backgroundcolor='white')
-    ax[0,0].text(im.shape[1] - 50, 55, f'Image area: {im.shape[1] * im.shape[0]:.0f}',
-                   color='green', fontsize=10, backgroundcolor='white')
+    dataset_config = config['dataset_params']
+    split = 'test'
+    im_sets = dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets']
+    transform_name = dataset_config['transform_name']
+    # dataset = YTBBDataset('train', "D:\\Datasets\\YouTube\\ytbb_dataset", im_size=512)
+    dataset = VOCDataset(split,
+                     im_sets=im_sets, im_size=512, transform_name=transform_name, task='demo')
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
 
-    ax[1,0].imshow(transformed_im)
-    ax[1,0].set_title('Simple v2 merge Image')
-    ax[1,0].axis('off')
-    transformed_bboxes = simple_v2_targets['bboxes'].cpu().numpy()
-    print('transformed_boxes', transformed_bboxes)
-    for box in transformed_bboxes:
-        xmin, ymin, xmax, ymax = box
-        rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
-                             fill=False, color='red', linewidth=2)
-        ax[1,0].add_patch(rect)
-    ax[1,0].text(im.shape[1] - 50, 15, str(len(transformed_bboxes)),
-                   color='green', fontsize=10, backgroundcolor='white')
-    ax[1,0].text(im.shape[1] - 50, 35, f'Area: {sum(area(box) for box in transformed_bboxes):.0f}',
-                   color='green', fontsize=10, backgroundcolor='white')
+    image_paths = sorted(glob.glob(f"{IMG_DIR}/*.jpg"))
+
+    from torch.utils.data import DataLoader
+    dataloader = DataLoader(dataset, batch_size=1, shuffle=False, collate_fn=collate_function)
+
+    for idx, (ims, targets, _) in enumerate(tqdm.tqdm(dataloader)):
+    # for idx, img_path in enumerate(image_paths):
+
+        # (_, _, _, _, _, _, transformed_im, transformed_targets) = dataset.get_image(img_path)
         
-    ax[1,1].imshow(im)
-    ax[1,1].set_title('Simple merge Image')
-    ax[1,1].axis('off')
-    simple_bboxes = simple_targets['bboxes'].cpu().numpy()
-    print('simple_boxes', simple_bboxes)
-    for box in simple_bboxes:
-        xmin, ymin, xmax, ymax = box
-        rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
-                             fill=False, color='red', linewidth=2)
-        ax[1,1].add_patch(rect)
-    ax[1,1].text(im.shape[1] - 50, 15, str(len(simple_bboxes)),
-                   color='green', fontsize=10, backgroundcolor='white')
-    ax[1,1].text(im.shape[1] - 50, 35, f'Area: {sum(area(box) for box in simple_bboxes):.0f}',
-                   color='green', fontsize=10, backgroundcolor='white')
-        
-    ax[0,1].imshow(im)
-    ax[0,1].set_title('Greedy merge Image')
-    ax[0,1].axis('off')
-    greedy_bboxes = greedy_targets['bboxes'].cpu().numpy()
-    print('greedy_boxes', greedy_bboxes)
-    for box in greedy_bboxes:
-        xmin, ymin, xmax, ymax = box
-        rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
-                             fill=False, color='red', linewidth=2)
-        ax[0,1].add_patch(rect)
-    ax[0,1].text(im.shape[1] - 50, 15, str(len(greedy_bboxes)),
-                   color='green', fontsize=10, backgroundcolor='white')
-    ax[0,1].text(im.shape[1] - 50, 35, f'Area: {sum(area(box) for box in greedy_bboxes):.0f}',
-                   color='green', fontsize=10, backgroundcolor='white')
-        
-    plt.tight_layout()
+        # im = prep(im)
+
+
+        transformed_targets = targets[0]
+        transformed_im = prep(ims[0])
+
+        h, w = ims[0].shape[-2:]
+        wh_tensor = torch.as_tensor([[w, h, w, h]]).expand_as(transformed_targets['bboxes'])
+        transformed_targets['bboxes'] = transformed_targets['bboxes'] * wh_tensor
+
+        ax.clear()
+        ax.imshow(transformed_im)
+        ax.set_title('Transformed Image')
+        ax.axis('off')
+        bboxes = transformed_targets['bboxes'].cpu().numpy()
+        print('original_boxes', bboxes)
+        for box, label in zip(bboxes, transformed_targets['labels'].cpu().numpy()):
+            xmin, ymin, xmax, ymax = box
+            rect = plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
+                                fill=False, color='green', linewidth=2)
+            ax.add_patch(rect)
+            ax.text(xmin, ymin - 5, dataset.idx2label.get(label, str(label)),
+                    color='green', fontsize=10, backgroundcolor='white')
+        ax.text(transformed_im.shape[1] - 50, 15, str(len(bboxes)),
+                    color='green', fontsize=10, backgroundcolor='white')
+        ax.text(transformed_im.shape[1] - 50, 35, f'Area: {sum(area(box) for box in bboxes):.0f}',
+                    color='green', fontsize=10, backgroundcolor='white')
+        ax.text(transformed_im.shape[1] - 50, 55, f'Image area: {transformed_im.shape[1] * transformed_im.shape[0]:.0f}',
+                    color='green', fontsize=10, backgroundcolor='white')
+        plt.pause(4) 
+      
+    plt.ioff()
     plt.show()
 
 
 if __name__ == '__main__':
-    test_transform()
+    parser = argparse.ArgumentParser(description='Arguments for ssd training (testing transform)')
+    parser.add_argument('--config', dest='config_path',
+                        default='config/voc.yaml', type=str)
+    args = parser.parse_args()
+    
+    test_transform(args)

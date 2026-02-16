@@ -1,3 +1,4 @@
+from tools.infer import infer_and_evaluate
 import torch
 import argparse
 import os
@@ -64,7 +65,8 @@ def train(args):
     elif str(train_config['dataset']) == 'voc':
         dataset = VOCDataset('train',
                      im_sets=dataset_config['train_im_sets'],
-                     im_size=dataset_config['im_size'])
+                     im_size=dataset_config['im_size'],
+                     transform_name=dataset_config['transform_name'])
     else:
         raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
     train_dataset_loader = DataLoader(dataset,
@@ -92,10 +94,22 @@ def train(args):
     pretrained_detector.eval()
     
     model.to(device)
+
+    # Check model weights for NaN at start of each epoch
+    for name, param in model.named_parameters():
+        if torch.isnan(param).any() or torch.isinf(param).any():
+            print(f"NaN/Inf found in parameter: {name}")
+            print(f"  Shape: {param.shape}")
+            print(f"  NaN count: {torch.isnan(param).sum().item()}")
+            print(f"  Inf count: {torch.isinf(param).sum().item()}")
+            raise RuntimeError("Model weights contain NaN/Inf - cannot continue training")
+            
     model.train()
     
-    if not os.path.exists(train_config['task_name']):
-        os.mkdir(train_config['task_name'])
+    model_task_path = os.path.join('trained_models', train_config['task_name'])
+    model_checkpoint_path = os.path.join(model_task_path, train_config['ckpt_name'])
+    if not os.path.exists(model_task_path):
+        os.makedirs(model_task_path, exist_ok=True)
 
     optimizer = torch.optim.SGD(lr=train_config['lr'],
                                 params=model.parameters(),
@@ -103,13 +117,9 @@ def train(args):
     lr_scheduler = MultiStepLR(optimizer, milestones=train_config['lr_steps'], gamma=0.5)
     
     # Load checkpoint if it exists (after creating optimizer and scheduler)
-    if os.path.exists(os.path.join(train_config['task_name'],
-                                   train_config['ckpt_name'])):
+    if os.path.exists(model_checkpoint_path):
         print('Loading checkpoint as one exists')
-        checkpoint = torch.load(
-            os.path.join(train_config['task_name'],
-                         train_config['ckpt_name']),
-            map_location=device)
+        checkpoint = torch.load(model_checkpoint_path, map_location=device)
         
         # Handle both old format (state_dict only) and new format (full checkpoint)
         if isinstance(checkpoint, dict) and 'model' in checkpoint:
@@ -121,14 +131,18 @@ def train(args):
             # Old format - just model state_dict
             model.load_state_dict(checkpoint)
             print('Loaded model only (old checkpoint format)')
+
+    else:
+        print('No checkpoint found, starting training from scratch')
     acc_steps = train_config['acc_steps']
     num_epochs = train_config['num_epochs']
     steps = 0
 
     i_start = 0
-    if os.path.exists(os.path.join(train_config['task_name'], 'epoch.pth')):
+    epoch_path = os.path.join(model_task_path, 'epoch.pth')
+    if os.path.exists(epoch_path):
         print('Loading checkpoint epoch as one exists')
-        i_start = int(torch.load(os.path.join(train_config['task_name'], 'epoch.pth'))) + 1
+        i_start = int(torch.load(epoch_path)) + 1
     print('Starting training from epoch {}'.format(i_start))
 
     import time
@@ -172,10 +186,10 @@ def train(args):
                 # 2. Generate ignore regions
                 ignore_regions = generate_ignore_regions(detector_outputs, targets, iou_threshold=0.5)
                 # print(f"Generated ignore regions for detector_outputs {detector_outputs} \nand targets {targets} \n: {ignore_regions}")
-                batch_losses, _ = model(images, targets, ignore_regions)
             else:
                 ignore_regions = None
-                batch_losses, _ = model(images, targets)
+            
+            batch_losses, _ = model(images, targets, ignore_regions)
 
             loss = batch_losses['classification']
             loss += batch_losses['bbox_regression']
@@ -190,6 +204,19 @@ def train(args):
             ssd_localization_losses.append(batch_losses['bbox_regression'].item())
             loss = loss / acc_steps
             loss.backward()
+
+             # Check for NaN gradients before optimizer step
+            has_nan_grad = False
+            for name, param in model.named_parameters():
+                if param.grad is not None:
+                    if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                        print(f"NaN/Inf gradient in: {name}")
+                        has_nan_grad = True
+            
+            if has_nan_grad:
+                print(f"Skipping optimizer step due to NaN gradients at batch {idx}")
+                optimizer.zero_grad()
+                continue
 
             if (idx + 1) % acc_steps == 0:
                 # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Clip gradient to prevent exploding gradient
@@ -225,13 +252,11 @@ def train(args):
             'scheduler': lr_scheduler.state_dict(),
             'epoch': i
         }
-        torch.save(checkpoint, os.path.join(train_config['task_name'],
-                                train_config['ckpt_name']))
-        torch.save(i, os.path.join(train_config['task_name'],
-                                'epoch.pth'))
+        torch.save(checkpoint, model_checkpoint_path)
+        torch.save(i, os.path.join(model_task_path, 'epoch.pth'))
         
         # Save losses to CSV file
-        csv_file_path = os.path.join(train_config['task_name'], 'training_losses.csv')
+        csv_file_path = os.path.join(model_task_path, 'training_losses.csv')
         file_exists = os.path.exists(csv_file_path)
         
         with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
@@ -244,6 +269,11 @@ def train(args):
             # Write current epoch data
             writer.writerow([i+1, np.mean(ssd_classification_losses), np.mean(ssd_localization_losses)])
     print('Done Training...')
+    print('Evaluating...')
+    args.infer_samples = True
+    args.evaluate = True
+    args.samples_path = os.path.join(model_task_path, 'samples')
+    infer_and_evaluate(args)
 
 
 if __name__ == '__main__':
