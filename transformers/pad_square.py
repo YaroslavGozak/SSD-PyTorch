@@ -12,7 +12,7 @@ class PadToSquare(torch.nn.Module):
     Compatible with torchvision v2 detection targets.
     """
 
-    def __init__(self, size: int, fill=0):
+    def __init__(self, size: int, fill=(0.5, 0.5, 0.5)):
         super().__init__()
         self.size = size
         self.fill = fill
@@ -32,10 +32,28 @@ class PadToSquare(torch.nn.Module):
         pad_left = pad_w // 2
         pad_right = pad_w - pad_left
 
+        # Determine gray fill value based on image dtype and value range
+        if image.dtype == torch.uint8:
+            # For uint8 images: gray = 128
+            fill = self.fill
+        else:
+            # For float images, detect if normalized or not
+            img_min = image.min().item()
+            img_max = image.max().item()
+            
+            if img_min >= -0.1 and img_max <= 1.1:
+                # Unnormalized [0, 1] range: gray = 0.5
+                fill = 0.5
+                print('Using unnormalized float fill value:', fill)
+            else:
+                # Normalized range (e.g., ImageNet): gray = 0.0 (neutral)
+                fill = 0.0
+                print('Using normalized float fill value:', fill)
+
         image = F.pad(
             image,
             padding=[pad_left, pad_top, pad_right, pad_bottom],
-            fill=self.fill
+            fill=fill
         )
 
         # Update bounding boxes if present
