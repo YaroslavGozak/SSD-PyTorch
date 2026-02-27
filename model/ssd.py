@@ -452,7 +452,7 @@ class SSD(nn.Module):
                                cls_loss[background_idxs].sum()) / N,
         }
 
-    def forward(self, x, targets=None):
+    def forward(self, x, targets=None, ignore_regions=None):
         # Call everything till conv4_3 layers first
         conv_4_3_out = self.features(x)
 
