@@ -2,7 +2,9 @@ import argparse
 import glob
 
 import yaml
+from dataset.visdrone import VisDroneDataset
 from dataset.voc import VOCDataset
+from dataset.voc_small_objects import VOCSmallObjectsDataset
 import torch
 import matplotlib.pyplot as plt
 import tqdm
@@ -45,14 +47,33 @@ def test_transform(args):
     #########################
 
     dataset_config = config['dataset_params']
-    split = 'test'
+    train_config = config['train_params']
+    split = args.split
     im_sets = dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets']
     transform_name = dataset_config['transform_name']
     # dataset = YTBBDataset('train', "D:\\Datasets\\YouTube\\ytbb_dataset", im_size=512)
-    dataset = VOCDataset(split,
-                     im_sets=im_sets, im_size=512, transform_name=transform_name, task='demo')
-    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+    if str(train_config['dataset']) == 'vis-drone':
+        dataset = VisDroneDataset('test',
+                     im_sets=dataset_config['test_im_sets'],
+                     im_size=dataset_config['im_size'])
+    elif str(train_config['dataset']) == 'ytbb':
+        dataset = YTBBDataset('test',
+                     root_dir=dataset_config['root_dir'],
+                     im_size=dataset_config['im_size'])
+    elif str(train_config['dataset']) == 'voc':
+        dataset = VOCDataset('test',
+                     im_sets=dataset_config['test_im_sets'],
+                     im_size=dataset_config['im_size'],
+                     transform_name=dataset_config['transform_name'])
+    elif str(train_config['dataset']) == 'voc-small-objects':
+        dataset = VOCSmallObjectsDataset('test',
+                     im_sets=dataset_config['test_im_sets'],
+                     im_size=dataset_config['im_size'],
+                     transform_name=dataset_config['transform_name'])
+    else:
+        raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
 
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
     image_paths = sorted(glob.glob(f"{IMG_DIR}/*.jpg"))
 
     from torch.utils.data import DataLoader
@@ -102,6 +123,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Arguments for ssd training (testing transform)')
     parser.add_argument('--config', dest='config_path',
                         default='config/voc.yaml', type=str)
+    parser.add_argument('--split', dest='split',
+                        default='train', type=str)
     args = parser.parse_args()
     
     test_transform(args)

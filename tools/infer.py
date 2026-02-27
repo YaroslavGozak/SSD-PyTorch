@@ -11,6 +11,7 @@ from model.ssd import SSD
 import numpy as np
 import cv2
 from dataset.voc import VOCDataset
+from dataset.voc_small_objects import VOCSmallObjectsDataset
 from torch.utils.data.dataloader import DataLoader
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -192,6 +193,11 @@ def load_model_and_dataset(args):
                      im_sets=dataset_config['test_im_sets'],
                      im_size=dataset_config['im_size'],
                      transform_name=dataset_config['transform_name'])
+    elif str(train_config['dataset']) == 'voc-small-objects':
+        dataset = VOCSmallObjectsDataset('test',
+                     im_sets=dataset_config['test_im_sets'],
+                     im_size=dataset_config['im_size'],
+                     transform_name=dataset_config['transform_name'])
     else:
         raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
     test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
@@ -229,9 +235,9 @@ def load_model_and_dataset(args):
 
 
 def infer(args):
-    samples_path = args.samples_path if args.samples_path else 'samples'
+    samples_path = args.results_path + '/samples' if args.results_path else 'samples'
     if not os.path.exists(samples_path):
-        os.mkdir(samples_path)
+        os.makedirs(samples_path, exist_ok=True)
 
     model, dataset_dataset, test_dataset_loader, config = load_model_and_dataset(args)
     conf_threshold = config['train_params']['infer_conf_threshold']
@@ -358,17 +364,21 @@ def evaluate_map(args):
 
     model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
     # Write results to map.txt
-    map_file_path = os.path.join(model_task_path, 'mAp.txt')
-    with open(map_file_path, 'w') as f:
-        f.write('Class Wise Average Precisions\n')
-        f.write('=' * 50 + '\n')
-        for idx in range(len(voc.idx2label)):
-            ap_value = all_aps[voc.idx2label[idx]]
-            f.write('AP for class {} = {:.4f}\n'.format(voc.idx2label[idx], ap_value))
-        f.write('=' * 50 + '\n')
-        f.write('Mean Average Precision : {:.4f}\n'.format(mean_ap))
     
-    print(f'Results saved to {map_file_path}')
+    if args.results_path:
+        map_file_path = os.path.join(args.results_path, 'mAp.txt')
+        with open(map_file_path, 'w') as f:
+            f.write('Class Wise Average Precisions\n')
+            f.write('=' * 50 + '\n')
+            for idx in range(len(voc.idx2label)):
+                ap_value = all_aps[voc.idx2label[idx]]
+                f.write('AP for class {} = {:.4f}\n'.format(voc.idx2label[idx], ap_value))
+            f.write('=' * 50 + '\n')
+            f.write('Mean Average Precision : {:.4f}\n'.format(mean_ap))
+        
+        print(f'Results saved to {map_file_path}')
+    else:
+        print('No results path provided, skipping saving mAP results to file.')
 
 def infer_and_evaluate(args):
     with torch.no_grad():
