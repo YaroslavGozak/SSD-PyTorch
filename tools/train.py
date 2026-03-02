@@ -1,4 +1,7 @@
+from functools import partial
+from dataset.voc_small_objects import VOCSmallObjectsDataset
 from tools.infer import infer_and_evaluate
+from tools.multiscale_collate import MULTI_SCALE_SIZES, multi_scale_collate_fn
 import torch
 import argparse
 import os
@@ -67,12 +70,21 @@ def train(args):
                      im_sets=dataset_config['train_im_sets'],
                      im_size=dataset_config['im_size'],
                      transform_name=dataset_config['transform_name'])
+    elif str(train_config['dataset']) == 'voc-small-objects':
+        dataset = VOCSmallObjectsDataset('train',
+                     im_sets=dataset_config['train_im_sets'],
+                     im_size=dataset_config['im_size'],
+                     transform_name=dataset_config['transform_name'])
     else:
         raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
+    collate_fn = partial(multi_scale_collate_fn, sizes=MULTI_SCALE_SIZES, 
+                         fill = tuple(a + b for a, b in zip([123.0, 117.0, 104.0], (20, 20, 15))) # correct color
+    )
+    collate_fn = collate_fn if dataset_config['transform_name'] == 'no_resize_transform' else collate_function
     train_dataset_loader = DataLoader(dataset,
                                batch_size=train_config['batch_size'],
                                shuffle=True,
-                               collate_fn=collate_function,
+                               collate_fn=collate_fn,
                             #    num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
                             #    pin_memory=True,  # Add this for faster GPU transfer
                             #    persistent_workers=True, # Keep workers alive between epochs
@@ -272,7 +284,7 @@ def train(args):
     print('Evaluating...')
     args.infer_samples = True
     args.evaluate = True
-    args.samples_path = os.path.join(model_task_path, 'samples')
+    args.results_path = os.path.join(model_task_path, dataset_config['transform_name'] + '_results')
     infer_and_evaluate(args)
 
 
