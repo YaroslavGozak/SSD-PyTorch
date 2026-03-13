@@ -1,7 +1,7 @@
 from functools import partial
 from dataset.voc_small_objects import VOCSmallObjectsDataset
 from tools.infer import infer_and_evaluate
-from tools.multiscale_collate import MULTI_SCALE_SIZES, multi_scale_collate_fn
+from tools.multiscale_collate import MULTI_SCALE_SIZES, EpochAwareCollateFn, multi_scale_collate_fn
 import torch
 import argparse
 import os
@@ -12,7 +12,6 @@ import csv
 import torchvision
 from tqdm import tqdm
 from dataset.visdrone import VisDroneDataset
-from dataset.visdroneroissd import VisDroneRoiSsdDataset
 from dataset.voc import VOCDataset
 from dataset.ytbb import YTBBDataset
 from model.roissd import RoiSSD, generate_ignore_regions
@@ -77,18 +76,24 @@ def train(args):
                      transform_name=dataset_config['transform_name'])
     else:
         raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
-    collate_fn = partial(multi_scale_collate_fn, sizes=MULTI_SCALE_SIZES, 
-                         fill = tuple(a + b for a, b in zip([123.0, 117.0, 104.0], (20, 20, 15))) # correct color
-    )
-    collate_fn = collate_fn if dataset_config['transform_name'] == 'no_resize_transform' else collate_function
+    
+    _fill = tuple(a + b for a, b in zip([123.0, 117.0, 104.0], (20, 20, 15)))  # correct colour
+    if dataset_config['transform_name'] == 'no_resize_transform':
+        collate_fn = EpochAwareCollateFn(
+            num_epochs=train_config['num_epochs'],
+            fill=_fill,
+        )
+    else:
+        collate_fn = collate_function
+
     train_dataset_loader = DataLoader(dataset,
                                batch_size=train_config['batch_size'],
                                shuffle=True,
                                collate_fn=collate_fn,
-                            #    num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
-                            #    pin_memory=True,  # Add this for faster GPU transfer
-                            #    persistent_workers=True, # Keep workers alive between epochs
-                            #    prefetch_factor=2  # Prefetch 2 batches per worker
+                               num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
+                               pin_memory=True,  # Add this for faster GPU transfer
+                               persistent_workers=True, # Keep workers alive between epochs
+                               prefetch_factor=2  # Prefetch 2 batches per worker
                                ) 
 
     # Instantiate model and load checkpoint if present
@@ -159,6 +164,8 @@ def train(args):
 
     import time
     for i in range(i_start, num_epochs):
+        if isinstance(collate_fn, EpochAwareCollateFn):
+            collate_fn.epoch = i  # Update epoch in collate function for dynamic multi-scale resizing
         epoch_start_time = time.time()
         ssd_classification_losses = []
         ssd_localization_losses = []
@@ -179,6 +186,7 @@ def train(args):
             images = torch.stack([im.float() for im in ims], dim=0).to(device, non_blocking=True)
 
             if dataset.__class__.__name__ == 'YTBBDataset':
+                from model.roissd import generate_ignore_regions
                 # 1. Run pre-trained detector (e.g., yolov5, coco-ssd) on images
                 with torch.no_grad():
                     detector_outputs = []
@@ -252,6 +260,11 @@ def train(args):
         epoch_minutes = epoch_time / 60
         print('Finished epoch {}/{}'.format(i+1, num_epochs))
         print('Epoch execution time: {:.2f} minutes'.format(epoch_minutes))
+        # if isinstance(collate_fn, EpochAwareCollateFn):
+        #     collate_fn.print_and_reset_stats(i)
+        # else:
+        #     print('No epoch-aware collate function, skipping stats reset. collate_fn type: {}'.format(type(collate_fn)))
+        
         loss_output = ''
         loss_output += 'SSD Classification Loss : {:.4f}'.format(np.mean(ssd_classification_losses))
         loss_output += ' | SSD Localization Loss : {:.4f}'.format(np.mean(ssd_localization_losses))
