@@ -1,9 +1,11 @@
 import os
+from dataset.transforms.fixed_padding_roi_crop_test_transform import FixedPaddingRoiCropTestTransform
 from dataset.transforms.letterbox_transform import LetterboxTransform
+from dataset.transforms.no_resize_transform import NoResizeTransform
 from dataset.transforms.resize_longer_edge_test_transform import ResizeLongerEdgeTestTransform
+from dataset.transforms.roi_crop_test_transform import RoiCropTestTransform
 from dataset.transforms.ssd_transform import SsdTransform
 import torch
-import torchvision.transforms.v2
 from torch.utils.data.dataset import Dataset
 import xml.etree.ElementTree as ET
 from torchvision import tv_tensors
@@ -101,6 +103,13 @@ class VOCDataset(Dataset):
             self.transforms = LetterboxTransform(im_size, self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
         elif self.transform_name == 'resize_longer_edge':
             self.transforms = ResizeLongerEdgeTestTransform(im_size, self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
+        elif self.transform_name == 'roi_crop_test_transform':
+            self.transforms = RoiCropTestTransform(im_size, self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
+        elif self.transform_name == 'no_resize_transform':
+            self.transforms = NoResizeTransform(self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
+        elif self.transform_name.startswith('fixed_padding_roi_crop_'):
+            pad_value = int(self.transform_name.split('_')[-1])
+            self.transforms = FixedPaddingRoiCropTestTransform(im_size, self.imagenet_mean, self.imagenet_std, pad_x=pad_value, pad_y=pad_value).transforms
         else:
             raise Exception('Unknown transform name "{}"'.format(self.transform_name))
 
