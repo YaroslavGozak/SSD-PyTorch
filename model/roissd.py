@@ -577,10 +577,22 @@ class RoiSSD(nn.Module):
         # Fetch those indexes which have in topK(K=num_negative) losses
         background_idxs = idx.sort(1)[1] < num_negative
         N = max(1, num_foreground)
+        
+        # Add numerical stability and NaN checking
+        bbox_loss_final = bbox_loss.sum() / N
+        cls_loss_final = (cls_loss[foreground_idxs].sum() + cls_loss[background_idxs].sum()) / N
+        
+        # Check for NaN and replace with zero if found
+        if torch.isnan(bbox_loss_final):
+            print("Warning: NaN detected in bbox loss, setting to 0")
+            bbox_loss_final = torch.tensor(0.0, device=bbox_loss.device)
+        if torch.isnan(cls_loss_final):
+            print("Warning: NaN detected in classification loss, setting to 0") 
+            cls_loss_final = torch.tensor(0.0, device=cls_loss.device)
+            
         return {
-            "bbox_regression": bbox_loss.sum() / N,
-            "classification": (cls_loss[foreground_idxs].sum() +
-                               cls_loss[background_idxs].sum()) / N,
+            "bbox_regression": bbox_loss_final,
+            "classification": cls_loss_final,
         }
 
     def get_max_feature_layer_by_roi_size(self, min_dim):
