@@ -1,3 +1,4 @@
+from dataset.transforms.letterbox_transform import LetterboxTransform
 from tools.roi_merger import greedy_roi_merge, simple_roi_merge, simple_roi_merge_v2
 from tools.utils import read_annotation_file
 import torch
@@ -53,30 +54,7 @@ class TestTransformDataset():
         self.delta_y = delta_y
 
         # Train and test transformations
-        self.transforms = {
-            'train': torchvision.transforms.v2.Compose([
-                torchvision.transforms.v2.RandomPhotometricDistort(),
-                # torchvision.transforms.v2.RandomZoomOut(fill=self.im_mean),
-                # torchvision.transforms.v2.RandomIoUCrop(),
-                torchvision.transforms.v2.RandomHorizontalFlip(p=0.5),
-                # torchvision.transforms.v2.Resize(size=(self.im_size, self.im_size)),
-                # torchvision.transforms.v2.SanitizeBoundingBoxes(
-                #     labels_getter=labels_getter),
-                RandomROICrop(
-                    p=0.5,
-                    alpha_w=0.3,
-                    alpha_h=0.3,
-                    delta_x=8.0,
-                    delta_y=8.0,
-                    area_ratio_max=1.4,
-                    min_box_area=4.0
-                ),
-                torchvision.transforms.v2.ToPureTensor(),
-                torchvision.transforms.v2.ToDtype(torch.float32, scale=True),
-                # torchvision.transforms.v2.Normalize(mean=self.imagenet_mean,
-                #                                     std=self.imagenet_std)
-            ])
-        }
+        self.transforms = LetterboxTransform(im_size, self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
 
         # Extract class names from categories list
         # categories = [

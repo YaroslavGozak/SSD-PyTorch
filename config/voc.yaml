@@ -3,6 +3,7 @@ dataset_params:
   test_im_sets: ['H:\Projects\University\NeuralNetworks_ModelsAndDatasets\Datasets\VOC2007_test\VOC2007']
   num_classes : 21
   im_size : 300
+  transform_name : 'ssd'
 
 model_params:
   im_channels : 3
