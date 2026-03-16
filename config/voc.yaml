@@ -3,16 +3,13 @@ dataset_params:
   test_im_sets: ['D:\VOC\VOC2007_test\VOC2007']
   num_classes : 21
   im_size : 300
-  transform_name : 'fixed_padding_roi_crop_0'
+  transform_name : 'resize_longer_edge'
   # resize_longer_edge
   # roi_crop_test_transform
   # letterbox
   # ssd
   # no_resize_transform
-  # fixed_padding_roi_crop_20
-  # fixed_padding_roi_crop_50
-  # fixed_padding_roi_crop_100
-  # fixed_padding_roi_crop_0
+  # fixed_padding_roi_crop_X
 
 model_params:
   im_channels : 3
@@ -33,9 +30,10 @@ model_params:
   nms_threshold : 0.45
 
 train_params:
-  model: 'ssd'
+  model: 'roissd'
   dataset: 'voc'
-  task_name: 'voc-ssd'
+  task_name: 'voc-roissd-sc-tr-roi-decrease'
+  roi_mixed_stage: 3
   seed: 1111
   acc_steps: 1
   num_epochs: 100

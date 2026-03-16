@@ -633,7 +633,7 @@ class RoiSSD(nn.Module):
             visualize_image_with_boxes(x, targets, save_path='debug_backbone_nan.png')
             raise RuntimeError("NaN in backbone features")
 
-         # Scale conv4_3 output using learnt norm scale
+        # Scale conv4_3 output using learnt norm scale
         # Add epsilon and clamping to prevent NaN
         conv_4_3_out_norm = torch.nn.functional.normalize(conv_4_3_out, p=2, dim=1, eps=1e-12)
         
