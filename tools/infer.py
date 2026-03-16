@@ -4,6 +4,7 @@ import argparse
 import os
 import yaml
 import random
+import csv
 from tqdm import tqdm
 from dataset.ytbb import YTBBDataset
 from model.roissd import RoiSSD
@@ -377,6 +378,21 @@ def evaluate_map(args):
             f.write('Mean Average Precision : {:.4f}\n'.format(mean_ap))
         
         print(f'Results saved to {map_file_path}')
+        
+        # Save results to CSV file
+        csv_file_path = os.path.join(args.results_path, 'mAp.csv')
+        with open(csv_file_path, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            
+            # Header row: class names + mAP
+            header = [voc.idx2label[idx] for idx in range(len(voc.idx2label))] + ['mAP']
+            writer.writerow(header)
+            
+            # Data row: AP values + mean AP
+            data = [all_aps[voc.idx2label[idx]] for idx in range(len(voc.idx2label))] + [mean_ap]
+            writer.writerow(data)
+        
+        print(f'Results saved to {csv_file_path}')
     else:
         print('No results path provided, skipping saving mAP results to file.')
 
