@@ -1,0 +1,25 @@
+Class Wise Average Precisions
+==================================================
+AP for class background = nan
+AP for class aeroplane = 0.6603
+AP for class bicycle = 0.7691
+AP for class bird = 0.6462
+AP for class boat = 0.5725
+AP for class bottle = 0.3310
+AP for class bus = 0.7927
+AP for class car = 0.7465
+AP for class cat = 0.8123
+AP for class chair = 0.4308
+AP for class cow = 0.7393
+AP for class diningtable = 0.6540
+AP for class dog = 0.7870
+AP for class horse = 0.7991
+AP for class motorbike = 0.7338
+AP for class person = 0.6727
+AP for class pottedplant = 0.3730
+AP for class sheep = 0.6375
+AP for class sofa = 0.6584
+AP for class train = 0.7504
+AP for class tvmonitor = 0.7311
+==================================================
+Mean Average Precision : 0.6649
