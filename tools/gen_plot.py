@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 # ── Plot 1: mAP vs ROI padding (fixed_padding_results.csv) ────────────────────
 _csv_path = os.path.join(os.path.dirname(__file__),
-                         '..', 'trained_models', 'voc-roissd-scheduled-training',
+                         '..', 'trained_models', 'voc-roissd-sc-tr-roi-decrease',
                          'fixed_padding_results.csv')
 
 _crop_px = []
