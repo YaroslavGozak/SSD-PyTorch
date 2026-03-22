@@ -175,7 +175,6 @@ def load_model_and_dataset(args):
             config = yaml.safe_load(file)
         except yaml.YAMLError as exc:
             print(exc)
-    print(config)
     ########################
 
     dataset_config = config['dataset_params']
@@ -416,6 +415,8 @@ if __name__ == '__main__':
                         default=True, type=bool)
     parser.add_argument('--infer_samples', dest='infer_samples',
                         default=True, type=bool)
+    parser.add_argument('--results-path', dest='results_path',
+                        default=None, type=str)
     args = parser.parse_args()
 
     infer_and_evaluate(args)
