@@ -124,7 +124,6 @@ class VOCDataset(Dataset):
 
         self.label2idx = {classes[idx]: idx for idx in range(len(classes))}
         self.idx2label = {idx: classes[idx] for idx in range(len(classes))}
-        print(self.idx2label)
         self.images_info = load_images_and_anns(self.im_sets,
                                                 self.label2idx,
                                                 self.fname,
