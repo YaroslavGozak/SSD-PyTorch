@@ -3,6 +3,32 @@ import glob
 import os
 import matplotlib.pyplot as plt
 
+
+MODEL_LABELS = {
+    'voc-roissd': 'Стандартне навчання',
+    # 'voc-roissd-scheduled-training': 'Прогресивне навчання зі зменшеними регіонами',
+    'voc-roissd-sc-tr-roi-decrease': 'Прогресивне навчання зі зменшеними регіонами',
+}
+
+def _load_voc_ssd_baseline():
+    """Load Mean Average Precision from voc-ssd baseline"""
+    baseline_path = os.path.join(
+        os.path.dirname(__file__), '..', 'trained_models', 
+        'voc-ssd', 'ssd_results', 'mAp.txt'
+    )
+    
+    if not os.path.exists(baseline_path):
+        return None
+    
+    with open(baseline_path, 'r') as f:
+        for line in f:
+            if 'Mean Average Precision' in line:
+                try:
+                    return float(line.split(':')[1].strip())
+                except (IndexError, ValueError):
+                    return None
+    return None
+
 def _load_padding_curve(csv_path):
     model_name = os.path.basename(os.path.dirname(csv_path))
     crop_px = []
@@ -29,7 +55,7 @@ def _load_padding_curve(csv_path):
     xs, ys = zip(*pairs)
     return {
         'model': model_name,
-        'name': 'Прогресивне навчання' if model_name == 'voc-roissd-sc-tr-roi-decrease' else 'Навчена на повних кадрах',
+        'name': MODEL_LABELS.get(model_name, model_name),
         'x': list(xs),
         'y': list(ys),
         'no_crop_map': no_crop_map,
@@ -92,13 +118,16 @@ def _find_crossings(ref_curve, other_curve):
 
 
 base_dir = os.path.join(os.path.dirname(__file__), '..', 'trained_models')
-pattern = os.path.join(base_dir, 'voc-roissd*', 'fixed_padding_results.csv')
+pattern = os.path.join(base_dir, '*', 'fixed_padding_results.csv')
 csv_paths = sorted(glob.glob(pattern))
 
 if not csv_paths:
     raise FileNotFoundError(f'No files found for pattern: {pattern}')
 
-csv_paths = [p for p in csv_paths if os.path.basename(os.path.dirname(p)) != 'voc-roissd-scheduled-training']
+csv_paths = [
+    p for p in csv_paths
+    if os.path.basename(os.path.dirname(p)) in MODEL_LABELS
+]
 
 curves = []
 for csv_path in csv_paths:
@@ -112,10 +141,21 @@ if not curves:
 ref_name = 'voc-roissd-sc-tr-roi-decrease'
 ref_curve = next((c for c in curves if c['model'] == ref_name), curves[0])
 
+voc_ssd_baseline = _load_voc_ssd_baseline()
+
 fig, ax = plt.subplots(figsize=(11, 6))
 
 for curve in curves:
     ax.plot(curve['x'], curve['y'], marker='o', linewidth=2, label=curve['name'])
+
+if voc_ssd_baseline is not None:
+    ax.axhline(
+        voc_ssd_baseline,
+        color='red',
+        linestyle='--',
+        linewidth=1.2,
+        label=f"Класична SSD = {voc_ssd_baseline:.3f} mAp",
+    )
 
 if ref_curve['no_crop_map'] is not None:
     ax.axhline(
