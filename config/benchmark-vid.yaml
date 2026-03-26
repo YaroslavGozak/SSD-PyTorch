@@ -1,0 +1,48 @@
+# Video Sequence Benchmark configuration (Lane B)
+# References a training config for model/dataset loading.
+
+train_config_path: "config/voc-ue.yaml"
+
+benchmark_vid_params:
+
+  tracker:
+    type: "static_padding"   # Options: kalman | static_padding | relative_padding
+
+    kalman:
+      conf_det_min: 0.2
+      conf_low: 0.4
+      conf_high: 0.7
+      pmin: 60
+      iou_match_threshold: 0.01
+      max_misses: 10
+      uncertainty_scale_pos: 2.5
+      uncertainty_scale_size: 1.0
+      confidence_roi_scale: 0.10
+
+    static_padding:
+      pad_x: 50
+      pad_y: 50
+      conf_det_min: 0.0
+
+    relative_padding:
+      pad_ratio_x: 0.5
+      pad_ratio_y: 0.5
+      min_pad_x: 10
+      min_pad_y: 10
+      conf_det_min: 0.0
+
+  inference:
+    key_frame_interval: 10   # 1 = always full-frame (B0 mode)
+    nms_iou: 0.5
+
+  roi_merge:
+    strategy: "greedy"   # Options: greedy | simple | simple_v2 | none
+    tau: 150000.0
+
+  metrics:
+    roi_coverage_threshold: 0.5   # Min GT box area fraction inside ROI to count as covered
+
+  output:
+    results_dir: "benchmark_results/vid/"
+    results_filename: "benchmark_vid_metrics.csv"
+    verbose: true

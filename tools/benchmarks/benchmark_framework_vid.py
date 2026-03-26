@@ -1,0 +1,386 @@
+"""
+Lane B — Video Sequence Benchmark.
+
+Runs the same sequential inference pipeline as infer_sequentially_kalman_roi.py
+but without visualization. Accumulates per-frame data and reports aggregate metrics:
+
+Detection quality  : mAP@0.50, mAP@0.95
+Speed              : fps, latency mean/p50/p95, split by full-frame vs ROI-only, merge time
+ROI efficiency     : processed area ratio, ROI count pre/post merge
+Coverage           : GT ROI coverage mean and p5
+
+Usage:
+    python -m tools.benchmarks.benchmark_framework_vid \
+        --benchmark-config config/benchmark_vid.yaml
+"""
+import argparse
+import csv
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+import torch
+import yaml
+
+from tools.helpers.pipeline import (
+    MERGE_STRATEGIES,
+    FrameResult,
+    build_tracker,
+    clip_bbox,
+    ensure_im_size_tuple,
+    load_model_and_dataset,
+    process_frame,
+)
+from tools.infer import compute_map
+
+
+# --------------------------------------------------------------------------- #
+#  Ground-truth extraction for mAP (pixel coordinates + labels for mAP)      #
+# --------------------------------------------------------------------------- #
+def _extract_gt_for_map(
+    target: Dict[str, Any],
+    idx2label: Dict[int, str],
+    frame_w: int,
+    frame_h: int,
+) -> Tuple[Dict[str, List], Dict[str, List]]:
+    """Return (gt_dict, difficult_dict) in compute_map format, pixel coords."""
+    gt_dict: Dict[str, List] = {}
+    diff_dict: Dict[str, List] = {}
+
+    boxes_raw = labels_raw = None
+    if "bboxes" in target:
+        boxes_raw, labels_raw = target["bboxes"][0], target["labels"][0]
+    elif "boxes" in target:
+        boxes_raw, labels_raw = target["boxes"][0], target["labels"][0]
+    else:
+        return gt_dict, diff_dict
+
+    if isinstance(boxes_raw, torch.Tensor):
+        boxes_raw = boxes_raw.cpu().tolist()
+    if isinstance(labels_raw, torch.Tensor):
+        labels_raw = labels_raw.cpu().tolist()
+
+    diff_raw = None
+    if "difficult" in target:
+        dr = target["difficult"][0]
+        diff_raw = dr.cpu().tolist() if isinstance(dr, torch.Tensor) else list(dr)
+
+    for i, (box, lbl) in enumerate(zip(boxes_raw, labels_raw)):
+        x1 = float(box[0]) * frame_w
+        y1 = float(box[1]) * frame_h
+        x2 = float(box[2]) * frame_w
+        y2 = float(box[3]) * frame_h
+        cls = idx2label[int(lbl)]
+        gt_dict.setdefault(cls, []).append([x1, y1, x2, y2])
+        diff_dict.setdefault(cls, []).append(int(diff_raw[i]) if diff_raw else 0)
+
+    return gt_dict, diff_dict
+
+
+def _detections_to_map_pred(detections: List[Dict[str, Any]]) -> Dict[str, List]:
+    """Convert detection list to compute_map prediction format (pixel coords)."""
+    pred: Dict[str, List] = {}
+    for det in detections:
+        cls = str(det["class"])
+        x1, y1, x2, y2 = det["bbox"]
+        pred.setdefault(cls, []).append(
+            [float(x1), float(y1), float(x2), float(y2), float(det["confidence"])]
+        )
+    return pred
+
+
+def _gt_roi_coverage(
+    rois: List[List[int]],
+    gt_boxes: List[List[float]],
+    threshold: float = 0.5,
+) -> float:
+    """Fraction of GT boxes where (intersection area / GT area) >= threshold."""
+    if not gt_boxes:
+        return float("nan")
+    if not rois:
+        return 0.0
+    covered = 0
+    for gx1, gy1, gx2, gy2 in gt_boxes:
+        gt_area = max(0.0, (gx2 - gx1) * (gy2 - gy1))
+        for rx1, ry1, rx2, ry2 in rois:
+            ix1, iy1 = max(gx1, rx1), max(gy1, ry1)
+            ix2, iy2 = min(gx2, rx2), min(gy2, ry2)
+            inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+            if gt_area > 0 and inter / gt_area >= threshold:
+                covered += 1
+                break
+    return covered / len(gt_boxes)
+
+
+def _extract_sequence_meta(target: Dict[str, Any], fname: Any) -> Tuple[str, bool, Optional[int]]:
+    """
+    Returns (video_id, is_first_frame, frame_idx_in_video). Falls back to filename parent dir if
+    metadata is unavailable.
+    """
+    default_path = fname[0] if isinstance(fname, (list, tuple)) else fname
+    default_video_id = os.path.basename(os.path.dirname(str(default_path)))
+
+    # Targets from default collate may wrap python scalars/strings in lists.
+    video_id = target.get("video_id", default_video_id)
+    if isinstance(video_id, list):
+        video_id = video_id[0] if video_id else default_video_id
+
+    is_first = target.get("is_first_frame", False)
+    if isinstance(is_first, list):
+        is_first = is_first[0] if is_first else False
+    if isinstance(is_first, torch.Tensor):
+        is_first = bool(is_first.item())
+
+    frame_idx = target.get("frame_idx", None)
+    if isinstance(frame_idx, list):
+        frame_idx = frame_idx[0] if frame_idx else None
+    if isinstance(frame_idx, torch.Tensor):
+        frame_idx = int(frame_idx.item())
+    if frame_idx is not None:
+        frame_idx = int(frame_idx)
+
+    return str(video_id), bool(is_first), frame_idx
+
+
+# --------------------------------------------------------------------------- #
+#  Main benchmark class                                                         #
+# --------------------------------------------------------------------------- #
+class VideoSequenceBenchmark:
+    """
+    Lane B benchmark: sequential inference without visualization.
+    Accepts any tracker with update(detections, frame_shape) -> Dict interface.
+    Config is the benchmark_vid YAML.
+    """
+
+    def __init__(self, benchmark_config_path: str):
+        with open(benchmark_config_path) as f:
+            self.cfg = yaml.safe_load(f)
+
+        p = self.cfg["benchmark_vid_params"]
+        self.tracker = build_tracker(p["tracker"])
+        inf = p["inference"]
+        self.key_frame_interval = max(1, int(inf["key_frame_interval"]))
+        self.nms_iou = float(inf["nms_iou"])
+        roi_m = p["roi_merge"]
+        self.merge_fn = MERGE_STRATEGIES[roi_m["strategy"]]
+        self.merge_tau = float(roi_m.get("tau", 150000.0))
+        self.coverage_threshold = float(p["metrics"]["roi_coverage_threshold"])
+        out = p["output"]
+        self.output_dir = out["results_dir"]
+        self.results_filename = out["results_filename"]
+        self.verbose = bool(out.get("verbose", True))
+        Path(self.output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Build an args namespace that load_model_and_dataset expects
+        self._train_config_path = self.cfg["train_config_path"]
+
+    def run(self) -> Dict[str, Any]:
+        args = argparse.Namespace(config_path=self._train_config_path)
+        model, dataset, data_loader, train_cfg = load_model_and_dataset(args)
+
+        conf_threshold = train_cfg["train_params"]["infer_conf_threshold"]
+        model.low_score_threshold = conf_threshold
+
+        im_size_hw = ensure_im_size_tuple(train_cfg["dataset_params"]["im_size"])
+        model_device = next(model.parameters()).device
+        total_frames = len(data_loader)
+
+        self.tracker.reset()
+        next_frame_rois: List[List[int]] = []
+        current_video_id: Optional[str] = None
+
+        predictions, ground_truths, difficulties = [], [], []
+        lat_full, lat_roi, lat_merge = [], [], []
+        area_ratios, roi_counts_pre, roi_counts_post, gt_coverages = [], [], [], []
+
+        if self.verbose:
+            print(f"Total frames: {total_frames}  |  key_frame_interval: {self.key_frame_interval}")
+
+        frame_idx = 0
+        with torch.no_grad():
+            for im_tensor, target, fname in data_loader:
+                frame_idx += 1
+                if self.verbose and frame_idx % max(1, total_frames // 10) == 0:
+                    pct = frame_idx / total_frames * 100
+                    print(f"  {frame_idx}/{total_frames} ({pct:.0f}%)")
+
+                fpath = os.path.abspath(fname[0] if isinstance(fname, (list, tuple)) else fname)
+                frame_bgr = cv2.imread(fpath)
+                if frame_bgr is None:
+                    continue
+                frame_h, frame_w = frame_bgr.shape[:2]
+                frame_area = frame_w * frame_h
+
+                tgt = target[0] if isinstance(target, list) else target
+                video_id, is_first_frame, frame_idx_in_video = _extract_sequence_meta(tgt, fname)
+                if current_video_id is None:
+                    current_video_id = video_id
+
+                # Hard reset on video boundary to prevent state leakage.
+                if is_first_frame or video_id != current_video_id:
+                    self.tracker.reset()
+                    next_frame_rois = []
+                    current_video_id = video_id
+
+                effective_frame_idx = frame_idx_in_video if frame_idx_in_video is not None else frame_idx
+
+                result: FrameResult = process_frame(
+                    model=model,
+                    idx2label=dataset.idx2label,
+                    frame_bgr=frame_bgr,
+                    im_tensor=im_tensor,
+                    tracker=self.tracker,
+                    next_frame_rois=next_frame_rois,
+                    frame_idx=effective_frame_idx,
+                    key_frame_interval=self.key_frame_interval,
+                    im_size_hw=im_size_hw,
+                    conf_threshold=conf_threshold,
+                    nms_iou=self.nms_iou,
+                    merge_fn=self.merge_fn,
+                    merge_tau=self.merge_tau,
+                    model_device=model_device,
+                )
+                next_frame_rois = result.next_frame_rois
+                final_dets = result.final_detections
+                rois_used = result.rois_used
+
+                # Accumulate timing into separate buckets for reporting
+                if result.use_full_frame:
+                    lat_full.append(result.latency_s)
+                else:
+                    lat_roi.append(result.latency_s)
+                    lat_merge.append(result.merge_latency_s)
+                    roi_counts_pre.append(len(next_frame_rois) + len(rois_used))  # pre-merge estimate
+                    roi_counts_post.append(len(rois_used))
+
+                # Accumulate predictions / GT for mAP
+                predictions.append(_detections_to_map_pred(final_dets))
+                gt_d, diff_d = _extract_gt_for_map(tgt, dataset.idx2label, frame_w, frame_h)
+                ground_truths.append(gt_d)
+                difficulties.append(diff_d)
+
+                # Processed area ratio
+                if result.use_full_frame:
+                    area_ratios.append(1.0)
+                elif rois_used:
+                    roi_area = sum(max(0, r[2]-r[0]) * max(0, r[3]-r[1]) for r in rois_used)
+                    area_ratios.append(roi_area / frame_area)
+
+                # GT ROI coverage
+                all_gt = [b for boxes in gt_d.values() for b in boxes]
+                search_rois = rois_used if not result.use_full_frame else [[0, 0, frame_w - 1, frame_h - 1]]
+                gt_coverages.append(_gt_roi_coverage(search_rois, all_gt, self.coverage_threshold))
+
+        metrics = self._compute(
+            predictions, ground_truths, difficulties,
+            lat_full, lat_roi, lat_merge,
+            area_ratios, roi_counts_pre, roi_counts_post, gt_coverages,
+            frame_idx, train_cfg,
+        )
+        self._print(metrics)
+        self._save(metrics)
+        return metrics
+
+    # ------------------------------------------------------------------ #
+    def _compute(
+        self, predictions, ground_truths, difficulties,
+        lat_full, lat_roi, lat_merge,
+        area_ratios, roi_counts_pre, roi_counts_post, gt_coverages,
+        n_frames, cfg,
+    ) -> Dict[str, Any]:
+        if self.verbose:
+            print("\nComputing metrics...")
+
+        mAP50, aps50 = compute_map(predictions, ground_truths, iou_threshold=0.5,  difficult=difficulties)
+        mAP95, aps95 = compute_map(predictions, ground_truths, iou_threshold=0.95, difficult=difficulties)
+
+        def ms(arr): return np.array(arr) * 1000 if arr else np.array([float("nan")])
+        def smean(a): return float(np.nanmean(a)) if len(a) else float("nan")
+        def sperc(a, p): return float(np.nanpercentile(a, p)) if len(a) else float("nan")
+
+        all_lat_ms = ms(lat_full + lat_roi)
+        return {
+            "dataset":   cfg["train_params"]["dataset"],
+            "model":     cfg["train_params"]["model"],
+            "num_frames": n_frames,
+            "key_frame_interval": self.key_frame_interval,
+            "tracker_type": self.cfg["benchmark_vid_params"]["tracker"]["type"],
+            # Detection quality
+            "mAP50": float(mAP50),
+            "mAP95": float(mAP95),
+            "per_class_ap50": {k: float(v) for k, v in aps50.items()},
+            "per_class_ap95": {k: float(v) for k, v in aps95.items()},
+            # Speed
+            "fps_total":               float(len(lat_full + lat_roi) / max(sum(lat_full + lat_roi), 1e-9)),
+            "latency_mean_ms":         smean(all_lat_ms),
+            "latency_p50_ms":          sperc(all_lat_ms, 50),
+            "latency_p95_ms":          sperc(all_lat_ms, 95),
+            "latency_full_frame_mean_ms": smean(ms(lat_full)),
+            "latency_roi_mean_ms":     smean(ms(lat_roi)),
+            "merge_latency_mean_ms":   smean(ms(lat_merge)),
+            # ROI efficiency
+            "full_frame_fraction":      len(lat_full) / max(n_frames, 1),
+            "processed_area_ratio_mean": smean(np.array(area_ratios)),
+            "processed_area_ratio_p95":  sperc(np.array(area_ratios), 95),
+            "roi_count_pre_merge_mean":  smean(np.array(roi_counts_pre))  if roi_counts_pre  else float("nan"),
+            "roi_count_post_merge_mean": smean(np.array(roi_counts_post)) if roi_counts_post else float("nan"),
+            # Coverage
+            "gt_roi_coverage_mean": smean(np.array(gt_coverages)),
+            "gt_roi_coverage_p5":   sperc(np.array(gt_coverages), 5),
+        }
+
+    def _print(self, m: Dict[str, Any]) -> None:
+        print("\n" + "=" * 70)
+        print("VIDEO BENCHMARK RESULTS")
+        print("=" * 70)
+        print(f"Dataset: {m['dataset']}  Model: {m['model']}  Tracker: {m['tracker_type']}")
+        print(f"Frames: {m['num_frames']}  Key-frame interval: {m['key_frame_interval']}")
+        print(f"\n{'Detection Quality':─<35}")
+        print(f"  mAP@0.50 : {m['mAP50']:.4f}")
+        print(f"  mAP@0.95 : {m['mAP95']:.4f}")
+        print(f"\n{'Speed':─<35}")
+        print(f"  FPS (total)               : {m['fps_total']:.2f}")
+        print(f"  Latency mean / p50 / p95  : {m['latency_mean_ms']:.1f} / {m['latency_p50_ms']:.1f} / {m['latency_p95_ms']:.1f} ms")
+        print(f"  Full-frame latency (mean) : {m['latency_full_frame_mean_ms']:.1f} ms")
+        print(f"  ROI-only   latency (mean) : {m['latency_roi_mean_ms']:.1f} ms")
+        print(f"  ROI merge  latency (mean) : {m['merge_latency_mean_ms']:.2f} ms")
+        print(f"\n{'ROI Efficiency':─<35}")
+        print(f"  Full-frame fraction       : {m['full_frame_fraction']:.3f}")
+        print(f"  Processed area ratio mean : {m['processed_area_ratio_mean']:.3f}  (p95={m['processed_area_ratio_p95']:.3f})")
+        print(f"  ROI count pre-merge (mean): {m['roi_count_pre_merge_mean']:.1f}")
+        print(f"  ROI count post-merge(mean): {m['roi_count_post_merge_mean']:.1f}")
+        print(f"  GT ROI coverage mean      : {m['gt_roi_coverage_mean']:.3f}  (p5={m['gt_roi_coverage_p5']:.3f})")
+        print("=" * 70)
+
+    def _save(self, m: Dict[str, Any]) -> None:
+        path = os.path.join(self.output_dir, self.results_filename)
+        flat: Dict[str, Any] = {}
+        for k, v in m.items():
+            if isinstance(v, dict):
+                for kk, vv in v.items():
+                    flat[f"{k}_{kk}"] = vv
+            else:
+                flat[k] = v
+        with open(path, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=sorted(flat.keys()))
+            w.writeheader()
+            w.writerow(flat)
+        print(f"\nResults saved to: {path}")
+
+
+# --------------------------------------------------------------------------- #
+#  CLI                                                                          #
+# --------------------------------------------------------------------------- #
+def main():
+    parser = argparse.ArgumentParser(description="Lane B Video Sequence Benchmark")
+    parser.add_argument("--benchmark-config", default="config/benchmark-vid.yaml",
+                        help="Path to benchmark_vid YAML configuration")
+    args = parser.parse_args()
+    bench = VideoSequenceBenchmark(args.benchmark_config)
+    bench.run()
+
+
+if __name__ == "__main__":
+    main()

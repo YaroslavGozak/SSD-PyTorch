@@ -89,10 +89,10 @@ def compute_map(det_boxes, gt_boxes, iou_threshold=0.5, method='area', difficult
         cls_dets = sorted(cls_dets, key=lambda k: -k[1][-1])
 
         # For tracking which gt boxes of this class have already been matched
-        gt_matched = [[False for _ in im_gts[label]] for im_gts in gt_boxes]
+        gt_matched = [[False for _ in im_gts.get(label, [])] for im_gts in gt_boxes]
         # Number of gt boxes for this class for recall calculation
-        num_gts = sum([len(im_gts[label]) for im_gts in gt_boxes])
-        num_difficults = sum([sum(difficults_label[label]) for difficults_label in difficult])
+        num_gts = sum([len(im_gts.get(label, [])) for im_gts in gt_boxes])
+        num_difficults = sum([sum(difficults_label.get(label, [])) for difficults_label in difficult])
 
         tp = [0] * len(cls_dets)
         fp = [0] * len(cls_dets)
@@ -100,8 +100,8 @@ def compute_map(det_boxes, gt_boxes, iou_threshold=0.5, method='area', difficult
         # For each prediction
         for det_idx, (im_idx, det_pred) in enumerate(cls_dets):
             # Get gt boxes for this image and this label
-            im_gts = gt_boxes[im_idx][label]
-            im_gt_difficults = difficult[im_idx][label]
+            im_gts = gt_boxes[im_idx].get(label, [])
+            im_gt_difficults = difficult[im_idx].get(label, [])
 
             max_iou_found = -1
             max_iou_gt_idx = -1

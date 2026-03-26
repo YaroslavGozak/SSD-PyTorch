@@ -1,0 +1,41 @@
+# Benchmark Configuration
+# Specifies dataset, model, and evaluation parameters for benchmarking runs
+
+benchmark_params:
+  # Dataset configuration
+  dataset:
+    name: "voc"  # Options: voc, voc-small-objects, vis-drone, ytbb
+    im_size: 300  # Input image size (int or [h, w])
+    test_im_sets: ['D:\VOC\VOC2007_test\VOC2007']
+    transform_name: "ssd"  # Options: resize_longer_edge, roi_crop_test_transform, letterbox, ssd, no_resize_transform, fixed_padding_roi_crop_X
+    
+  # Model configuration
+  model:
+    name: "roissd"  # Options: ssd, roissd, ssd_mobilenet
+    checkpoint_path: "trained_models/voc-roissd-sc-tr-roi-decrease/voc200712stage3.pth"  # Path to trained weights
+    
+  # Inference configuration
+  inference:
+    batch_size: 1
+    confidence_threshold: 0.01  # Detection confidence threshold
+    iou_threshold: 0.5  # IoU threshold for mAP calculation
+    nms_iou: 0.45  # NMS IoU threshold
+    
+  # Latency measurement
+  latency:
+    warmup_iters: 10  # Number of warmup iterations
+    test_iters: 50  # Number of timed iterations per batch
+    measure_gpu_memory: false  # Measure GPU memory usage
+    
+  # Output configuration
+  output:
+    results_dir: "benchmark_results/"  # Base directory for results
+    results_filename: "benchmark_metrics.csv"  # Output CSV filename
+    log_individual_frames: false  # Whether to log per-frame metrics
+    save_predictions: false  # Save prediction visualizations
+    verbose: true  # Print detailed output to console
+
+# Device configuration
+device:
+  type: "cuda"  # Options: cuda, mps, cpu
+  # device_id: 0  # GPU device ID (if using cuda)

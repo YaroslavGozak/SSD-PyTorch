@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 
 @dataclass
@@ -40,6 +41,10 @@ class KalmanRoiTracker:
         init_pos_var: float = 25.0,
         init_size_var: float = 25.0,
         init_vel_var: float = 100.0,
+        invalid_match_cost: float = 1e6,
+        mahalanobis_threshold: float = 9.4877,
+        cost_lambda_iou: float = 1.0,
+        cost_lambda_mahalanobis: float = 0.0,
     ):
         self.dt = dt
 
@@ -53,6 +58,11 @@ class KalmanRoiTracker:
         self.uncertainty_scale_pos = uncertainty_scale_pos
         self.uncertainty_scale_size = uncertainty_scale_size
         self.confidence_roi_scale = confidence_roi_scale
+        self.invalid_match_cost = invalid_match_cost
+        self.mahalanobis_threshold = mahalanobis_threshold
+
+        self.cost_lambda_iou = cost_lambda_iou
+        self.cost_lambda_mahalanobis = cost_lambda_mahalanobis
 
         self.F = np.array([
             [1, 0, 0, 0, dt, 0,  0,  0],
@@ -253,6 +263,11 @@ class KalmanRoiTracker:
         tracks: List[Track],
         detections: List[Dict[str, Any]],
     ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
+        """
+        Classic greedy matching based on IoU cost, with class consistency and IoU thresholding.
+         - More efficient than Hungarian for typical small numbers of tracks/detections.
+        """
+
         if not tracks or not detections:
             return [], list(range(len(tracks))), list(range(len(detections)))
 
@@ -289,6 +304,130 @@ class KalmanRoiTracker:
         unmatched_detections = [i for i in range(len(detections)) if i not in matched_detections]
 
         return matches, unmatched_tracks, unmatched_detections
+
+    # def _match_tracks_and_detections(
+    #     self,
+    #     tracks: List[Track],
+    #     detections: List[Dict[str, Any]],
+    # ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
+    #     """
+    #     Uses Hungarian algorithm for optimal assignment based on IoU cost.
+    #      - Only considers pairs with matching class and IoU above threshold.
+    #     """
+
+    #     if not tracks or not detections:
+    #         return [], list(range(len(tracks))), list(range(len(detections)))
+
+    #     num_tracks = len(tracks)
+    #     num_dets = len(detections)
+
+    #     cost_matrix = np.full((num_tracks, num_dets), self.invalid_match_cost, dtype=float)
+
+    #     for ti, track in enumerate(tracks):
+    #         track_bbox = self._state_to_bbox(track.x)
+
+    #         for di, det in enumerate(detections):
+    #             if track.cls != det["class"]:
+    #                 continue
+
+    #             iou = self._iou(track_bbox, det["bbox"])
+    #             if iou < self.iou_match_threshold:
+    #                 continue
+
+    #             cost_matrix[ti, di] = 1.0 - iou
+
+    #     row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+    #     matches = []
+    #     matched_tracks = set()
+    #     matched_detections = set()
+
+    #     for ti, di in zip(row_ind, col_ind):
+    #         if cost_matrix[ti, di] >= self.invalid_match_cost:
+    #             continue
+
+    #         matches.append((ti, di))
+    #         matched_tracks.add(ti)
+    #         matched_detections.add(di)
+
+    #     unmatched_tracks = [i for i in range(num_tracks) if i not in matched_tracks]
+    #     unmatched_detections = [i for i in range(num_dets) if i not in matched_detections]
+
+    #     return matches, unmatched_tracks, unmatched_detections
+
+    # def _match_tracks_and_detections(
+    #     self,
+    #     tracks: List[Track],
+    #     detections: List[Dict[str, Any]],
+    # ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
+    #     """
+    #     Matches tracks and detections using a combination of IoU and Mahalanobis distance.
+    #     Returns a list of matched track-detection pairs, unmatched tracks, and unmatched detections.
+    #     """
+
+    #     if not tracks or not detections:
+    #         return [], list(range(len(tracks))), list(range(len(detections)))
+
+    #     num_tracks = len(tracks)
+    #     num_dets = len(detections)
+
+    #     cost_matrix = np.full((num_tracks, num_dets), self.invalid_match_cost, dtype=float)
+
+    #     for ti, track in enumerate(tracks):
+    #         track_bbox = self._state_to_bbox(track.x)
+
+    #         for di, det in enumerate(detections):
+    #             if track.cls != det["class"]:
+    #                 continue
+
+    #             conf = det["confidence"]
+    #             R = self._get_adaptive_R(conf)
+
+    #             d2 = self._mahalanobis_squared(track, det["z"], R)
+    #             if d2 > self.mahalanobis_threshold:
+    #                 continue
+
+    #             iou = self._iou(track_bbox, det["bbox"])
+    #             if iou < self.iou_match_threshold:
+    #                 continue
+
+    #             cost = (
+    #                 self.cost_lambda_iou * (1.0 - iou)
+    #                 + self.cost_lambda_mahalanobis * d2
+    #             )
+    #             cost_matrix[ti, di] = cost
+
+    #     row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+    #     matches = []
+    #     matched_tracks = set()
+    #     matched_detections = set()
+
+    #     for ti, di in zip(row_ind, col_ind):
+    #         if cost_matrix[ti, di] >= self.invalid_match_cost:
+    #             continue
+
+    #         matches.append((ti, di))
+    #         matched_tracks.add(ti)
+    #         matched_detections.add(di)
+
+    #     unmatched_tracks = [i for i in range(num_tracks) if i not in matched_tracks]
+    #     unmatched_detections = [i for i in range(num_dets) if i not in matched_detections]
+
+    #     return matches, unmatched_tracks, unmatched_detections
+    
+    def _mahalanobis_squared(self, track: Track, z: np.ndarray, R: np.ndarray) -> float:
+        z_pred = self.H @ track.x
+        y = z - z_pred
+        S = self.H @ track.P @ self.H.T + R
+
+        try:
+            S_inv = np.linalg.inv(S)
+        except np.linalg.LinAlgError:
+            S_inv = np.linalg.pinv(S)
+
+        d2 = float(y.T @ S_inv @ y)
+        return d2
 
     def _build_roi(self, track: Track, frame_w: int, frame_h: int) -> List[int]:
         cx, cy, w, h = track.x[0], track.x[1], track.x[2], track.x[3]

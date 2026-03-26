@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import tqdm
 
 from dataset.ytbb import YTBBDataset
-from tools.roi_merger import area
+from tools.utils.roi_merger import area
 
 IMG_DIR = "D:\\YouTube\\ytbb_dataset\\ResizedSequences\\AAB6lO-XiKE"
 

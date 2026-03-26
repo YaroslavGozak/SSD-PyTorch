@@ -5,7 +5,7 @@ import time
 import psutil
 
 from dataset.testtransform_dataset import TestTransformDataset, load_image_and_ann
-from tools.roi_merger import simple_roi_merge, simple_roi_merge_v2, greedy_roi_merge
+from tools.helpers.roi_merger import simple_roi_merge, simple_roi_merge_v2, greedy_roi_merge
 
 dataset = TestTransformDataset(512)
 
