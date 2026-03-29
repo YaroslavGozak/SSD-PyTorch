@@ -205,6 +205,20 @@ class KalmanRoiTracker:
         track.x = self.F @ track.x
         track.P = self.F @ track.P @ self.F.T + self.Q
 
+        # Enforce physically valid box size after prediction.
+        min_size = 1.0
+        if track.x[2] < min_size:
+            track.x[2] = min_size
+            # If width is at floor, don't keep pushing it down.
+            if track.x[6] < 0.0:
+                track.x[6] = 0.0
+
+        if track.x[3] < min_size:
+            track.x[3] = min_size
+            # If height is at floor, don't keep pushing it down.
+            if track.x[7] < 0.0:
+                track.x[7] = 0.0
+
     def _update_matched_track(self, track: Track, det: Dict[str, Any]) -> None:
         conf = det["confidence"]
 
