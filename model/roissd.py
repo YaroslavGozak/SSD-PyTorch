@@ -620,9 +620,8 @@ class RoiSSD(nn.Module):
             raise RuntimeError("Invalid input to model")
         
         w_r, h_r = x.shape[3], x.shape[2]
-        # s_r = math.sqrt(w_r*h_r)
-        s_r = min(w_r, h_r)
-        max_depth = self.get_max_feature_layer_by_roi_size(s_r)
+        min_r = min(w_r, h_r)
+        max_depth = self.get_max_feature_layer_by_roi_size(min_r)
         # Call everything till conv4_3 layers first
         conv_4_3_out = self.features(x)
 
