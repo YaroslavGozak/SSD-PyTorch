@@ -28,10 +28,11 @@ from tools.helpers.pipeline import (
     MERGE_STRATEGIES,
     FrameResult,
     build_tracker,
-    clip_bbox,
     ensure_im_size_tuple,
     load_model_and_dataset,
     process_frame,
+    extract_gt_for_map,
+    extract_gt_for_tracker
 )
 from tools.infer import compute_map
 
@@ -39,45 +40,6 @@ from tools.infer import compute_map
 # --------------------------------------------------------------------------- #
 #  Ground-truth extraction for mAP (pixel coordinates + labels for mAP)      #
 # --------------------------------------------------------------------------- #
-def _extract_gt_for_map(
-    target: Dict[str, Any],
-    idx2label: Dict[int, str],
-    frame_w: int,
-    frame_h: int,
-) -> Tuple[Dict[str, List], Dict[str, List]]:
-    """Return (gt_dict, difficult_dict) in compute_map format, pixel coords."""
-    gt_dict: Dict[str, List] = {}
-    diff_dict: Dict[str, List] = {}
-
-    boxes_raw = labels_raw = None
-    if "bboxes" in target:
-        boxes_raw, labels_raw = target["bboxes"][0], target["labels"][0]
-    elif "boxes" in target:
-        boxes_raw, labels_raw = target["boxes"][0], target["labels"][0]
-    else:
-        return gt_dict, diff_dict
-
-    if isinstance(boxes_raw, torch.Tensor):
-        boxes_raw = boxes_raw.cpu().tolist()
-    if isinstance(labels_raw, torch.Tensor):
-        labels_raw = labels_raw.cpu().tolist()
-
-    diff_raw = None
-    if "difficult" in target:
-        dr = target["difficult"][0]
-        diff_raw = dr.cpu().tolist() if isinstance(dr, torch.Tensor) else list(dr)
-
-    for i, (box, lbl) in enumerate(zip(boxes_raw, labels_raw)):
-        x1 = float(box[0]) * frame_w
-        y1 = float(box[1]) * frame_h
-        x2 = float(box[2]) * frame_w
-        y2 = float(box[3]) * frame_h
-        cls = idx2label[int(lbl)]
-        gt_dict.setdefault(cls, []).append([x1, y1, x2, y2])
-        diff_dict.setdefault(cls, []).append(int(diff_raw[i]) if diff_raw else 0)
-
-    return gt_dict, diff_dict
-
 
 def _detections_to_map_pred(detections: List[Dict[str, Any]]) -> Dict[str, List]:
     """Convert detection list to compute_map prediction format (pixel coords)."""
@@ -178,7 +140,7 @@ class VideoSequenceBenchmark:
 
     def run(self) -> Dict[str, Any]:
         args = argparse.Namespace(config_path=self._train_config_path)
-        model, dataset, data_loader, train_cfg = load_model_and_dataset(args)
+        model, dataset, data_loader, train_cfg = load_model_and_dataset(self.cfg["benchmark_vid_params"]["device"], args)
 
         conf_threshold = train_cfg["train_params"]["infer_conf_threshold"]
         model.low_score_threshold = conf_threshold
@@ -224,6 +186,15 @@ class VideoSequenceBenchmark:
                     next_frame_rois = []
                     current_video_id = video_id
 
+                # Oracle detector mode: use GT detections for ROI generation instead of tracker output.
+                tracker_type = str(self.cfg["benchmark_vid_params"]["tracker"]["type"])
+                if tracker_type == "oracle_gt":
+                    oracle_dets = extract_gt_for_tracker(tgt, dataset.idx2label, frame_w, frame_h)
+                    if hasattr(self.tracker, "set_oracle_detections"):
+                        self.tracker.set_oracle_detections(oracle_dets)
+                    if hasattr(self.tracker, "preview_rois"):
+                        next_frame_rois = self.tracker.preview_rois((frame_h, frame_w))
+
                 effective_frame_idx = frame_idx_in_video if frame_idx_in_video is not None else frame_idx
 
                 result: FrameResult = process_frame(
@@ -257,7 +228,7 @@ class VideoSequenceBenchmark:
 
                 # Accumulate predictions / GT for mAP
                 predictions.append(_detections_to_map_pred(final_dets))
-                gt_d, diff_d = _extract_gt_for_map(tgt, dataset.idx2label, frame_w, frame_h)
+                gt_d, diff_d = extract_gt_for_map(tgt, dataset.idx2label, frame_w, frame_h)
                 ground_truths.append(gt_d)
                 difficulties.append(diff_d)
 
@@ -289,12 +260,14 @@ class VideoSequenceBenchmark:
         lat_full, lat_roi, lat_merge,
         area_ratios, roi_counts_pre, roi_counts_post, gt_coverages,
         n_frames, cfg,
+        detector_recall50=float('nan'), class_recalls50=None,
+        detector_recall95=float('nan'), class_recalls95=None,
     ) -> Dict[str, Any]:
         if self.verbose:
             print("\nComputing metrics...")
 
-        mAP50, aps50 = compute_map(predictions, ground_truths, iou_threshold=0.5,  difficult=difficulties)
-        mAP95, aps95 = compute_map(predictions, ground_truths, iou_threshold=0.95, difficult=difficulties)
+        mAP50, aps50, detector_recall50, class_recalls50 = compute_map(predictions, ground_truths, iou_threshold=0.5,  difficult=difficulties)
+        mAP95, aps95, detector_recall95, class_recalls95 = compute_map(predictions, ground_truths, iou_threshold=0.95, difficult=difficulties)
 
         def ms(arr): return np.array(arr) * 1000 if arr else np.array([float("nan")])
         def smean(a): return float(np.nanmean(a)) if len(a) else float("nan")
@@ -312,6 +285,10 @@ class VideoSequenceBenchmark:
             "mAP95": float(mAP95),
             "per_class_ap50": {k: float(v) for k, v in aps50.items()},
             "per_class_ap95": {k: float(v) for k, v in aps95.items()},
+            "detector_recall50": float(detector_recall50),
+            "detector_recall95": float(detector_recall95),
+            "per_class_detector_recall50": {k: float(v) for k, v in class_recalls50.items()},
+            "per_class_detector_recall95": {k: float(v) for k, v in class_recalls95.items()},
             # Speed
             "fps_total":               float(len(lat_full + lat_roi) / max(sum(lat_full + lat_roi), 1e-9)),
             "latency_mean_ms":         smean(all_lat_ms),
@@ -338,8 +315,10 @@ class VideoSequenceBenchmark:
         print(f"Dataset: {m['dataset']}  Model: {m['model']}  Tracker: {m['tracker_type']}")
         print(f"Frames: {m['num_frames']}  Key-frame interval: {m['key_frame_interval']}")
         print(f"\n{'Detection Quality':─<35}")
-        print(f"  mAP@0.50 : {m['mAP50']:.4f}")
-        print(f"  mAP@0.95 : {m['mAP95']:.4f}")
+        print(f"  mAP@0.50          : {m['mAP50']:.4f}")
+        print(f"  mAP@0.95          : {m['mAP95']:.4f}")
+        print(f"  detector_recall@50: {m['detector_recall50']:.4f}")
+        print(f"  detector_recall@95: {m['detector_recall95']:.4f}")
         print(f"\n{'Speed':─<35}")
         print(f"  FPS (total)               : {m['fps_total']:.2f}")
         print(f"  Latency mean / p50 / p95  : {m['latency_mean_ms']:.1f} / {m['latency_p50_ms']:.1f} / {m['latency_p95_ms']:.1f} ms")

@@ -15,7 +15,7 @@ from tools.helpers.pipeline import (
     extract_gt_boxes,
     load_model_and_dataset,
     process_frame,
-    device,
+    extract_gt_for_tracker
 )
 
 
@@ -25,7 +25,7 @@ def infer_sequentially_with_roi(args):
 
     benchmark_params = benchmark_cfg['benchmark_vid_params']
     train_args = argparse.Namespace(config_path=benchmark_cfg['train_config_path'])
-    model, dataset, test_dataset_loader, config = load_model_and_dataset(train_args)
+    model, dataset, test_dataset_loader, config = load_model_and_dataset(benchmark_params["device"], train_args)
     conf_threshold = config['train_params']['infer_conf_threshold']
     model.low_score_threshold = conf_threshold
 
@@ -77,6 +77,17 @@ def infer_sequentially_with_roi(args):
                     continue
                 frame_h, frame_w = frame_bgr.shape[:2]
 
+                gt_target = target[0] if isinstance(target, list) else target
+                # Oracle detector mode: use GT detections for ROI generation instead of tracker output.
+                tracker_type = str(benchmark_cfg["benchmark_vid_params"]["tracker"]["type"])
+                if tracker_type == "oracle_gt":
+                    oracle_dets = extract_gt_for_tracker(gt_target, dataset.idx2label, frame_w, frame_h)
+                    if hasattr(tracker, "set_oracle_detections"):
+                        tracker.set_oracle_detections(oracle_dets)
+                    if hasattr(tracker, "preview_rois"):
+                        next_frame_rois = tracker.preview_rois((frame_h, frame_w))
+
+                model_device = next(model.parameters()).device
                 result: FrameResult = process_frame(
                     model=model,
                     idx2label=dataset.idx2label,
@@ -91,7 +102,7 @@ def infer_sequentially_with_roi(args):
                     nms_iou=float(inference_cfg['nms_iou']),
                     merge_fn=merge_fn,
                     merge_tau=merge_tau,
-                    model_device=device,
+                    model_device=model_device,
                 )
                 next_frame_rois = result.next_frame_rois
 
@@ -113,7 +124,6 @@ def infer_sequentially_with_roi(args):
                     )
 
                 # Draw GT boxes in green.
-                gt_target = target[0] if isinstance(target, list) else target
                 gt_boxes = extract_gt_boxes(gt_target, frame_w, frame_h)
                 for box in gt_boxes:
                     x1, y1, x2, y2 = box
@@ -205,7 +215,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--default-frame-delay',
         dest='default_frame_delay',
-        default=100,
+        default=33,
         type=int,
         help='Frame delay used when benchmark config does not define one and --frame-delay is not set',
     )

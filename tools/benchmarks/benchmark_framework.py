@@ -384,14 +384,14 @@ class BenchmarkFramework:
         
         # 1. mAP and per-class AP
         print("\nComputing mAP and per-class metrics...")
-        mean_ap, all_aps = compute_map(
+        mean_ap, all_aps, detector_recall, class_recalls = compute_map(
             self.predictions,
             self.ground_truths,
             iou_threshold=iou_threshold,
             difficult=self.difficulties
         )
 
-        mean_ap_95, all_aps_95 = compute_map(
+        mean_ap_95, all_aps_95, detector_recall_95, class_recalls_95 = compute_map(
             self.predictions,
             self.ground_truths,
             iou_threshold=0.95,
@@ -403,6 +403,10 @@ class BenchmarkFramework:
         metrics['map_iou_threshold'] = iou_threshold
         metrics['per_class_ap'] = {k: float(v) for k, v in all_aps.items()}
         metrics['per_class_ap95'] = {k: float(v) for k, v in all_aps_95.items()}
+        metrics['detector_recall'] = float(detector_recall)
+        metrics['detector_recall95'] = float(detector_recall_95)
+        metrics['per_class_detector_recall'] = {k: float(v) for k, v in class_recalls.items()}
+        metrics['per_class_detector_recall95'] = {k: float(v) for k, v in class_recalls_95.items()}
         
         # 2. Recall (class-aware matched recall, bounded to [0, 1])
         recall, matched_tp, total_gt = self._compute_global_recall(iou_threshold=iou_threshold)
