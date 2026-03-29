@@ -28,16 +28,10 @@ from tools.helpers.roi_merger import greedy_roi_merge, simple_roi_merge, simple_
 from tools.trackers.kalman_roi_tracker import KalmanRoiTracker
 from tools.trackers.static_padding_tracker import StaticPaddingTracker
 from tools.trackers.relative_object_size_padding_tracker import RelativeObjectSizePaddingTracker
+from tools.trackers.oracle_gt_tracker import OracleGtTracker
 from torch.utils.data.dataloader import DataLoader
 
 
-# ---------------------------------------------------------------------------
-# Device selection (module-level, shared across all callers)
-# ---------------------------------------------------------------------------
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if torch.backends.mps.is_available():
-    device = torch.device('mps')
-    print('Using mps')
 
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3, 1, 1)
 IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3, 1, 1)
@@ -72,6 +66,9 @@ def build_tracker(tracker_cfg: Dict[str, Any]):
     elif kind == "relative_padding":
         p = tracker_cfg.get("relative_padding", {})
         return RelativeObjectSizePaddingTracker(**p)
+    elif kind == "oracle_gt":
+        p = tracker_cfg.get("oracle_gt", {})
+        return OracleGtTracker(**p)
     else:
         raise ValueError(f"Unknown tracker type: {kind!r}")
 
@@ -79,7 +76,7 @@ def build_tracker(tracker_cfg: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Model + dataset loading
 # ---------------------------------------------------------------------------
-def load_model_and_dataset(args):
+def load_model_and_dataset(device, args):
     """Load model and dataset from a training config path (args.config_path)."""
     with open(args.config_path, 'r') as f:
         try:
@@ -133,6 +130,8 @@ def load_model_and_dataset(args):
     model_name = str(train_config['model'])
     if model_name == 'ssd':
         model = SSD(config=config['model_params'], num_classes=dataset_config['num_classes'])
+    elif model_name == 'ssd-original':
+        model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     elif model_name == 'roissd':
         model = RoiSSD(config=config['model_params'], num_classes=dataset_config['num_classes'])
     else:
@@ -145,6 +144,10 @@ def load_model_and_dataset(args):
     ckpt_path = os.path.join(model_task_path, train_config['ckpt_name'])
     assert os.path.exists(ckpt_path), f'No checkpoint exists at {ckpt_path}'
 
+    if model_name == 'ssd-original':
+        print('Loaded SSD300_VGG16 pretrained weights from torchvision...')
+        return model, dataset, data_loader, config
+    
     print('Loading checkpoint...')
     checkpoint = torch.load(ckpt_path, map_location=device)
     if isinstance(checkpoint, dict) and 'model' in checkpoint:
@@ -168,24 +171,34 @@ def ensure_im_size_tuple(im_size: Any) -> Tuple[int, int]:
     raise ValueError(f'Unsupported im_size format: {im_size}')
 
 
-def preprocess_bgr_for_model(
-    image_bgr: np.ndarray,
-    im_size_hw: Tuple[int, int],
-    target_device: torch.device = None,
+def convert_crop_to_input_tensor(
+    im_tensor: Optional[torch.Tensor] = None,
+    crop: Optional[List[int]] = None,
+    original_image_size: Optional[Tuple[int, int]] = None,
 ) -> torch.Tensor:
-    """Crop BGR → normalised float tensor on target_device (defaults to module device)."""
-    if target_device is None:
-        target_device = device
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    tensor = torch.from_numpy(image_rgb).permute(2, 0, 1).float() / 255.0
-    tensor = F.interpolate(
-        tensor.unsqueeze(0),
-        size=im_size_hw,
-        mode='bilinear',
-        align_corners=False,
-    ).squeeze(0)
-    tensor = (tensor - IMAGENET_MEAN) / IMAGENET_STD
-    return tensor
+    """Prepare model input tensor from BGR or by cropping a pre-loaded full-frame tensor."""
+
+    tensor_chw = im_tensor[0] if im_tensor.dim() == 4 else im_tensor
+    if tensor_chw.dim() != 3:
+        raise ValueError(f"Expected im_tensor as CHW or BCHW, got shape {tuple(im_tensor.shape)}")
+
+    orig_h, orig_w = int(original_image_size[0]), int(original_image_size[1])
+    if orig_h <= 0 or orig_w <= 0:
+        raise ValueError(f"Invalid original_image_size: {original_image_size}")
+
+    _, tensor_h, tensor_w = tensor_chw.shape
+    x1, y1, x2, y2 = [int(v) for v in crop]
+
+    sx = tensor_w / float(orig_w)
+    sy = tensor_h / float(orig_h)
+
+    tx1 = max(0, min(tensor_w - 1, int(np.floor(x1 * sx))))
+    ty1 = max(0, min(tensor_h - 1, int(np.floor(y1 * sy))))
+    tx2 = max(tx1 + 1, min(tensor_w, int(np.ceil(x2 * sx))))
+    ty2 = max(ty1 + 1, min(tensor_h, int(np.ceil(y2 * sy))))
+
+    tensor_crop = tensor_chw[:, ty1:ty2, tx1:tx2]
+    return tensor_crop
 
 
 def tensor_to_detection_list(
@@ -242,6 +255,70 @@ def merge_detections_nms(
             kept.append(detections[indices[li]])
     return kept
 
+# --------------------------------------------------------------------------- #
+#  Ground-truth extraction for mAP (pixel coordinates + labels for mAP)      #
+# --------------------------------------------------------------------------- #
+def extract_gt_for_map(
+    target: Dict[str, Any],
+    idx2label: Dict[int, str],
+    frame_w: int,
+    frame_h: int,
+) -> Tuple[Dict[str, List], Dict[str, List]]:
+    """Return (gt_dict, difficult_dict) in compute_map format, pixel coords."""
+    gt_dict: Dict[str, List] = {}
+    diff_dict: Dict[str, List] = {}
+
+    boxes_raw = labels_raw = None
+    if "bboxes" in target:
+        boxes_raw, labels_raw = target["bboxes"][0], target["labels"][0]
+    elif "boxes" in target:
+        boxes_raw, labels_raw = target["boxes"][0], target["labels"][0]
+    else:
+        return gt_dict, diff_dict
+
+    if isinstance(boxes_raw, torch.Tensor):
+        boxes_raw = boxes_raw.cpu().tolist()
+    if isinstance(labels_raw, torch.Tensor):
+        labels_raw = labels_raw.cpu().tolist()
+
+    diff_raw = None
+    if "difficult" in target:
+        dr = target["difficult"][0]
+        diff_raw = dr.cpu().tolist() if isinstance(dr, torch.Tensor) else list(dr)
+
+    for i, (box, lbl) in enumerate(zip(boxes_raw, labels_raw)):
+        x1 = float(box[0]) * frame_w
+        y1 = float(box[1]) * frame_h
+        x2 = float(box[2]) * frame_w
+        y2 = float(box[3]) * frame_h
+        cls = idx2label[int(lbl)]
+        gt_dict.setdefault(cls, []).append([x1, y1, x2, y2])
+        diff_dict.setdefault(cls, []).append(int(diff_raw[i]) if diff_raw else 0)
+
+    return gt_dict, diff_dict
+
+def extract_gt_for_tracker(
+    target: Dict[str, Any],
+    idx2label: Dict[int, str],
+    frame_w: int,
+    frame_h: int,
+) -> List[Dict[str, Any]]:
+    """Return GT as tracker-style detections in pixel coordinates."""
+    gt_d, _ = extract_gt_for_map(target, idx2label, frame_w, frame_h)
+    out: List[Dict[str, Any]] = []
+    for cls, boxes in gt_d.items():
+        for x1, y1, x2, y2 in boxes:
+            clipped = clip_bbox([int(x1), int(y1), int(x2), int(y2)], frame_w, frame_h)
+            if clipped is None:
+                continue
+            out.append(
+                {
+                    "bbox": [float(clipped[0]), float(clipped[1]), float(clipped[2]), float(clipped[3])],
+                    "class": str(cls),
+                    "confidence": 1.0,
+                }
+            )
+    return out
 
 def extract_gt_boxes(
     target: Dict[str, Any],
@@ -341,15 +418,21 @@ def process_frame(
             if roi_c is None:
                 continue
             rx1, ry1, rx2, ry2 = roi_c
-            crop = frame_bgr[ry1:ry2, rx1:rx2]
-            if crop.size == 0:
+            crop_w = rx2 - rx1
+            crop_h = ry2 - ry1
+            if crop_w <= 0 or crop_h <= 0:
                 continue
             rois_used.append(roi_c)
-            crop_tensor = preprocess_bgr_for_model(crop, im_size_hw, target_device=model_device)
+            crop_tensor = convert_crop_to_input_tensor(
+                im_tensor=im_tensor,
+                crop=roi_c,
+                original_image_size=(frame_h, frame_w),
+            )
+
             _, raw = model(crop_tensor.unsqueeze(0).to(model_device), None)
             all_detections.extend(
                 tensor_to_detection_list(
-                    raw[0], idx2label, crop.shape[1], crop.shape[0],
+                    raw[0], idx2label, crop_w, crop_h,
                     offset_xy=(rx1, ry1),
                 )
             )
