@@ -66,8 +66,10 @@ def compute_map(det_boxes, gt_boxes, iou_threshold=0.5, method='area', difficult
     gt_labels = sorted(gt_labels)
 
     all_aps = {}
+    all_recalls = {}
     # average precisions for ALL classes
     aps = []
+    recall_values = []
     for idx, label in enumerate(gt_labels):
         # Get detection predictions of this class
         cls_dets = [
@@ -133,6 +135,9 @@ def compute_map(det_boxes, gt_boxes, iou_threshold=0.5, method='area', difficult
         recalls = tp / np.maximum(num_gts - num_difficults, eps)
         precisions = tp / np.maximum((tp + fp), eps)
 
+        # Operating-point recall: fraction of GT matched at this confidence threshold
+        class_recall = float(recalls[-1]) if len(recalls) > 0 else 0.0
+
         if method == 'area':
             recalls = np.concatenate(([0.0], recalls, [1.0]))
             precisions = np.concatenate(([0.0], precisions, [0.0]))
@@ -161,11 +166,15 @@ def compute_map(det_boxes, gt_boxes, iou_threshold=0.5, method='area', difficult
         if num_gts > 0:
             aps.append(ap)
             all_aps[label] = ap
+            all_recalls[label] = class_recall
+            recall_values.append(class_recall)
         else:
             all_aps[label] = np.nan
+            all_recalls[label] = float('nan')
     # compute mAP at provided iou threshold
     mean_ap = sum(aps) / len(aps)
-    return mean_ap, all_aps
+    mean_recall = float(np.mean(recall_values)) if recall_values else float('nan')
+    return mean_ap, all_aps, mean_recall, all_recalls
 
 
 def load_model_and_dataset(args):
@@ -355,12 +364,14 @@ def evaluate_map(args):
         gts.append(gt_boxes)
         preds.append(pred_boxes)
         difficults.append(difficult_boxes)
-    mean_ap, all_aps = compute_map(preds, gts, method='area', difficult=difficults)
-    print('Class Wise Average Precisions')
+    mean_ap, all_aps, mean_recall, all_recalls = compute_map(preds, gts, method='area', difficult=difficults)
+    print('Class Wise Average Precisions and Detector Recall')
     for idx in range(len(voc.idx2label)):
-        print('AP for class {} = {:.4f}'.format(voc.idx2label[idx],
-                                                all_aps[voc.idx2label[idx]]))
+        lbl = voc.idx2label[idx]
+        print('AP for class {} = {:.4f}  |  detector_recall = {:.4f}'.format(
+            lbl, all_aps[lbl], all_recalls[lbl]))
     print('Mean Average Precision : {:.4f}'.format(mean_ap))
+    print('Mean Detector Recall   : {:.4f}'.format(mean_recall))
 
     model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
     # Write results to map.txt
@@ -368,13 +379,15 @@ def evaluate_map(args):
     if args.results_path:
         map_file_path = os.path.join(args.results_path, 'mAp.txt')
         with open(map_file_path, 'w') as f:
-            f.write('Class Wise Average Precisions\n')
+            f.write('Class Wise Average Precisions and Detector Recall\n')
             f.write('=' * 50 + '\n')
             for idx in range(len(voc.idx2label)):
-                ap_value = all_aps[voc.idx2label[idx]]
-                f.write('AP for class {} = {:.4f}\n'.format(voc.idx2label[idx], ap_value))
+                lbl = voc.idx2label[idx]
+                f.write('AP for class {} = {:.4f}  |  detector_recall = {:.4f}\n'.format(
+                    lbl, all_aps[lbl], all_recalls[lbl]))
             f.write('=' * 50 + '\n')
             f.write('Mean Average Precision : {:.4f}\n'.format(mean_ap))
+            f.write('Mean Detector Recall   : {:.4f}\n'.format(mean_recall))
         
         print(f'Results saved to {map_file_path}')
         
@@ -383,12 +396,16 @@ def evaluate_map(args):
         with open(csv_file_path, 'w', newline='') as csvfile:
             writer = csv.writer(csvfile)
             
-            # Header row: class names + mAP
-            header = [voc.idx2label[idx] for idx in range(len(voc.idx2label))] + ['mAP']
+            # Header row: class names + mAP + detector_recall columns
+            header = ([voc.idx2label[idx] for idx in range(len(voc.idx2label))] + ['mAP']
+                      + ['detector_recall_' + voc.idx2label[idx] for idx in range(len(voc.idx2label))]
+                      + ['mean_detector_recall'])
             writer.writerow(header)
             
-            # Data row: AP values + mean AP
-            data = [all_aps[voc.idx2label[idx]] for idx in range(len(voc.idx2label))] + [mean_ap]
+            # Data row: AP values + mean AP + recall values + mean recall
+            data = ([all_aps[voc.idx2label[idx]] for idx in range(len(voc.idx2label))] + [mean_ap]
+                    + [all_recalls[voc.idx2label[idx]] for idx in range(len(voc.idx2label))]
+                    + [mean_recall])
             writer.writerow(data)
         
         print(f'Results saved to {csv_file_path}')

@@ -1,7 +1,6 @@
-from functools import partial
 from dataset.voc_small_objects import VOCSmallObjectsDataset
 from tools.infer import infer_and_evaluate
-from tools.multiscale_collate import MULTI_SCALE_SIZES, EpochAwareCollateFn, multi_scale_collate_fn
+from tools.multiscale_collate import EpochAwareCollateFn
 import torch
 import argparse
 import os
@@ -14,7 +13,7 @@ from tqdm import tqdm
 from dataset.visdrone import VisDroneDataset
 from dataset.voc import VOCDataset
 from dataset.ytbb import YTBBDataset
-from model.roissd import RoiSSD, generate_ignore_regions
+from model.roissd import RoiSSD
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
