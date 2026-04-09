@@ -1,5 +1,6 @@
 import os
 from dataset.transforms.fixed_padding_roi_crop_test_transform import FixedPaddingRoiCropTestTransform
+from dataset.transforms.fixed_padding_roi_crop_yolo_test_transform import FixedPaddingRoiCropYOLOTestTransform
 from dataset.transforms.letterbox_transform import LetterboxTransform
 from dataset.transforms.no_resize_transform import NoResizeTransform
 from dataset.transforms.resize_longer_edge_test_transform import ResizeLongerEdgeTestTransform
@@ -107,6 +108,16 @@ class VOCDataset(Dataset):
             self.transforms = RoiCropTestTransform(im_size, self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
         elif self.transform_name == 'no_resize_transform':
             self.transforms = NoResizeTransform(self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
+        elif self.transform_name.startswith('fixed_padding_roi_crop_yolo_'):
+            pad_value = int(self.transform_name.split('_')[-1])
+            # YOLO path uses full-image longer-edge resize to 300, then ROI crop.
+            self.transforms = FixedPaddingRoiCropYOLOTestTransform(
+                300,
+                self.imagenet_mean,
+                self.imagenet_std,
+                pad_x=pad_value,
+                pad_y=pad_value,
+            ).transforms
         elif self.transform_name.startswith('fixed_padding_roi_crop_'):
             pad_value = int(self.transform_name.split('_')[-1])
             self.transforms = FixedPaddingRoiCropTestTransform(im_size, self.imagenet_mean, self.imagenet_std, pad_x=pad_value, pad_y=pad_value).transforms

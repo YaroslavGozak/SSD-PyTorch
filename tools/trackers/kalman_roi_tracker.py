@@ -45,6 +45,7 @@ class KalmanRoiTracker:
         mahalanobis_threshold: float = 9.4877,
         cost_lambda_iou: float = 1.0,
         cost_lambda_mahalanobis: float = 0.0,
+        model_input_size: Optional[Tuple[int, int]] = None,
     ):
         self.dt = dt
 
@@ -63,6 +64,18 @@ class KalmanRoiTracker:
 
         self.cost_lambda_iou = cost_lambda_iou
         self.cost_lambda_mahalanobis = cost_lambda_mahalanobis
+
+        self.model_input_size = model_input_size
+        if model_input_size is None:
+            self.model_input_h = None
+            self.model_input_w = None
+        else:
+            if len(model_input_size) != 2:
+                raise ValueError("model_input_size must have 2 elements: [height, width]")
+            self.model_input_h = float(model_input_size[0])
+            self.model_input_w = float(model_input_size[1])
+            if self.model_input_h <= 1.0 or self.model_input_w <= 1.0:
+                raise ValueError("model_input_size dimensions must be > 1")
 
         self.F = np.array([
             [1, 0, 0, 0, dt, 0,  0,  0],
@@ -446,6 +459,13 @@ class KalmanRoiTracker:
     def _build_roi(self, track: Track, frame_w: int, frame_h: int) -> List[int]:
         cx, cy, w, h = track.x[0], track.x[1], track.x[2], track.x[3]
 
+        if self.model_input_h is not None and self.model_input_w is not None:
+            pmin_x = self.pmin * (float(frame_w) / self.model_input_w)
+            pmin_y = self.pmin * (float(frame_h) / self.model_input_h)
+        else:
+            pmin_x = self.pmin
+            pmin_y = self.pmin
+
         sigma_cx = math.sqrt(max(track.P[0, 0], 0.0))
         sigma_cy = math.sqrt(max(track.P[1, 1], 0.0))
         sigma_w = math.sqrt(max(track.P[2, 2], 0.0))
@@ -455,11 +475,11 @@ class KalmanRoiTracker:
         conf_term_y = self.confidence_roi_scale * (1.0 - track.last_confidence) * h
 
         pad_x = max(
-            self.pmin,
+            pmin_x,
             self.uncertainty_scale_pos * sigma_cx + self.uncertainty_scale_size * sigma_w + conf_term_x
         )
         pad_y = max(
-            self.pmin,
+            pmin_y,
             self.uncertainty_scale_pos * sigma_cy + self.uncertainty_scale_size * sigma_h + conf_term_y
         )
 
