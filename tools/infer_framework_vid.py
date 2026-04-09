@@ -32,6 +32,7 @@ def infer_sequentially_with_roi(args):
     tracker = build_tracker(benchmark_params['tracker'])
 
     inference_cfg = benchmark_params['inference']
+    tracker_input_dropout_cfg = benchmark_params.get('tracker_input_dropout', None)
     roi_merge_cfg = benchmark_params['roi_merge']
     merge_fn = MERGE_STRATEGIES[roi_merge_cfg['strategy']]
     merge_tau = float(roi_merge_cfg.get('tau', 150000.0))
@@ -103,6 +104,7 @@ def infer_sequentially_with_roi(args):
                     merge_fn=merge_fn,
                     merge_tau=merge_tau,
                     model_device=model_device,
+                    tracker_input_dropout_cfg=tracker_input_dropout_cfg,
                 )
                 next_frame_rois = result.next_frame_rois
 
@@ -123,6 +125,20 @@ def infer_sequentially_with_roi(args):
                         1,
                     )
 
+                # Draw detections omitted from tracker input in orange.
+                for det in result.dropped_tracker_detections:
+                    x1, y1, x2, y2 = det['bbox']
+                    cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
+                    cv2.putText(
+                        display_frame,
+                        'SKIP',
+                        (x1 + 4, y2 + 14),
+                        cv2.FONT_HERSHEY_PLAIN,
+                        1.0,
+                        (0, 165, 255),
+                        1,
+                    )
+
                 # Draw GT boxes in green.
                 gt_boxes = extract_gt_boxes(gt_target, frame_w, frame_h)
                 for box in gt_boxes:
@@ -135,7 +151,11 @@ def infer_sequentially_with_roi(args):
                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
 
                 mode_text = 'FULL' if result.use_full_frame else 'ROI'
-                overlay = f'Frame {current_frame_idx}/{total_frames} | Mode: {mode_text} | Delay: {frame_delay}ms'
+                dropped_count = len(result.dropped_tracker_detections)
+                overlay = (
+                    f'Frame {current_frame_idx}/{total_frames} | Mode: {mode_text} '
+                    f'| Delay: {frame_delay}ms | Dropped for tracker: {dropped_count}'
+                )
                 cv2.putText(display_frame, overlay, (10, 25), cv2.FONT_HERSHEY_PLAIN, 1.2, (0, 255, 0), 2)
 
                 if paused:

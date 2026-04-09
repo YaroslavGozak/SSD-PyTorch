@@ -37,6 +37,79 @@ IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3,
 IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3, 1, 1)
 
 
+class YoloV8Adapter:
+    """YOLO wrapper that returns normalized detections in project format."""
+
+    def __init__(self, weights_path: str, device: torch.device):
+        try:
+            from ultralytics import YOLO
+        except ImportError as e:
+            raise ImportError(
+                "YOLO inference requires ultralytics. Install with: pip install ultralytics"
+            ) from e
+        self._yolo = YOLO(weights_path)
+        self.device = device
+
+    def to(self, device: torch.device = None, **_kwargs):
+        if device is not None:
+            self.device = device
+        return self
+
+    def eval(self):
+        return self
+    
+    def parameters(self):
+        """Delegate to the underlying PyTorch module so callers can do next(model.parameters()).device."""
+        return self._yolo.model.parameters()
+
+    def __call__(self, images: torch.Tensor, _targets=None):
+        # Reverse ImageNet normalization so YOLO receives images in [0, 1] float range.
+        # The SSD dataset transform applies mean/std normalization; YOLO does its own
+        # preprocessing and expects un-normalized [0, 1] float tensors.
+        mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
+        std  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
+        images_01 = (images.float() * std + mean).clamp(0.0, 1.0)
+        results = self._yolo.predict(source=images_01, verbose=False)
+        _, _, h, w = images.shape
+        out = []
+        for res in results:
+            if res.boxes is None or len(res.boxes) == 0:
+                out.append({
+                    'boxes': torch.empty((0, 4), dtype=torch.float32, device=images.device),
+                    'labels': torch.empty((0,), dtype=torch.int64, device=images.device),
+                    'scores': torch.empty((0,), dtype=torch.float32, device=images.device),
+                })
+                continue
+
+            xyxy = res.boxes.xyxy.to(images.device).float()
+            boxes = xyxy.clone()
+            boxes[:, [0, 2]] /= float(w)
+            boxes[:, [1, 3]] /= float(h)
+
+            out.append({
+                'boxes': boxes,
+                'labels': (res.boxes.cls.to(images.device).long() + 1),
+                'scores': res.boxes.conf.to(images.device).float(),
+            })
+        return None, out
+
+
+def run_model_inference(model, images: torch.Tensor):
+    """Run model forward and normalize output shape to (raw, detections)."""
+    try:
+        raw, detections = model(images, None)
+    except TypeError:
+        out = model(images)
+        if isinstance(out, tuple) and len(out) == 2:
+            raw, detections = out
+        else:
+            raw, detections = None, out
+
+    if isinstance(detections, dict):
+        detections = [detections]
+    return raw, detections
+
+
 # ---------------------------------------------------------------------------
 # Merge strategy registry
 # ---------------------------------------------------------------------------
@@ -49,6 +122,26 @@ MERGE_STRATEGIES: Dict[str, Callable] = {
     "simple_v2": lambda rois, **_: simple_roi_merge_v2(rois),
     "none":      _merge_none,
 }
+
+
+# ---------------------------------------------------------------------------
+# Model ROI grid alignment
+# ---------------------------------------------------------------------------
+def _model_roi_grid(model) -> int:
+    """Return the dimension alignment (in tensor pixels) required for ROI crops.
+
+    YOLO models have a stride of 32, so any crop fed to them must have H and W
+    divisible by 32.  SSD / RoiSSD accept arbitrary sizes.
+    """
+    if isinstance(model, YoloV8Adapter):
+        return 32
+    try:
+        from ultralytics import YOLO as _YOLO
+        if isinstance(model, _YOLO):
+            return 32
+    except ImportError:
+        pass
+    return 1
 
 
 # ---------------------------------------------------------------------------
@@ -134,19 +227,39 @@ def load_model_and_dataset(device, args):
         model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     elif model_name == 'roissd':
         model = RoiSSD(config=config['model_params'], num_classes=dataset_config['num_classes'])
+    elif model_name == 'yolo':
+        # yolo_weights = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
+        # model = YoloV8Adapter(weights_path=yolo_weights, device=device)
+        try:
+            from ultralytics import YOLO
+        except ImportError as e:
+            raise ImportError(
+                'YOLO inference requires ultralytics. Install with: pip install ultralytics'
+            ) from e
+        weights_path = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
+        print('yolo weights path from config: {}'.format(weights_path))
+        if not os.path.exists(weights_path):
+            task_name = train_config.get('task_name', '')
+            candidate = os.path.join('trained_models', task_name, weights_path)
+            if os.path.exists(candidate):
+                weights_path = candidate
+        model = YoloV8Adapter(weights_path=weights_path, device=device)
     else:
         raise Exception(f'Unknown model name {model_name!r}')
 
     model.to(device=device)
     model.eval()
 
-    model_task_path = os.path.join('trained_models', train_config['task_name'])
-    ckpt_path = os.path.join(model_task_path, train_config['ckpt_name'])
-    assert os.path.exists(ckpt_path), f'No checkpoint exists at {ckpt_path}'
-
     if model_name == 'ssd-original':
         print('Loaded SSD300_VGG16 pretrained weights from torchvision...')
         return model, dataset, data_loader, config
+    if model_name == 'yolo':
+        print(f"Loaded YOLO weights: {train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))}")
+        return model, dataset, data_loader, config
+
+    model_task_path = os.path.join('trained_models', train_config['task_name'])
+    ckpt_path = os.path.join(model_task_path, train_config['ckpt_name'])
+    assert os.path.exists(ckpt_path), f'No checkpoint exists at {ckpt_path}'
     
     print('Loading checkpoint...')
     checkpoint = torch.load(ckpt_path, map_location=device)
@@ -175,8 +288,20 @@ def convert_crop_to_input_tensor(
     im_tensor: Optional[torch.Tensor] = None,
     crop: Optional[List[int]] = None,
     original_image_size: Optional[Tuple[int, int]] = None,
-) -> torch.Tensor:
-    """Prepare model input tensor from BGR or by cropping a pre-loaded full-frame tensor."""
+    roi_grid: int = 1,
+) -> Tuple[torch.Tensor, List[int]]:
+    """Crop a pre-loaded full-frame tensor to a ROI.
+
+    Returns ``(crop_tensor, snapped_frame_roi)`` where ``snapped_frame_roi`` is
+    ``[x1, y1, x2, y2]`` in frame-pixel coordinates that correspond *exactly* to
+    the returned tensor slice.  With ``roi_grid=1`` (default) the snapped ROI
+    equals the input ``crop``.
+
+    When ``roi_grid > 1`` (e.g. 32 for YOLO) the tensor-space crop dimensions are
+    rounded up to the nearest multiple of ``roi_grid`` around the crop center.
+    If any edge exceeds bounds, the entire crop window is shifted to remain
+    inside image boundaries while preserving the snapped size.
+    """
 
     tensor_chw = im_tensor[0] if im_tensor.dim() == 4 else im_tensor
     if tensor_chw.dim() != 3:
@@ -197,8 +322,68 @@ def convert_crop_to_input_tensor(
     tx2 = max(tx1 + 1, min(tensor_w, int(np.ceil(x2 * sx))))
     ty2 = max(ty1 + 1, min(tensor_h, int(np.ceil(y2 * sy))))
 
+    def _centered_snap(start: int, end: int, bound: int, grid: int) -> Tuple[int, int]:
+        size = max(1, end - start)
+        target = int(np.ceil(size / grid)) * grid if grid > 1 else size
+        if target >= bound:
+            return 0, bound
+
+        center = 0.5 * (start + end)
+        new_start = int(np.floor(center - target / 2.0))
+        new_end = new_start + target
+
+        # Preserve size and move the whole window back in-bounds.
+        if new_start < 0:
+            shift = -new_start
+            new_start += shift
+            new_end += shift
+        if new_end > bound:
+            shift = new_end - bound
+            new_start -= shift
+            new_end -= shift
+
+        new_start = max(0, min(new_start, bound - target))
+        new_end = new_start + target
+        return new_start, new_end
+
+    tx1, tx2 = _centered_snap(tx1, tx2, tensor_w, roi_grid)
+    ty1, ty2 = _centered_snap(ty1, ty2, tensor_h, roi_grid)
+
     tensor_crop = tensor_chw[:, ty1:ty2, tx1:tx2]
-    return tensor_crop
+
+    # Back-project to frame space and keep the full snapped window in-bounds.
+    fx1 = int(np.floor(tx1 / sx))
+    fy1 = int(np.floor(ty1 / sy))
+    fx2 = int(np.ceil(tx2 / sx))
+    fy2 = int(np.ceil(ty2 / sy))
+
+    frame_w = max(1, fx2 - fx1)
+    frame_h = max(1, fy2 - fy1)
+
+    if fx1 < 0:
+        shift = -fx1
+        fx1 += shift
+        fx2 += shift
+    if fy1 < 0:
+        shift = -fy1
+        fy1 += shift
+        fy2 += shift
+    if fx2 > orig_w:
+        shift = fx2 - orig_w
+        fx1 -= shift
+        fx2 -= shift
+    if fy2 > orig_h:
+        shift = fy2 - orig_h
+        fy1 -= shift
+        fy2 -= shift
+
+    fx1 = max(0, min(fx1, max(0, orig_w - frame_w)))
+    fy1 = max(0, min(fy1, max(0, orig_h - frame_h)))
+    fx2 = min(orig_w, fx1 + frame_w)
+    fy2 = min(orig_h, fy1 + frame_h)
+
+    snapped_roi = [fx1, fy1, fx2, fy2]
+    return tensor_crop, snapped_roi
 
 
 def tensor_to_detection_list(
@@ -348,12 +533,59 @@ def extract_gt_boxes(
     return out
 
 
+def apply_tracker_input_dropout(
+    tracker_input: List[Dict[str, Any]],
+    frame_idx: int,
+    tracker_input_dropout_cfg: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Apply configurable detection dropout before passing detections to tracker.
+
+    Supported modes:
+      - frame: drop all detections for a frame with probability `prob`
+      - detection: drop each detection independently with probability `prob`
+    """
+    if not tracker_input_dropout_cfg:
+        return tracker_input
+
+    enabled = bool(tracker_input_dropout_cfg.get("enabled", False))
+    if not enabled:
+        return tracker_input
+
+    prob = float(tracker_input_dropout_cfg.get("prob", 0.0))
+    if prob <= 0.0:
+        return tracker_input
+    prob = min(max(prob, 0.0), 1.0)
+
+    warmup_frames = max(0, int(tracker_input_dropout_cfg.get("warmup_frames", 0)))
+    if frame_idx <= warmup_frames:
+        return tracker_input
+
+    mode = str(tracker_input_dropout_cfg.get("mode", "frame")).strip().lower()
+    seed = tracker_input_dropout_cfg.get("seed", None)
+
+    if seed is None:
+        rng = np.random.default_rng()
+    else:
+        rng = np.random.default_rng(int(seed) + int(frame_idx) * 1000003)
+
+    if mode == "frame":
+        return [] if float(rng.random()) < prob else tracker_input
+
+    if mode == "detection":
+        kept = [det for det in tracker_input if float(rng.random()) >= prob]
+        return kept
+
+    raise ValueError(f"Unknown tracker_input_dropout mode: {mode!r}")
+
+
 # ---------------------------------------------------------------------------
 # Per-frame result container
 # ---------------------------------------------------------------------------
 @dataclass
 class FrameResult:
     final_detections:  List[Dict[str, Any]]  = field(default_factory=list)
+    dropped_tracker_detections: List[Dict[str, Any]] = field(default_factory=list)
     rois_used:         List[List[int]]        = field(default_factory=list)
     next_frame_rois:   List[List[int]]        = field(default_factory=list)
     use_full_frame:    bool                   = True
@@ -380,6 +612,8 @@ def process_frame(
     merge_fn: Callable = None,        # defaults to greedy
     merge_tau: float = 150000.0,
     model_device: torch.device = None,
+    tracker_input_dropout_cfg: Optional[Dict[str, Any]] = None,
+    roi_grid: Optional[int] = None,   # None = auto-detect from model type
 ) -> FrameResult:
     """
     Run one frame through the full pipeline:
@@ -389,10 +623,10 @@ def process_frame(
       4. Update tracker.
     Returns a FrameResult with detections, ROI metadata, and timing.
     """
-    if model_device is None:
-        model_device = device
     if merge_fn is None:
         merge_fn = MERGE_STRATEGIES["greedy"]
+    if roi_grid is None:
+        roi_grid = _model_roi_grid(model)
 
     frame_h, frame_w = frame_bgr.shape[:2]
     is_key_frame  = (frame_idx % key_frame_interval == 0)
@@ -405,8 +639,8 @@ def process_frame(
     t0 = time.perf_counter()
 
     if use_full_frame:
-        _, raw = model(im_tensor.float().to(model_device), None)
-        all_detections = tensor_to_detection_list(raw[0], idx2label, frame_w, frame_h)
+        _, model_batch_detections = run_model_inference(model, im_tensor.float().to(model_device))
+        all_detections = tensor_to_detection_list(model_batch_detections[0], idx2label, frame_w, frame_h)
     else:
         # Merge ROIs, then run one inference pass per cluster
         tm = time.perf_counter()
@@ -422,18 +656,20 @@ def process_frame(
             crop_h = ry2 - ry1
             if crop_w <= 0 or crop_h <= 0:
                 continue
-            rois_used.append(roi_c)
-            crop_tensor = convert_crop_to_input_tensor(
+            crop_tensor, snapped_roi = convert_crop_to_input_tensor(
                 im_tensor=im_tensor,
                 crop=roi_c,
                 original_image_size=(frame_h, frame_w),
+                roi_grid=roi_grid,
             )
+            sx1, sy1, sx2, sy2 = snapped_roi
+            rois_used.append(snapped_roi)
 
-            _, raw = model(crop_tensor.unsqueeze(0).to(model_device), None)
+            _, model_batch_detections = run_model_inference(model, crop_tensor.unsqueeze(0).to(model_device))
             all_detections.extend(
                 tensor_to_detection_list(
-                    raw[0], idx2label, crop_w, crop_h,
-                    offset_xy=(rx1, ry1),
+                    model_batch_detections[0], idx2label, sx2 - sx1, sy2 - sy1,
+                    offset_xy=(sx1, sy1),
                 )
             )
 
@@ -451,11 +687,23 @@ def process_frame(
         tracker_input.append(d)
         final_detections.append(d)
 
+    tracker_input_before_dropout = list(tracker_input)
+    tracker_input = apply_tracker_input_dropout(
+        tracker_input=tracker_input,
+        frame_idx=frame_idx,
+        tracker_input_dropout_cfg=tracker_input_dropout_cfg,
+    )
+    kept_ids = {id(det) for det in tracker_input}
+    dropped_tracker_detections = [
+        det for det in tracker_input_before_dropout if id(det) not in kept_ids
+    ]
+
     tracker_result = tracker.update(tracker_input, frame_shape=(frame_h, frame_w))
     latency_s = time.perf_counter() - t0
 
     return FrameResult(
         final_detections=final_detections,
+        dropped_tracker_detections=dropped_tracker_detections,
         rois_used=rois_used,
         next_frame_rois=[r['roi'] for r in tracker_result['rois']],
         use_full_frame=use_full_frame,
