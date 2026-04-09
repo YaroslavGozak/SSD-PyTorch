@@ -1,31 +1,32 @@
-# Video Sequence Benchmark configuration (Lane B)
-# References a training config for model/dataset loading.
+# Video Sequence Benchmark configuration — YOLO (Lane B)
+# Uses 320x320 input (nearest multiple-of-32 above 300) and model_input_size: [320, 320]
+# so that tracker padding scales and ROI snap targets match the YOLO input resolution.
 
-train_config_path: "config/voc-ue.yaml"
+train_config_path: "config/voc-ue-yolo320.yaml"
 
 benchmark_vid_params:
   device: "cpu" # Options: "cpu" | "cuda"
 
   tracker:
-    type: "kalman"   # Options: kalman | static_padding | relative_padding | oracle_gt
+    type: "oracle_gt"   # Options: kalman | static_padding | relative_padding | oracle_gt
 
     kalman:
       conf_det_min: 0.2
       conf_low: 0.4
       conf_high: 0.7
-      pmin: 32
+      pmin: 5
       iou_match_threshold: 0.01
       max_misses: 3
       uncertainty_scale_pos: 2.5
       uncertainty_scale_size: 1.0
       confidence_roi_scale: 0.10
-      model_input_size: [300, 300]
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input
 
     static_padding:
       pad_x: 32
       pad_y: 32
       conf_det_min: 0.0
-      model_input_size: [300, 300]
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input
       hold_last_for_frames: 3  # Keep previous detections for up to N missed frames
 
     relative_padding:
@@ -34,13 +35,13 @@ benchmark_vid_params:
       min_pad_x: 10
       min_pad_y: 10
       conf_det_min: 0.0
-      model_input_size: [300, 300]
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input
 
     oracle_gt:
-      pad_x: 16
-      pad_y: 16
+      pad_x: 0
+      pad_y: 0
       conf_det_min: 0.0
-      model_input_size: [300, 300]
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input
 
   inference:
     key_frame_interval: 10   # 1 = always full-frame (B0 mode)
@@ -61,6 +62,6 @@ benchmark_vid_params:
     roi_coverage_threshold: 0.5   # Min GT box area fraction inside ROI to count as covered
 
   output:
-    results_dir: "benchmark_results/vid/roissd/kalman_lin_mov"
-    results_filename: "benchmark_vid_metrics_kalman_32_mid_int10_dets07_cpu.csv"
+    results_dir: "benchmark_results/vid/yolo/kalman_lin_mov"
+    results_filename: "benchmark_vid_metrics_yolo_kalman_32_mid_int10_dets07_cpu.csv"
     verbose: true

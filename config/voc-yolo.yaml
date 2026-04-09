@@ -1,0 +1,45 @@
+dataset_params:
+  train_im_sets: ['D:\VOC\VOC2007_trainval\VOCdevkit\VOC2007', 'D:\VOC\VOC2012_train_val\VOC2012_train_val']
+  test_im_sets: ['D:\VOC\VOC2007_test\VOC2007']
+  num_classes : 21
+  im_size : 300
+  transform_name : 'no_resize_transform'
+  # resize_longer_edge
+  # roi_crop_test_transform
+  # letterbox
+  # ssd
+  # no_resize_transform
+  # fixed_padding_roi_crop_X
+
+model_params:
+  im_channels : 3
+  aspect_ratios : [
+    [ 1., 2., 0.5 ],
+    [ 1., 2., 3., 0.5, .333 ],
+    [ 1., 2., 3., 0.5, .333 ],
+    [ 1., 2., 3., 0.5, .333 ],
+    [ 1., 2., 0.5 ],
+    [ 1., 2., 0.5 ]
+  ]
+  scales : [0.1, 0.2, 0.375, 0.55, 0.725, 0.9]
+  iou_threshold : 0.5
+  low_score_threshold : 0.01
+  neg_pos_ratio : 3
+  pre_nms_topK : 400
+  detections_per_img : 200
+  nms_threshold : 0.45
+
+train_params:
+  model: 'yolo'
+  dataset: 'voc'
+  task_name: 'voc-yolo26s'
+  roi_mixed_stage: 2
+  seed: 1111
+  acc_steps: 3
+  num_epochs: 50
+  batch_size: 8
+  lr_steps: [ 10, 20, 25 ]
+  lr: 0.0002
+  log_steps : 100
+  infer_conf_threshold : 0.5
+  yolo_weights: 'best.pt'
