@@ -5,9 +5,17 @@ import matplotlib.pyplot as plt
 
 
 MODEL_LABELS = {
-    'voc-roissd': 'Стандартне навчання',
+    # 'voc-roissd-full-frame': 'ROI-SSD Стандартне навчання',
+    'voc-roissd-best': 'ROI-SSD',
     # 'voc-roissd-scheduled-training': 'Прогресивне навчання зі зменшеними регіонами',
-    'voc-roissd-sc-tr-roi-decrease': 'Прогресивне навчання зі зменшеними регіонами',
+    # 'voc-roissd-sc-tr-roi-decrease': 'ROI-SSD',
+    # 'voc-roissd-0-pad-stage-2': 'Навчання з 0-піксельним відступом',
+    # 'voc-roissd-0-pad': 'Навчання з 0-піксельним відступом 3 стейджи',
+    # 'voc-roissd-small-pads': 'Навчання з малими відступами',
+    # 'voc-roissd-smaller-pads': 'Навчання з ще меншими відступами',
+    'voc-yolo11n': 'YOLOv11n',
+    'voc-yolo26s': 'YOLOv26s',
+    'voc-yolo26m': 'YOLOv26m',
 }
 
 def _load_voc_ssd_baseline():
@@ -61,7 +69,6 @@ def _load_padding_curve(csv_path):
         'no_crop_map': no_crop_map,
     }
 
-
 def _interp_piecewise(xs, ys, x):
     if x < xs[0] or x > xs[-1]:
         return None
@@ -77,7 +84,6 @@ def _interp_piecewise(xs, ys, x):
             t = (x - x0) / (x1 - x0)
             return y0 + t * (y1 - y0)
     return None
-
 
 def _find_crossings(ref_curve, other_curve):
     ref_x, ref_y = ref_curve['x'], ref_curve['y']
@@ -117,7 +123,7 @@ def _find_crossings(ref_curve, other_curve):
     return crossings
 
 
-base_dir = os.path.join(os.path.dirname(__file__), '..', 'trained_models')
+base_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'trained_models')
 pattern = os.path.join(base_dir, '*', 'fixed_padding_results.csv')
 csv_paths = sorted(glob.glob(pattern))
 

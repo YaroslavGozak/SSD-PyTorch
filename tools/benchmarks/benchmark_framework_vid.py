@@ -16,6 +16,7 @@ Usage:
 import argparse
 import csv
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -128,11 +129,30 @@ class VideoSequenceBenchmark:
         roi_m = p["roi_merge"]
         self.merge_fn = MERGE_STRATEGIES[roi_m["strategy"]]
         self.merge_tau = float(roi_m.get("tau", 150000.0))
+        self.tracker_input_dropout_cfg = p.get("tracker_input_dropout", None)
         self.coverage_threshold = float(p["metrics"]["roi_coverage_threshold"])
         out = p["output"]
         self.output_dir = out["results_dir"]
         self.results_filename = out["results_filename"]
         self.verbose = bool(out.get("verbose", True))
+
+        tracker_cfg = p.get("tracker", {})
+        static_padding_cfg = tracker_cfg.get("static_padding", {})
+        dropout_cfg = p.get("tracker_input_dropout", {})
+
+        self.run_metadata = {
+            "benchmark_device": str(p.get("device", "cpu")),
+            "benchmark_tracker_type": str(tracker_cfg.get("type", "unknown")),
+            "static_pad_x": int(static_padding_cfg.get("pad_x", 0)),
+            "static_pad_y": int(static_padding_cfg.get("pad_y", 0)),
+            "static_hold_last_for_frames": int(static_padding_cfg.get("hold_last_for_frames", 0)),
+            "tracker_dropout_enabled": bool(dropout_cfg.get("enabled", False)),
+            "tracker_dropout_mode": str(dropout_cfg.get("mode", "none")),
+            "tracker_dropout_prob": float(dropout_cfg.get("prob", 0.0)),
+            "tracker_dropout_warmup_frames": int(dropout_cfg.get("warmup_frames", 0)),
+            "tracker_dropout_seed": dropout_cfg.get("seed", ""),
+        }
+
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
         # Build an args namespace that load_model_and_dataset expects
@@ -212,6 +232,7 @@ class VideoSequenceBenchmark:
                     merge_fn=self.merge_fn,
                     merge_tau=self.merge_tau,
                     model_device=model_device,
+                    tracker_input_dropout_cfg=self.tracker_input_dropout_cfg,
                 )
                 next_frame_rois = result.next_frame_rois
                 final_dets = result.final_detections
@@ -335,6 +356,7 @@ class VideoSequenceBenchmark:
 
     def _save(self, m: Dict[str, Any]) -> None:
         path = os.path.join(self.output_dir, self.results_filename)
+
         flat: Dict[str, Any] = {}
         for k, v in m.items():
             if isinstance(v, dict):
@@ -342,11 +364,56 @@ class VideoSequenceBenchmark:
                     flat[f"{k}_{kk}"] = vv
             else:
                 flat[k] = v
-        with open(path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=sorted(flat.keys()))
-            w.writeheader()
-            w.writerow(flat)
-        print(f"\nResults saved to: {path}")
+
+        row = {
+            "run_timestamp_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            **self.run_metadata,
+            **flat,
+        }
+        fieldnames = sorted(row.keys())
+
+        output_path, output_fieldnames, migrated = self._resolve_output_path(path, fieldnames)
+        need_header = not os.path.exists(output_path) or os.path.getsize(output_path) == 0
+
+        with open(output_path, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=output_fieldnames)
+            if need_header:
+                writer.writeheader()
+            writer.writerow({name: row.get(name, "") for name in output_fieldnames})
+
+        if migrated:
+            print(f"\nSchema changed. Appending to migrated CSV: {output_path}")
+        else:
+            print(f"\nResults appended to: {output_path}")
+
+    def _resolve_output_path(self, preferred_path: str, new_fieldnames: List[str]) -> Tuple[str, List[str], bool]:
+        """Find a CSV target path that matches schema, auto-migrating to _vN on mismatch."""
+        if not os.path.exists(preferred_path) or os.path.getsize(preferred_path) == 0:
+            return preferred_path, new_fieldnames, False
+
+        existing_header = self._read_header(preferred_path)
+        if existing_header == new_fieldnames:
+            return preferred_path, existing_header, False
+
+        base, ext = os.path.splitext(preferred_path)
+        version = 2
+        while True:
+            candidate = f"{base}_v{version}{ext}"
+            if not os.path.exists(candidate) or os.path.getsize(candidate) == 0:
+                return candidate, new_fieldnames, True
+
+            candidate_header = self._read_header(candidate)
+            if candidate_header == new_fieldnames:
+                return candidate, candidate_header, True
+
+            version += 1
+
+    @staticmethod
+    def _read_header(path: str) -> List[str]:
+        with open(path, "r", newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+        return header or []
 
 
 # --------------------------------------------------------------------------- #

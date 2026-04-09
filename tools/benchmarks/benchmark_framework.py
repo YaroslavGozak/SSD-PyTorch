@@ -37,6 +37,57 @@ IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3,
 IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3, 1, 1)
 
 
+class YoloV8Adapter:
+    """Adapter that returns detections in the same list-of-dicts shape as SSD models."""
+
+    def __init__(self, weights_path: str, device: torch.device):
+        try:
+            from ultralytics import YOLO
+        except ImportError as e:
+            raise ImportError(
+                "YOLO benchmark requires ultralytics. Install with: pip install ultralytics"
+            ) from e
+
+        self.device = device
+        self._yolo = YOLO(weights_path)
+
+    def to(self, device: torch.device):
+        self.device = device
+        return self
+
+    def eval(self):
+        return self
+
+    def __call__(self, images: torch.Tensor, _targets=None):
+        # Ultralytics returns pixel-space xyxy boxes. Convert to normalized [0,1]
+        # so downstream metric code can stay model-agnostic.
+        results = self._yolo.predict(source=images, verbose=False)
+        b, _, h, w = images.shape
+        detections = []
+        for res in results:
+            if res.boxes is None or len(res.boxes) == 0:
+                detections.append({
+                    'boxes': torch.empty((0, 4), dtype=torch.float32, device=images.device),
+                    'labels': torch.empty((0,), dtype=torch.int64, device=images.device),
+                    'scores': torch.empty((0,), dtype=torch.float32, device=images.device),
+                })
+                continue
+
+            boxes_xyxy = res.boxes.xyxy.to(images.device).float()
+            boxes_norm = boxes_xyxy.clone()
+            boxes_norm[:, [0, 2]] /= float(w)
+            boxes_norm[:, [1, 3]] /= float(h)
+
+            detections.append({
+                'boxes': boxes_norm,
+                # Project dataset labels are 1-based while YOLO classes are 0-based.
+                'labels': (res.boxes.cls.to(images.device).long() + 1),
+                'scores': res.boxes.conf.to(images.device).float(),
+            })
+
+        return None, detections
+
+
 class BenchmarkFramework:
     def __init__(self, config_path: str, output_dir: Optional[str] = None):
         """
@@ -158,6 +209,8 @@ class BenchmarkFramework:
             self.model = RoiSSD(config=model_config_params, num_classes=num_classes)
         elif model_name == 'ssd_mobilenet':
             self.model = SSDMobileNet(config=model_config_params, num_classes=num_classes)
+        elif model_name == 'yolo':
+            self.model = YoloV8Adapter(weights_path=checkpoint_path, device=self.device)
         else:
             raise ValueError(f"Unknown model: {model_name}")
         
@@ -165,7 +218,9 @@ class BenchmarkFramework:
         self.model.eval()
         
         # Load checkpoint
-        if os.path.exists(checkpoint_path):
+        if model_name == 'yolo':
+            print(f"Loaded YOLO weights: {checkpoint_path}")
+        elif os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location=self.device)
             if isinstance(checkpoint, dict) and 'model' in checkpoint:
                 self.model.load_state_dict(checkpoint['model'])
@@ -193,7 +248,8 @@ class BenchmarkFramework:
         inference_config = bench_params['inference']
         
         conf_threshold = inference_config['confidence_threshold']
-        self.model.low_score_threshold = conf_threshold
+        if hasattr(self.model, 'low_score_threshold'):
+            self.model.low_score_threshold = conf_threshold
         
         total_images = len(self.dataset)
         verbose = bench_params['output']['verbose']

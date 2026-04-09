@@ -1,6 +1,6 @@
 from dataset.voc_raw import VOCRawDataset
 from tools.infer import infer_and_evaluate
-from tools.roi_mixed_sampling import MixedBatchSampler, MixedCollateFn, RoiBatchProcessor
+from tools.train_samplers.roi_mixed_sampling import MixedBatchSampler, MixedCollateFn, RoiBatchProcessor
 import torch
 import argparse
 import os
@@ -33,6 +33,43 @@ class ImageNetNormalize:
         mean = torch.tensor([0.485, 0.456, 0.406], dtype=img.dtype, device=img.device).view(3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225], dtype=img.dtype, device=img.device).view(3, 1, 1)
         return (img - mean) / std
+
+
+def resolve_optional_weights_path(train_config, key_name):
+    weights_path = str(train_config.get(key_name, '')).strip()
+    if not weights_path:
+        return None
+    if os.path.exists(weights_path):
+        return weights_path
+
+    task_name = str(train_config.get('task_name', '')).strip()
+    if task_name:
+        candidate = os.path.join('trained_models', task_name, weights_path)
+        if os.path.exists(candidate):
+            return candidate
+    return weights_path
+
+
+def build_fcos_model(num_classes):
+    return torchvision.models.detection.fcos_resnet50_fpn(
+        weights=None,
+        weights_backbone=torchvision.models.ResNet50_Weights.DEFAULT,
+        num_classes=num_classes,
+    )
+
+
+def prepare_targets_for_fcos(images, targets, device):
+    prepared_targets = []
+    for image, target in zip(images, targets):
+        _, h, w = image.shape
+        boxes = target['boxes'].float().clone()
+        boxes[:, [0, 2]] *= float(w)
+        boxes[:, [1, 3]] *= float(h)
+        prepared_targets.append({
+            'boxes': boxes.to(device, non_blocking=True),
+            'labels': target['labels'].long().to(device, non_blocking=True),
+        })
+    return prepared_targets
 
 
 def train(args):
@@ -70,9 +107,10 @@ def train(args):
         seed=train_config['seed'],
     )
 
+    model_name = str(train_config['model'])
     processor = RoiBatchProcessor(
         image_only_transform=None,
-        normalize_transform=ImageNetNormalize(),
+        normalize_transform=None if model_name == 'fcos' else ImageNetNormalize(),
     )
 
     collate_fn = MixedCollateFn(processor, return_mode=True)
@@ -86,18 +124,16 @@ def train(args):
     )
 
     # Instantiate model and load checkpoint if present
-    if str(train_config['model']) == 'ssd':
+    if model_name == 'ssd':
         model = SSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
-    elif str(train_config['model']) == 'roissd':
+    elif model_name == 'roissd':
         model = RoiSSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
+    elif model_name == 'fcos':
+        model = build_fcos_model(num_classes=dataset_config['num_classes'])
     else:
         raise Exception('Unknown model name {}'.format(train_config['model']))
-    
-    pretrained_detector = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
-    pretrained_detector.to(device)
-    pretrained_detector.eval()
     
     model.to(device)
 
@@ -140,6 +176,17 @@ def train(args):
 
     else:
         print('No checkpoint found, starting training from scratch')
+        custom_weights_path = None
+        if model_name == 'fcos':
+            custom_weights_path = resolve_optional_weights_path(train_config, 'fcos_weights')
+        if custom_weights_path and os.path.exists(custom_weights_path):
+            print(f'Loading custom initialization weights from {custom_weights_path}')
+            checkpoint = torch.load(custom_weights_path, map_location=device)
+            if isinstance(checkpoint, dict) and 'model' in checkpoint:
+                model.load_state_dict(checkpoint['model'])
+            else:
+                model.load_state_dict(checkpoint)
+
     acc_steps = train_config['acc_steps']
     num_epochs = train_config['num_epochs']
     steps = 0
@@ -156,37 +203,46 @@ def train(args):
         epoch_start_time = time.time()
         ssd_classification_losses = []
         ssd_localization_losses = []
+        fcos_centerness_losses = []
         for idx, (images, targets, mode) in enumerate(tqdm(train_dataset_loader, desc='Training epoch {}'.format(i+1) )):
 
             if idx % 50 == 0:
                 print(f"Batch mode: {mode}, image size: {tuple(images.shape)}")
                     # Asynchronous GPU transfer for faster throughput
-            for target in targets:
-                try:
-                    target['boxes'] = target['boxes'].float().to(device, non_blocking=True)
-                    target['labels'] = target['labels'].long().to(device, non_blocking=True)
-                except Exception as e:
-                    print(targets)
-                    print(target)
-                    raise e
-                
-            # Stack images and transfer to GPU asynchronously
-            images = images.to(device, non_blocking=True)
-            ignore_regions = None
-            
-            batch_losses, _ = model(images, targets, ignore_regions)
+            if model_name == 'fcos':
+                image_list = [image.to(device, non_blocking=True) for image in images]
+                targets = prepare_targets_for_fcos(images, targets, device)
+                batch_losses = model(image_list, targets)
+                loss = sum(batch_losses.values())
+                classification_loss = batch_losses['classification']
+                localization_loss = batch_losses['bbox_regression'] + batch_losses.get('bbox_ctrness', 0.0)
+                if 'bbox_ctrness' in batch_losses:
+                    fcos_centerness_losses.append(batch_losses['bbox_ctrness'].item())
+            else:
+                for target in targets:
+                    try:
+                        target['boxes'] = target['boxes'].float().to(device, non_blocking=True)
+                        target['labels'] = target['labels'].long().to(device, non_blocking=True)
+                    except Exception as e:
+                        print(targets)
+                        print(target)
+                        raise e
 
-            loss = batch_losses['classification']
-            loss += batch_losses['bbox_regression']
+                images = images.to(device, non_blocking=True)
+                ignore_regions = None
+                batch_losses, _ = model(images, targets, ignore_regions)
+                classification_loss = batch_losses['classification']
+                localization_loss = batch_losses['bbox_regression']
+                loss = classification_loss + localization_loss
 
             # Check for NaN before combining losses
-            if torch.isnan(batch_losses['classification']) or torch.isnan(batch_losses['bbox_regression']):
-                print(f"NaN detected! Classification: {batch_losses['classification'].item()}, BBox: {batch_losses['bbox_regression'].item()}")
+            if torch.isnan(classification_loss) or torch.isnan(localization_loss):
+                print(f"NaN detected! Classification: {classification_loss.item()}, BBox: {localization_loss.item()}")
                 print(f"Batch index: {idx}")
                 print('Targets: {}'.format(targets))
 
-            ssd_classification_losses.append(batch_losses['classification'].item())
-            ssd_localization_losses.append(batch_losses['bbox_regression'].item())
+            ssd_classification_losses.append(classification_loss.item())
+            ssd_localization_losses.append(localization_loss.item())
             loss = loss / acc_steps
             loss.backward()
 
@@ -211,6 +267,8 @@ def train(args):
                 loss_output = ''
                 loss_output += 'SSD Classification Loss : {:.4f}'.format(np.mean(ssd_classification_losses))
                 loss_output += ' | SSD Localization Loss : {:.4f}'.format(np.mean(ssd_localization_losses))
+                if model_name == 'fcos' and fcos_centerness_losses:
+                    loss_output += ' | FCOS Centerness Loss : {:.4f}'.format(np.mean(fcos_centerness_losses))
                 print(loss_output)
             if torch.isnan(loss):
                 print('Loss is becoming nan. Exiting')
