@@ -1,0 +1,26 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class aeroplane = 0.5368  |  detector_recall = 0.7088
+AP for class bicycle = 0.6928  |  detector_recall = 0.8065
+AP for class bird = 0.4988  |  detector_recall = 0.6886
+AP for class boat = 0.3403  |  detector_recall = 0.6692
+AP for class bottle = 0.2166  |  detector_recall = 0.6018
+AP for class bus = 0.6458  |  detector_recall = 0.8396
+AP for class car = 0.6584  |  detector_recall = 0.8034
+AP for class cat = 0.6432  |  detector_recall = 0.8296
+AP for class chair = 0.3768  |  detector_recall = 0.8215
+AP for class cow = 0.5392  |  detector_recall = 0.7197
+AP for class diningtable = 0.5573  |  detector_recall = 0.9029
+AP for class dog = 0.5731  |  detector_recall = 0.7975
+AP for class horse = 0.6627  |  detector_recall = 0.7989
+AP for class motorbike = 0.6326  |  detector_recall = 0.8025
+AP for class person = 0.6186  |  detector_recall = 0.8080
+AP for class pottedplant = 0.2819  |  detector_recall = 0.5753
+AP for class sheep = 0.5429  |  detector_recall = 0.7851
+AP for class sofa = 0.5235  |  detector_recall = 0.8787
+AP for class train = 0.5974  |  detector_recall = 0.7695
+AP for class tvmonitor = 0.5155  |  detector_recall = 0.7738
+==================================================
+Mean Average Precision : 0.5327
+Mean Detector Recall   : 0.7690
