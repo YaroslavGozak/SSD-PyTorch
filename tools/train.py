@@ -14,6 +14,7 @@ from dataset.visdrone import VisDroneDataset
 from dataset.voc import VOCDataset
 from dataset.ytbb import YTBBDataset
 from model.roissd import RoiSSD
+from model.roissd_mobilenet import RoiSSDMobileNet
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
@@ -101,6 +102,9 @@ def train(args):
                 num_classes=dataset_config['num_classes'])
     elif str(train_config['model']) == 'roissd':
         model = RoiSSD(config=config['model_params'],
+                num_classes=dataset_config['num_classes'])
+    elif str(train_config['model']) == 'roissd-mobilenet':
+        model = RoiSSDMobileNet(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
     else:
         raise Exception('Unknown model name {}'.format(train_config['model']))

@@ -4,6 +4,7 @@ import time
 import numpy as np
 import torchvision
 from dataset.voc import VOCDataset
+from model.roissd_mobilenet import RoiSSDMobileNet
 from tools.voc.adapters.coco_to_voc_adapter import CocoToVocAdapter
 import torch
 import yaml
@@ -108,8 +109,8 @@ def build_fasterrcnn_model(num_classes):
 # -------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Measure inference cost model T = K + cA")
-    parser.add_argument("--config", default="config/voc-fasterrcnn.yaml", help="Path to training config")
-    parser.add_argument("--model", choices=["yolo", "roissd", "fcos", "fasterrcnn"], default="yolo", help="Model to benchmark")
+    parser.add_argument("--config", default="config/voc.yaml", help="Path to training config")
+    parser.add_argument("--model", choices=["yolo", "roissd", "roissd-mobilenet", "fcos", "fasterrcnn"], default="yolo", help="Model to benchmark")
     parser.add_argument("--yolo-weights", default="yolov8n.pt", help="Ultralytics YOLO weights path")
     parser.add_argument("--iters", type=int, default=50, help="Timed iterations per image size")
     parser.add_argument("--cuda", action="store_true", help="Also benchmark on CUDA if available")
@@ -139,6 +140,13 @@ if __name__ == "__main__":
             num_classes=dataset_config['num_classes']
         )
         print("Benchmarking model: RoiSSD")
+        is_yolo = False
+    elif args.model == "roissd-mobilenet":
+        model = RoiSSDMobileNet(
+            config=config['model_params'],
+            num_classes=dataset_config['num_classes']
+        )
+        print("Benchmarking model: RoiSSDMobileNet")
         is_yolo = False
     elif args.model == 'fcos':
         model = build_fcos_model(num_classes=dataset_config['num_classes'])
