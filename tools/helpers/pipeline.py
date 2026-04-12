@@ -69,28 +69,53 @@ class YoloV8Adapter:
         mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
         std  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
         images_01 = (images.float() * std + mean).clamp(0.0, 1.0)
-        results = self._yolo.predict(source=images_01, verbose=False)
+
+        pred = self._yolo.model(images_01)
+        if isinstance(pred, (list, tuple)):
+            pred = pred[0]
+
+        # Case A: already postprocessed [B, N, 6]
+        if isinstance(pred, torch.Tensor) and pred.ndim == 3 and pred.shape[-1] == 6:
+            batch = pred
+        else:
+            # Case B: raw head output, run NMS once yourself
+            from ultralytics.utils.ops import non_max_suppression
+            nms_list = non_max_suppression(pred, conf_thres=0.25, iou_thres=0.45, max_det=300)
+            batch = []
+            for det in nms_list:
+                if det is None or det.numel() == 0:
+                    batch.append(torch.empty((0, 6), device=images.device))
+                else:
+                    batch.append(det[:, :6])
+            batch = torch.stack([
+                b if b.ndim == 2 else b.view(0, 6) for b in batch
+            ], dim=0)
+
         _, _, h, w = images.shape
         out = []
-        for res in results:
-            if res.boxes is None or len(res.boxes) == 0:
+        for det in batch:
+            if det.numel() == 0:
                 out.append({
-                    'boxes': torch.empty((0, 4), dtype=torch.float32, device=images.device),
-                    'labels': torch.empty((0,), dtype=torch.int64, device=images.device),
-                    'scores': torch.empty((0,), dtype=torch.float32, device=images.device),
+                    "boxes": torch.empty((0, 4), dtype=torch.float32, device=images.device),
+                    "labels": torch.empty((0,), dtype=torch.int64, device=images.device),
+                    "scores": torch.empty((0,), dtype=torch.float32, device=images.device),
                 })
                 continue
 
-            xyxy = res.boxes.xyxy.to(images.device).float()
+            xyxy = det[:, :4].to(images.device).float()
+            conf = det[:, 4].to(images.device).float()
+            cls  = det[:, 5].to(images.device).long()
+
             boxes = xyxy.clone()
             boxes[:, [0, 2]] /= float(w)
             boxes[:, [1, 3]] /= float(h)
 
             out.append({
-                'boxes': boxes,
-                'labels': (res.boxes.cls.to(images.device).long() + 1),
-                'scores': res.boxes.conf.to(images.device).float(),
+                "boxes": boxes,
+                "labels": cls + 1,   # keep your project class indexing
+                "scores": conf,
             })
+
         return None, out
 
 
