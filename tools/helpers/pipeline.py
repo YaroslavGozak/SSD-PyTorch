@@ -40,7 +40,7 @@ IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3,
 class YoloV8Adapter:
     """YOLO wrapper that returns normalized detections in project format."""
 
-    def __init__(self, weights_path: str, device: torch.device):
+    def __init__(self, weights_path: str, device: torch.device, use_predict_api: bool = True):
         try:
             from ultralytics import YOLO
         except ImportError as e:
@@ -49,6 +49,8 @@ class YoloV8Adapter:
             ) from e
         self._yolo = YOLO(weights_path)
         self.device = device
+        self.use_predict_api = use_predict_api
+        print(f"[YOLO] Using {'predict API' if use_predict_api else 'raw model output'} mode for inference")
 
     def to(self, device: torch.device = None, **_kwargs):
         if device is not None:
@@ -70,53 +72,83 @@ class YoloV8Adapter:
         std  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
         images_01 = (images.float() * std + mean).clamp(0.0, 1.0)
 
-        pred = self._yolo.model(images_01)
-        if isinstance(pred, (list, tuple)):
-            pred = pred[0]
+        # Use Ultralytics high-level predict API, which returns Results objects
+        # (with .boxes) instead of raw model head tensors.
+        device_arg = str(self.device) if self.device is not None else None
 
-        # Case A: already postprocessed [B, N, 6]
-        if isinstance(pred, torch.Tensor) and pred.ndim == 3 and pred.shape[-1] == 6:
-            batch = pred
-        else:
-            # Case B: raw head output, run NMS once yourself
-            from ultralytics.utils.ops import non_max_suppression
-            nms_list = non_max_suppression(pred, conf_thres=0.25, iou_thres=0.45, max_det=300)
-            batch = []
-            for det in nms_list:
-                if det is None or det.numel() == 0:
-                    batch.append(torch.empty((0, 6), device=images.device))
-                else:
-                    batch.append(det[:, :6])
-            batch = torch.stack([
-                b if b.ndim == 2 else b.view(0, 6) for b in batch
-            ], dim=0)
+        if self.use_predict_api:
+            results = self._yolo.predict(source=images_01, verbose=False, device=device_arg)
 
-        _, _, h, w = images.shape
-        out = []
-        for det in batch:
-            if det.numel() == 0:
+            _, _, h, w = images.shape
+            out = []
+            for res in results:
+                if res.boxes is None or len(res.boxes) == 0:
+                    out.append({
+                        'boxes': torch.empty((0, 4), dtype=torch.float32, device=images.device),
+                        'labels': torch.empty((0,), dtype=torch.int64, device=images.device),
+                        'scores': torch.empty((0,), dtype=torch.float32, device=images.device),
+                    })
+                    continue
+
+                xyxy = res.boxes.xyxy.to(images.device).float()
+                boxes = xyxy.clone()
+                boxes[:, [0, 2]] /= float(w)
+                boxes[:, [1, 3]] /= float(h)
+
                 out.append({
-                    "boxes": torch.empty((0, 4), dtype=torch.float32, device=images.device),
-                    "labels": torch.empty((0,), dtype=torch.int64, device=images.device),
-                    "scores": torch.empty((0,), dtype=torch.float32, device=images.device),
+                    'boxes': boxes,
+                    'labels': (res.boxes.cls.to(images.device).long() + 1),
+                    'scores': res.boxes.conf.to(images.device).float(),
                 })
-                continue
+            return None, out
+        else:
+            pred = self._yolo.model(images_01)
+            if isinstance(pred, (list, tuple)):
+                pred = pred[0]
 
-            xyxy = det[:, :4].to(images.device).float()
-            conf = det[:, 4].to(images.device).float()
-            cls  = det[:, 5].to(images.device).long()
+            # Case A: already postprocessed [B, N, 6]
+            if isinstance(pred, torch.Tensor) and pred.ndim == 3 and pred.shape[-1] == 6:
+                batch = pred
+            else:
+                # Case B: raw head output, run NMS once yourself
+                from ultralytics.utils.ops import non_max_suppression
+                nms_list = non_max_suppression(pred, conf_thres=0.25, iou_thres=0.45, max_det=300)
+                batch = []
+                for det in nms_list:
+                    if det is None or det.numel() == 0:
+                        batch.append(torch.empty((0, 6), device=images.device))
+                    else:
+                        batch.append(det[:, :6])
+                batch = torch.stack([
+                    b if b.ndim == 2 else b.view(0, 6) for b in batch
+                ], dim=0)
 
-            boxes = xyxy.clone()
-            boxes[:, [0, 2]] /= float(w)
-            boxes[:, [1, 3]] /= float(h)
+            _, _, h, w = images.shape
+            out = []
+            for det in batch:
+                if det.numel() == 0:
+                    out.append({
+                        "boxes": torch.empty((0, 4), dtype=torch.float32, device=images.device),
+                        "labels": torch.empty((0,), dtype=torch.int64, device=images.device),
+                        "scores": torch.empty((0,), dtype=torch.float32, device=images.device),
+                    })
+                    continue
 
-            out.append({
-                "boxes": boxes,
-                "labels": cls + 1,   # keep your project class indexing
-                "scores": conf,
-            })
+                xyxy = det[:, :4].to(images.device).float()
+                conf = det[:, 4].to(images.device).float()
+                cls  = det[:, 5].to(images.device).long()
 
-        return None, out
+                boxes = xyxy.clone()
+                boxes[:, [0, 2]] /= float(w)
+                boxes[:, [1, 3]] /= float(h)
+
+                out.append({
+                    "boxes": boxes,
+                    "labels": cls + 1,   # keep your project class indexing
+                    "scores": conf,
+                })
+
+            return None, out
 
 
 def run_model_inference(model, images: torch.Tensor):
@@ -268,7 +300,7 @@ def load_model_and_dataset(device, args):
             candidate = os.path.join('trained_models', task_name, weights_path)
             if os.path.exists(candidate):
                 weights_path = candidate
-        model = YoloV8Adapter(weights_path=weights_path, device=device)
+        model = YoloV8Adapter(weights_path=weights_path, device=device, use_predict_api=True)
     else:
         raise Exception(f'Unknown model name {model_name!r}')
 

@@ -164,7 +164,7 @@ if __name__ == "__main__":
             normalize_boxes=True,
         )
         is_yolo = False
-    else:
+    elif args.model == 'yolo':
         try:
             from ultralytics import YOLO
         except ImportError as e:
@@ -174,6 +174,8 @@ if __name__ == "__main__":
         model = YOLO(args.yolo_weights).model
         is_yolo = True
         print(f"Benchmarking model: YOLO ({args.yolo_weights})")
+    else:
+        raise ValueError(f"Unsupported model: {args.model}")
 
     measure_time(model, device='cpu', iters=args.iters, is_yolo=is_yolo)
     if args.cuda and torch.cuda.is_available():
