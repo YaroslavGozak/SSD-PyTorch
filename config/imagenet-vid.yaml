@@ -1,0 +1,57 @@
+dataset_params:
+  # ImageNet-VID dataset configuration (actual ILSVRC2015 structure)
+  # Separate Data and Annotations root directories per split
+  # No split files needed - loader walks directory tree to find all frames
+  train_data_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Data\VID\val'
+  train_ann_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Annotations\VID\VOC20KAnnotations\val'
+  test_data_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Data\VID\val'
+  test_ann_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Annotations\VID\VOC20KAnnotations\val'
+  filter_voc_overlap: true
+  num_classes : 34
+  im_size : 320
+  transform_name : 'ssd'
+  # resize_longer_edge
+  # roi_crop_test_transform
+  # letterbox
+  # ssd
+  # no_resize_transform
+  # fixed_padding_roi_crop_X
+
+model_params:
+  im_channels : 3
+  aspect_ratios : [
+    [ 1., 2., 0.5 ],
+    [ 1., 2., 3., 0.5, .333 ],
+    [ 1., 2., 3., 0.5, .333 ],
+    [ 1., 2., 3., 0.5, .333 ],
+    [ 1., 2., 0.5 ],
+    [ 1., 2., 0.5 ]
+  ]
+  # scales : [0.2, 0.35, 0.5, 0.65, 0.8, 0.95]
+  scales : [0.1, 0.2, 0.375, 0.55, 0.725, 0.9]
+  iou_threshold : 0.5
+  low_score_threshold : 0.01
+  neg_pos_ratio : 3
+  pre_nms_topK : 400
+  detections_per_img : 200
+  nms_threshold : 0.45
+
+train_params:
+  model: 'yolo'
+  dataset: 'imagenet-vid'
+  model_label_space: 'voc'
+  roi_mixed_stage: 1
+  seed: 1111
+  acc_steps: 3
+  num_epochs: 100
+  batch_size: 16
+  lr_steps: [ 40, 50, 60, 70, 80, 90 ]
+  lr: 0.001
+  freeze_backbone_bn: false
+  freeze_extra_bn: false
+  train_bn_affine: true
+  log_steps : 100
+  infer_conf_threshold : 0.5
+  task_name: 'voc-yolo26n'
+  ckpt_name: 'imagenet20kstage3.pt'
+  yolo_weights: 'best.pt'
