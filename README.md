@@ -81,6 +81,60 @@ For setting up the VOC 2007 dataset:
               -> voc.py
       ```
 
+## ImageNet-VID VOC-Compatible Subset
+If you want to benchmark VOC-trained models on ImageNet-VID without retraining, the repo now includes a standalone subset builder that creates a neighboring `VOC10KAnnotations` tree containing only selected clips and only VOC-overlap objects.
+
+The script does not copy images. It copies and prunes XML files only, preserving the original train or val annotation structure so the existing ImageNet-VID dataset loader can discover selected frames by annotation presence.
+
+Run the subset builder with:
+
+```powershell
+python -m tools.build_imagenet_vid_voc_subset \
+    --data-root "D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Data\VID" \
+    --ann-root "D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Annotations\VID" \
+    --split val \
+    --target-clips 200 \
+    --clip-length 100 \
+    --clip-stride 100 \
+    --max-clips-per-video 3 \
+    --overwrite
+```
+
+Key behavior:
+* Only frames with at least one VOC-compatible ImageNet-VID object are eligible.
+* Selected clips are contiguous in original frame indices.
+* Written XMLs are pruned to VOC-overlap objects only.
+* The output folder contains `manifest.json` and `selected_clips.csv` so the subset can be inspected and regenerated reproducibly.
+
+The generated annotation layout looks like:
+
+```
+...\Annotations\VID
+        -> train
+        -> val
+        -> VOC10KAnnotations
+                -> train
+                        -> a\video_name\frame.xml
+                        -> b\video_name\frame.xml
+                -> val
+                        -> video_name\frame.xml
+                -> manifest.json
+                -> selected_clips.csv
+```
+
+To use the generated subset with the existing ImageNet-VID loader, point the annotation root in your config at the generated split directory. For example:
+
+```yaml
+dataset_params:
+    train_data_root: 'D:\ImageNet-VID\...\Data\VID\train'
+    train_ann_root: 'D:\ImageNet-VID\...\Annotations\VID\VOC10KAnnotations\train'
+    test_data_root: 'D:\ImageNet-VID\...\Data\VID\val'
+    test_ann_root: 'D:\ImageNet-VID\...\Annotations\VID\VOC10KAnnotations\val'
+    filter_voc_overlap: true
+```
+
+This works because `dataset/imagenet_vid.py` already walks the image tree and only keeps frames whose XML exists under the configured annotation root.
+
 ## For training on your own dataset
 
 * Update the path for `train_im_sets`, `test_im_sets` in config
