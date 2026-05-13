@@ -2,15 +2,16 @@
 """
 Merge fixed_padding_roi_crop_NNN_results/mAp.csv files into fixed_padding_results.csv
 
-For each model in trained_models/, this script:
-1. Finds all fixed_padding_roi_crop_NNN_results folders
-2. Extracts NNN from the folder name
-3. Merges all mAp.csv files with crop_px as the first column
+Usage:
+    python merge_csv.py                          # Process all models
+    python merge_csv.py voc-roissd               # Process specific model
+    python merge_csv.py /path/to/model           # Process using full path
 """
 
 import os
 import csv
 import re
+import sys
 from pathlib import Path
 
 
@@ -65,28 +66,54 @@ def merge_padding_results(model_folder):
 
 
 def main():
-    base_dir = os.path.join(os.path.dirname(__file__), '..', 'trained_models')
+    base_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'trained_models')
     
     if not os.path.exists(base_dir):
         print(f"Error: trained_models directory not found at {base_dir}")
         return
     
-    print(f"Scanning: {base_dir}\n")
-    
-    model_folders = sorted([
-        d for d in os.listdir(base_dir)
-        if os.path.isdir(os.path.join(base_dir, d))
-    ])
-    
-    processed = 0
-    for model_name in model_folders:
-        model_folder = os.path.join(base_dir, model_name)
-        print(f"Processing: {model_name}")
+    # Check if model name/path was provided
+    if len(sys.argv) > 1:
+        model_spec = sys.argv[1]
+        
+        # Check if it's a full path
+        if os.path.isdir(model_spec):
+            model_folder = model_spec
+            model_name = os.path.basename(model_spec)
+        else:
+            # Treat as model name
+            model_folder = os.path.join(base_dir, model_spec)
+            model_name = model_spec
+        
+        if not os.path.isdir(model_folder):
+            print(f"Error: Model directory not found: {model_folder}")
+            sys.exit(1)
+        
+        print(f"Processing: {model_name}\n")
         result = merge_padding_results(model_folder)
+        
         if result is not None:
-            processed += 1
-    
-    print(f"\n✓ Done! Processed {processed} model(s)")
+            print(f"✓ Done! Merged {result} rows")
+        else:
+            print("✗ No results to merge")
+    else:
+        # Process all models
+        print(f"Scanning: {base_dir}\n")
+        
+        model_folders = sorted([
+            d for d in os.listdir(base_dir)
+            if os.path.isdir(os.path.join(base_dir, d))
+        ])
+        
+        processed = 0
+        for model_name in model_folders:
+            model_folder = os.path.join(base_dir, model_name)
+            print(f"Processing: {model_name}")
+            result = merge_padding_results(model_folder)
+            if result is not None:
+                processed += 1
+        
+        print(f"\n✓ Done! Processed {processed} model(s)")
 
 
 if __name__ == '__main__':

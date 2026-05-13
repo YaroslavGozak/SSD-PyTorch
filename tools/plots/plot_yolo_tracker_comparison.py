@@ -44,7 +44,7 @@ def main() -> None:
     df = pd.read_csv(args.input_csv)
 
     # Keep YOLO rows only.
-    df = df[df["model"].astype(str).str.contains("yolo", case=False, na=False)]
+    # df = df[df["model"].astype(str).str.contains("yolo", case=False, na=False)]
 
     # Keep static + kalman only.
     df = df[df["tracker"].isin(["static_padding", "kalman"])]

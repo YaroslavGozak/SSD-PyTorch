@@ -3,29 +3,33 @@ import glob
 import os
 import matplotlib.pyplot as plt
 
+BASE_DIR = 'H:\\Projects\\University\\SSD-PyTorch'
 
 MODEL_LABELS = {
-    # 'voc-roissd-full-frame': 'ROI-SSD Стандартне навчання',
-    'voc-roissd-best': 'ROI-SSD',
+    # 'voc-roissd-full-frame': 'ROI-SSD (Standart training)',
+    # 'voc-roissd-best': 'ROI-SSD',
     # 'voc-roissd-scheduled-training': 'Прогресивне навчання зі зменшеними регіонами',
     # 'voc-roissd-sc-tr-roi-decrease': 'ROI-SSD',
     # 'voc-roissd-0-pad-stage-2': 'Навчання з 0-піксельним відступом',
-    # 'voc-roissd-0-pad': 'Навчання з 0-піксельним відступом 3 стейджи',
+    # 'voc-roissd-0-pad': 'ROI-SSD (Progressive training)',
     # 'voc-roissd-small-pads': 'Навчання з малими відступами',
     # 'voc-roissd-smaller-pads': 'Навчання з ще меншими відступами',
-    'voc-yolo11n': 'YOLOv11n',
-    'voc-yolo26s': 'YOLOv26s',
-    'voc-yolo26m': 'YOLOv26m',
+    # 'voc-yolo11n': 'YOLOv11n',
+    # 'voc-yolo26s': 'YOLOv26s',
+    # 'voc-yolo26m': 'YOLOv26m',
+    # 'imagenet-vid-roissd' : 'RoI-SSD (ImageNet-VID)',
+    'imagenet-vid-yolo26n' : 'YOLO 26n (ImageNet-VID)',
 }
 
 def _load_voc_ssd_baseline():
     """Load Mean Average Precision from voc-ssd baseline"""
     baseline_path = os.path.join(
-        os.path.dirname(__file__), '..', 'trained_models', 
+        BASE_DIR, 'trained_models', 
         'voc-ssd', 'ssd_results', 'mAp.txt'
     )
     
     if not os.path.exists(baseline_path):
+        print(f"Warning: Baseline mAp file not found at {baseline_path}")
         return None
     
     with open(baseline_path, 'r') as f:
@@ -34,7 +38,9 @@ def _load_voc_ssd_baseline():
                 try:
                     return float(line.split(':')[1].strip())
                 except (IndexError, ValueError):
+                    print(f"Warning: Could not parse mAp value from line: {line}")
                     return None
+    print(f"Warning: mAp value not found in {baseline_path}")
     return None
 
 def _load_padding_curve(csv_path):
@@ -160,7 +166,7 @@ if voc_ssd_baseline is not None:
         color='red',
         linestyle='--',
         linewidth=1.2,
-        label=f"Класична SSD = {voc_ssd_baseline:.3f} mAp",
+        label=f"Classic SSD = {voc_ssd_baseline:.3f} mAp",
     )
 
 if ref_curve['no_crop_map'] is not None:
@@ -187,9 +193,9 @@ for curve in curves:
             color='black',
         )
 
-ax.set_xlabel('Відступ (пікселі)')
+ax.set_xlabel('Padding (pixels)')
 ax.set_ylabel('mAP@0.5')
-ax.set_title('Залежність точності від відступу до об\'єкта - моделі VOC RoI-SSD')
+ax.set_title('Dependence of Accuracy on Object Padding - VOC RoI-SSD Models')
 ax.grid(True, alpha=0.35)
 ax.legend(loc='best', fontsize=9)
 fig.tight_layout()
