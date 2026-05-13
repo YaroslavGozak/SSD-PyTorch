@@ -121,10 +121,7 @@ def load_images_and_anns_imagenet_vid(
         video_id = f"{class_folder}/{video_name}" if class_folder else video_name
         
         if video_id not in seen_video_ids:
-            seen_video_ids.add(video_id)
-            print(f"Processing video: {video_id}")
-            print(f"Loaded frames count: {len(im_infos)} (kept_frames={kept_frames}, skipped_frames={skipped_frames}, kept_objects={kept_objects}, dropped_objects={dropped_objects})")
-        
+            seen_video_ids.add(video_id)        
         
         # Parse XML annotation
         try:
