@@ -16,6 +16,7 @@ Usage:
 import argparse
 import csv
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -137,14 +138,19 @@ class VideoSequenceBenchmark:
         self.verbose = bool(out.get("verbose", True))
 
         tracker_cfg = p.get("tracker", {})
+        kalman_cfg = tracker_cfg.get("kalman", {})
         static_padding_cfg = tracker_cfg.get("static_padding", {})
+        oracle_gt_cfg = tracker_cfg.get("oracle_gt", {})
         dropout_cfg = p.get("tracker_input_dropout", {})
 
         self.run_metadata = {
             "benchmark_device": str(p.get("device", "cpu")),
             "benchmark_tracker_type": str(tracker_cfg.get("type", "unknown")),
+            "kalman_pmin": int(kalman_cfg.get("pmin", 0)),
             "static_pad_x": int(static_padding_cfg.get("pad_x", 0)),
             "static_pad_y": int(static_padding_cfg.get("pad_y", 0)),
+            "oracle_gt_pad_x": int(oracle_gt_cfg.get("pad_x", 0)),
+            "oracle_gt_pad_y": int(oracle_gt_cfg.get("pad_y", 0)),
             "static_hold_last_for_frames": int(static_padding_cfg.get("hold_last_for_frames", 0)),
             "tracker_dropout_enabled": bool(dropout_cfg.get("enabled", False)),
             "tracker_dropout_mode": str(dropout_cfg.get("mode", "none")),
@@ -159,6 +165,7 @@ class VideoSequenceBenchmark:
         self._train_config_path = self.cfg["train_config_path"]
 
     def run(self) -> Dict[str, Any]:
+        run_start_time = time.perf_counter()
         args = argparse.Namespace(config_path=self._train_config_path)
         model, dataset, data_loader, train_cfg = load_model_and_dataset(self.cfg["benchmark_vid_params"]["device"], args)
 
@@ -269,9 +276,9 @@ class VideoSequenceBenchmark:
             predictions, ground_truths, difficulties,
             lat_full, lat_roi, lat_merge,
             area_ratios, roi_counts_pre, roi_counts_post, gt_coverages,
-            frame_idx, train_cfg,
+            frame_idx, train_cfg
         )
-        self._print(metrics)
+        self._print(metrics, elapsed_s=time.perf_counter() - run_start_time)
         self._save(metrics)
         return metrics
 
@@ -287,6 +294,15 @@ class VideoSequenceBenchmark:
         if self.verbose:
             print("\nComputing metrics...")
 
+        train_params = cfg["train_params"]
+        model_family = str(train_params["model"])
+        task_name = str(train_params.get("task_name", ""))
+        checkpoint_name = str(train_params.get("ckpt_name", ""))
+        yolo_weights = str(train_params.get("yolo_weights", ""))
+        model_label = model_family
+        if model_family == "yolo" and task_name:
+            model_label = task_name
+
         mAP50, aps50, detector_recall50, class_recalls50 = compute_map(predictions, ground_truths, iou_threshold=0.5,  difficult=difficulties)
         mAP95, aps95, detector_recall95, class_recalls95 = compute_map(predictions, ground_truths, iou_threshold=0.95, difficult=difficulties)
 
@@ -297,7 +313,11 @@ class VideoSequenceBenchmark:
         all_lat_ms = ms(lat_full + lat_roi)
         return {
             "dataset":   cfg["train_params"]["dataset"],
-            "model":     cfg["train_params"]["model"],
+            "model":     model_label,
+            "model_family": model_family,
+            "model_task_name": task_name,
+            "model_checkpoint": checkpoint_name,
+            "model_yolo_weights": yolo_weights,
             "num_frames": n_frames,
             "key_frame_interval": self.key_frame_interval,
             "tracker_type": self.cfg["benchmark_vid_params"]["tracker"]["type"],
@@ -329,12 +349,17 @@ class VideoSequenceBenchmark:
             "gt_roi_coverage_p5":   sperc(np.array(gt_coverages), 5),
         }
 
-    def _print(self, m: Dict[str, Any]) -> None:
+    def _print(self, m: Dict[str, Any], elapsed_s: float) -> None:
         print("\n" + "=" * 70)
         print("VIDEO BENCHMARK RESULTS")
         print("=" * 70)
         print(f"Dataset: {m['dataset']}  Model: {m['model']}  Tracker: {m['tracker_type']}")
+        if m.get("model_checkpoint"):
+            print(f"Checkpoint: {m['model_checkpoint']}")
+        if m.get("model_yolo_weights"):
+            print(f"YOLO weights: {m['model_yolo_weights']}")
         print(f"Frames: {m['num_frames']}  Key-frame interval: {m['key_frame_interval']}")
+        print(f"Elapsed total time: {elapsed_s:.1f} s")
         print(f"\n{'Detection Quality':─<35}")
         print(f"  mAP@0.50          : {m['mAP50']:.4f}")
         print(f"  mAP@0.95          : {m['mAP95']:.4f}")
@@ -370,10 +395,14 @@ class VideoSequenceBenchmark:
             **self.run_metadata,
             **flat,
         }
-        fieldnames = sorted(row.keys())
+        fieldnames = self._order_csv_fieldnames(row)
 
         output_path, output_fieldnames, migrated = self._resolve_output_path(path, fieldnames)
         need_header = not os.path.exists(output_path) or os.path.getsize(output_path) == 0
+
+        if not need_header and self._file_missing_trailing_newline(output_path):
+            with open(output_path, "a", encoding="utf-8") as f:
+                f.write("\n")
 
         with open(output_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=output_fieldnames)
@@ -385,6 +414,26 @@ class VideoSequenceBenchmark:
             print(f"\nSchema changed. Appending to migrated CSV: {output_path}")
         else:
             print(f"\nResults appended to: {output_path}")
+
+    @staticmethod
+    def _order_csv_fieldnames(row: Dict[str, Any]) -> List[str]:
+        """Keep class-wise metric columns grouped at the end of the CSV."""
+        classwise_prefixes = (
+            "per_class_ap50_",
+            "per_class_ap95_",
+            "per_class_detector_recall50_",
+            "per_class_detector_recall95_",
+        )
+
+        non_class_fields = sorted(
+            key for key in row.keys()
+            if not any(key.startswith(prefix) for prefix in classwise_prefixes)
+        )
+        class_fields = sorted(
+            key for key in row.keys()
+            if any(key.startswith(prefix) for prefix in classwise_prefixes)
+        )
+        return non_class_fields + class_fields
 
     def _resolve_output_path(self, preferred_path: str, new_fieldnames: List[str]) -> Tuple[str, List[str], bool]:
         """Find a CSV target path that matches schema, auto-migrating to _vN on mismatch."""
@@ -414,6 +463,16 @@ class VideoSequenceBenchmark:
             reader = csv.reader(f)
             header = next(reader, None)
         return header or []
+
+    @staticmethod
+    def _file_missing_trailing_newline(path: str) -> bool:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return False
+
+        with open(path, "rb") as f:
+            f.seek(-1, os.SEEK_END)
+            last_byte = f.read(1)
+        return last_byte not in (b"\n", b"\r")
 
 
 # --------------------------------------------------------------------------- #
