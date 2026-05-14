@@ -9,13 +9,23 @@ import csv
 from tqdm import tqdm
 import torchvision
 from dataset.ytbb import YTBBDataset
+from dataset.imagenet_vid import ImageNetVidDataset
 from model.roissd import RoiSSD
+from model.roissd_mobilenet import RoiSSDMobileNet
 from model.ssd import SSD
 import numpy as np
 import cv2
 from dataset.voc import VOCDataset
 from dataset.voc_small_objects import VOCSmallObjectsDataset
 from torch.utils.data.dataloader import DataLoader
+from tools.helpers.label_compat import (
+    VOC_LABEL2IDX,
+    get_model_label_space,
+    get_model_num_classes,
+    maybe_wrap_model_for_dataset,
+    should_filter_imagenet_vid_to_voc_overlap,
+)
+from model.model_adapters import DetectionLabelRemapAdapter, YoloV8Adapter
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if torch.backends.mps.is_available():
@@ -222,25 +232,36 @@ def load_model_and_dataset(args, transform_name=None):
 
     dataset_config = config['dataset_params']
     train_config = config['train_params']
+    dataset_name = str(train_config['dataset'])
+    model_num_classes = get_model_num_classes(train_config, dataset_config, dataset_name)
 
-    if str(train_config['dataset']) == 'vis-drone':
+    if dataset_name == 'vis-drone':
         dataset = VisDroneDataset('test',
                      im_sets=dataset_config['test_im_sets'],
                      im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'ytbb':
+    elif dataset_name == 'ytbb':
         dataset = YTBBDataset('test',
                      root_dir=dataset_config['root_dir'],
                      im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'voc':
+    elif dataset_name == 'voc':
         dataset = VOCDataset('test',
                      im_sets=dataset_config['test_im_sets'],
                      im_size=dataset_config['im_size'],
                      transform_name=transform_name)
-    elif str(train_config['dataset']) == 'voc-small-objects':
+    elif dataset_name == 'voc-small-objects':
         dataset = VOCSmallObjectsDataset('test',
                      im_sets=dataset_config['test_im_sets'],
                      im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
+                     transform_name=transform_name)
+    elif dataset_name == 'imagenet-vid':
+        dataset = ImageNetVidDataset('test',
+                     train_data_root=dataset_config['train_data_root'],
+                     train_ann_root=dataset_config['train_ann_root'],
+                     test_data_root=dataset_config['test_data_root'],
+                     test_ann_root=dataset_config['test_ann_root'],
+                     im_size=dataset_config['im_size'],
+                     transform_name=transform_name or dataset_config['transform_name'],
+                     filter_voc_overlap=should_filter_imagenet_vid_to_voc_overlap(train_config, dataset_config, dataset_name))
     else:
         raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
     test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
@@ -248,30 +269,30 @@ def load_model_and_dataset(args, transform_name=None):
     model_name = str(train_config['model'])
     if model_name == 'ssd':
         model = SSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
+                num_classes=model_num_classes)
     elif model_name == 'roissd':
         model = RoiSSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
+                num_classes=model_num_classes)
+    elif model_name == 'roissd-mobilenet':
+        model = RoiSSDMobileNet(config=config['model_params'],
+                num_classes=model_num_classes)
     elif model_name == 'fcos':
-        model = build_fcos_model(num_classes=dataset_config['num_classes'])
+        model = build_fcos_model(num_classes=model_num_classes)
     elif model_name == 'fasterrcnn':
         base_model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
             weights=torchvision.models.detection.FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT,
             box_score_thresh=0.9,
         )
+        adapter_label2idx = dataset.label2idx
+        if get_model_label_space(train_config, dataset_name) == 'voc':
+            adapter_label2idx = VOC_LABEL2IDX
         model = CocoToVocAdapter(
             base_model=base_model,
-            voc_label2idx=dataset.label2idx,
+            voc_label2idx=adapter_label2idx,
             conf_threshold=train_config.get('infer_conf_threshold', 0.05),
             normalize_boxes=True,
         )
     elif model_name == 'yolo':
-        try:
-            from ultralytics import YOLO
-        except ImportError as e:
-            raise ImportError(
-                'YOLO inference requires ultralytics. Install with: pip install ultralytics'
-            ) from e
         weights_path = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
         print('yolo weights path from config: {}'.format(weights_path))
         if not os.path.exists(weights_path):
@@ -279,7 +300,7 @@ def load_model_and_dataset(args, transform_name=None):
             candidate = os.path.join('trained_models', task_name, weights_path)
             if os.path.exists(candidate):
                 weights_path = candidate
-        model = YOLO(weights_path)
+        model = YoloV8Adapter(weights_path=weights_path, device=device, use_predict_api=True)
     else:
         raise Exception('Unknown model name {}'.format(train_config['model']))
    
@@ -287,6 +308,9 @@ def load_model_and_dataset(args, transform_name=None):
     model.eval()
 
     if model_name == 'yolo':
+        model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
+        model.to(device=torch.device(device))
+        model.eval()
         return model, dataset, test_dataset_loader, config
     
     if model_name == 'fcos' and hasattr(model, 'score_thresh'):
@@ -335,11 +359,18 @@ def load_model_and_dataset(args, transform_name=None):
             model.load_state_dict(state_dict)
             print('Loaded model only (old checkpoint format)')
 
+    model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
+    model.to(device=torch.device(device))
+    model.eval()
+
     return model, dataset, test_dataset_loader, config
 
 
 def run_detector(model, im_tensor, target, model_name='ssd', conf_threshold=None):
     if model_name == 'yolo':
+        if isinstance(model, (YoloV8Adapter, DetectionLabelRemapAdapter)):
+            _, detections = model(im_tensor)
+            return detections
         predict_kwargs = {'source': im_tensor, 'verbose': False}
         if conf_threshold is not None:
             predict_kwargs['conf'] = float(conf_threshold)
@@ -632,7 +663,7 @@ if __name__ == '__main__':
                         default='config/voc.yaml', type=str)
     parser.add_argument('--evaluate', dest='evaluate',
                         default=True, type=bool)
-    parser.add_argument('--infer_samples', dest='infer_samples',
+    parser.add_argument('--infer-samples', dest='infer_samples',
                         default=True, type=bool)
     parser.add_argument('--results-path', dest='results_path',
                         default=None, type=str)

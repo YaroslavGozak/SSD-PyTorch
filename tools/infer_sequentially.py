@@ -12,6 +12,8 @@ import time
 from dataset.voc import VOCDataset
 from dataset.voc_small_objects import VOCSmallObjectsDataset
 from torch.utils.data.dataloader import DataLoader
+from tools.helpers.label_compat import get_model_num_classes
+from model.model_adapters import unwrap_model
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 if torch.backends.mps.is_available():
@@ -30,6 +32,7 @@ def load_model_and_dataset(args):
 
     dataset_config = config['dataset_params']
     train_config = config['train_params']
+    model_num_classes = get_model_num_classes(train_config, dataset_config, train_config['dataset'])
 
     if str(train_config['dataset']) == 'vis-drone':
         dataset = VisDroneDataset('test',
@@ -55,10 +58,10 @@ def load_model_and_dataset(args):
 
     if str(train_config['model']) == 'ssd':
         model = SSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
+                num_classes=model_num_classes)
     elif str(train_config['model']) == 'roissd':
         model = RoiSSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
+                num_classes=model_num_classes)
     model.to(device=torch.device(device))
     model.eval()
 
@@ -98,7 +101,7 @@ def infer_sequentially(args):
     
     model, dataset, test_dataset_loader, config = load_model_and_dataset(args)
     conf_threshold = config['train_params']['infer_conf_threshold']
-    model.low_score_threshold = conf_threshold
+    unwrap_model(model).low_score_threshold = conf_threshold
 
     window_name = 'Sequential Inference Results - {} dataset'.format(
         config['train_params']['dataset'])
