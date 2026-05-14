@@ -1,3 +1,4 @@
+from dataset.imagenet_vid_raw import ImageNetVidRawDataset
 from dataset.voc_raw import VOCRawDataset
 from tools.infer import infer_and_evaluate
 from tools.train_samplers.roi_mixed_sampling import MixedBatchSampler, MixedCollateFn, RoiBatchProcessor
@@ -11,6 +12,7 @@ import csv
 import torchvision
 from tqdm import tqdm
 from model.roissd import RoiSSD
+from model.roissd_mobilenet import RoiSSDMobileNet
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
@@ -92,11 +94,22 @@ def train(args):
     if device == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
-    train_dataset = VOCRawDataset(
-        split='train',
-        im_sets=dataset_config['train_im_sets'],
-        task=None,
-    )
+    if train_config.get('dataset', 'voc') == 'imagenet-vid':
+            train_dataset = ImageNetVidRawDataset(
+            split='train',
+            train_data_root=dataset_config['train_data_root'],
+            train_ann_root=dataset_config['train_ann_root'],
+            test_data_root=dataset_config['test_data_root'],
+            test_ann_root=dataset_config['test_ann_root'],
+            im_size=dataset_config.get('im_size', 300),
+            task=None,
+        )
+    else:
+        train_dataset = VOCRawDataset(
+            split='train',
+            im_sets=dataset_config['train_im_sets'],
+            task=None,
+        )
 
     batch_sampler = MixedBatchSampler(
         dataset=train_dataset,
@@ -130,12 +143,22 @@ def train(args):
     elif model_name == 'roissd':
         model = RoiSSD(config=config['model_params'],
                 num_classes=dataset_config['num_classes'])
+    elif model_name == 'roissd-mobilenet':
+        model = RoiSSDMobileNet(config=config['model_params'],
+                num_classes=dataset_config['num_classes'])
     elif model_name == 'fcos':
         model = build_fcos_model(num_classes=dataset_config['num_classes'])
     else:
         raise Exception('Unknown model name {}'.format(train_config['model']))
     
     model.to(device)
+
+    if model_name == 'roissd-mobilenet' and hasattr(model, 'set_batch_norm_frozen'):
+        model.set_batch_norm_frozen(
+            freeze_backbone=train_config.get('freeze_backbone_bn', True),
+            freeze_extra=train_config.get('freeze_extra_bn', False),
+            train_affine=train_config.get('train_bn_affine', True),
+        )
 
     # Check model weights for NaN at start of each epoch
     for name, param in model.named_parameters():
@@ -312,10 +335,10 @@ def train(args):
             
             # Write header if file doesn't exist
             if not file_exists:
-                writer.writerow(['epoch', 'classification_loss', 'detection_loss'])
+                writer.writerow(['epoch', 'classification_loss', 'detection_loss', 'learning_rate'])
             
             # Write current epoch data
-            writer.writerow([i+1, np.mean(ssd_classification_losses), np.mean(ssd_localization_losses)])
+            writer.writerow([i+1, np.mean(ssd_classification_losses), np.mean(ssd_localization_losses), lr_scheduler.get_last_lr()[0]])
     print('Done Training...')
     print('Evaluating...')
     args.infer_samples = True

@@ -1,3 +1,4 @@
+from dataset.imagenet_vid import ImageNetVidDataset
 from dataset.voc_small_objects import VOCSmallObjectsDataset
 from tools.infer import infer_and_evaluate
 from tools.multiscale_collate import EpochAwareCollateFn
@@ -53,7 +54,7 @@ def train(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    if device == 'cuda':
+    if device.type == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
     if str(train_config['dataset']) == 'vis-drone':
@@ -72,6 +73,14 @@ def train(args):
     elif str(train_config['dataset']) == 'voc-small-objects':
         dataset = VOCSmallObjectsDataset('train',
                      im_sets=dataset_config['train_im_sets'],
+                     im_size=dataset_config['im_size'],
+                     transform_name=dataset_config['transform_name'])
+    elif str(train_config['dataset']) == 'imagenet-vid':
+        dataset = ImageNetVidDataset('train',
+                     train_data_root=dataset_config['train_data_root'],
+                     train_ann_root=dataset_config['train_ann_root'],
+                     test_data_root=dataset_config['test_data_root'],
+                     test_ann_root=dataset_config['test_ann_root'],
                      im_size=dataset_config['im_size'],
                      transform_name=dataset_config['transform_name'])
     else:
@@ -115,6 +124,13 @@ def train(args):
     
     model.to(device)
 
+    if str(train_config['model']) == 'roissd-mobilenet' and hasattr(model, 'set_batch_norm_frozen'):
+        model.set_batch_norm_frozen(
+            freeze_backbone=train_config.get('freeze_backbone_bn', True),
+            freeze_extra=train_config.get('freeze_extra_bn', False),
+            train_affine=train_config.get('train_bn_affine', True),
+        )
+
     # Check model weights for NaN at start of each epoch
     for name, param in model.named_parameters():
         if torch.isnan(param).any() or torch.isinf(param).any():
@@ -151,6 +167,14 @@ def train(args):
             # Old format - just model state_dict
             model.load_state_dict(checkpoint)
             print('Loaded model only (old checkpoint format)')
+        
+        # Re-apply BN freeze after checkpoint loading to ensure frozen state persists
+        if str(train_config['model']) == 'roissd-mobilenet' and hasattr(model, 'set_batch_norm_frozen'):
+            model.set_batch_norm_frozen(
+                freeze_backbone=train_config.get('freeze_backbone_bn', True),
+                freeze_extra=train_config.get('freeze_extra_bn', False),
+                train_affine=train_config.get('train_bn_affine', True),
+            )
 
     else:
         print('No checkpoint found, starting training from scratch')
@@ -292,10 +316,10 @@ def train(args):
             
             # Write header if file doesn't exist
             if not file_exists:
-                writer.writerow(['epoch', 'classification_loss', 'detection_loss'])
+                writer.writerow(['epoch', 'classification_loss', 'detection_loss', 'learning_rate'])
             
             # Write current epoch data
-            writer.writerow([i+1, np.mean(ssd_classification_losses), np.mean(ssd_localization_losses)])
+            writer.writerow([i+1, np.mean(ssd_classification_losses), np.mean(ssd_localization_losses), lr_scheduler.get_last_lr()[0]])
     print('Done Training...')
     print('Evaluating...')
     args.infer_samples = True
