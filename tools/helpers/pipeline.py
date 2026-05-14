@@ -12,10 +12,17 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+from dataset.imagenet_vid import ImageNetVidDataset
 import torch
 import torch.nn.functional as F
 import torchvision
 import yaml
+from tools.helpers.label_compat import (
+    get_model_num_classes,
+    maybe_wrap_model_for_dataset,
+    should_filter_imagenet_vid_to_voc_overlap,
+)
+from model.model_adapters import YoloV8Adapter, unwrap_model
 
 from dataset.visdrone import VisDroneDataset
 from dataset.voc import VOCDataset
@@ -35,120 +42,6 @@ from torch.utils.data.dataloader import DataLoader
 
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3, 1, 1)
 IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3, 1, 1)
-
-
-class YoloV8Adapter:
-    """YOLO wrapper that returns normalized detections in project format."""
-
-    def __init__(self, weights_path: str, device: torch.device, use_predict_api: bool = True):
-        try:
-            from ultralytics import YOLO
-        except ImportError as e:
-            raise ImportError(
-                "YOLO inference requires ultralytics. Install with: pip install ultralytics"
-            ) from e
-        self._yolo = YOLO(weights_path)
-        self.device = device
-        self.use_predict_api = use_predict_api
-        print(f"[YOLO] Using {'predict API' if use_predict_api else 'raw model output'} mode for inference")
-
-    def to(self, device: torch.device = None, **_kwargs):
-        if device is not None:
-            self.device = device
-        return self
-
-    def eval(self):
-        return self
-    
-    def parameters(self):
-        """Delegate to the underlying PyTorch module so callers can do next(model.parameters()).device."""
-        return self._yolo.model.parameters()
-
-    def __call__(self, images: torch.Tensor, _targets=None):
-        # Reverse ImageNet normalization so YOLO receives images in [0, 1] float range.
-        # The SSD dataset transform applies mean/std normalization; YOLO does its own
-        # preprocessing and expects un-normalized [0, 1] float tensors.
-        mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
-        std  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
-        images_01 = (images.float() * std + mean).clamp(0.0, 1.0)
-
-        # Use Ultralytics high-level predict API, which returns Results objects
-        # (with .boxes) instead of raw model head tensors.
-        device_arg = str(self.device) if self.device is not None else None
-
-        if self.use_predict_api:
-            results = self._yolo.predict(source=images_01, verbose=False, device=device_arg)
-
-            _, _, h, w = images.shape
-            out = []
-            for res in results:
-                if res.boxes is None or len(res.boxes) == 0:
-                    out.append({
-                        'boxes': torch.empty((0, 4), dtype=torch.float32, device=images.device),
-                        'labels': torch.empty((0,), dtype=torch.int64, device=images.device),
-                        'scores': torch.empty((0,), dtype=torch.float32, device=images.device),
-                    })
-                    continue
-
-                xyxy = res.boxes.xyxy.to(images.device).float()
-                boxes = xyxy.clone()
-                boxes[:, [0, 2]] /= float(w)
-                boxes[:, [1, 3]] /= float(h)
-
-                out.append({
-                    'boxes': boxes,
-                    'labels': (res.boxes.cls.to(images.device).long() + 1),
-                    'scores': res.boxes.conf.to(images.device).float(),
-                })
-            return None, out
-        else:
-            pred = self._yolo.model(images_01)
-            if isinstance(pred, (list, tuple)):
-                pred = pred[0]
-
-            # Case A: already postprocessed [B, N, 6]
-            if isinstance(pred, torch.Tensor) and pred.ndim == 3 and pred.shape[-1] == 6:
-                batch = pred
-            else:
-                # Case B: raw head output, run NMS once yourself
-                from ultralytics.utils.ops import non_max_suppression
-                nms_list = non_max_suppression(pred, conf_thres=0.25, iou_thres=0.45, max_det=300)
-                batch = []
-                for det in nms_list:
-                    if det is None or det.numel() == 0:
-                        batch.append(torch.empty((0, 6), device=images.device))
-                    else:
-                        batch.append(det[:, :6])
-                batch = torch.stack([
-                    b if b.ndim == 2 else b.view(0, 6) for b in batch
-                ], dim=0)
-
-            _, _, h, w = images.shape
-            out = []
-            for det in batch:
-                if det.numel() == 0:
-                    out.append({
-                        "boxes": torch.empty((0, 4), dtype=torch.float32, device=images.device),
-                        "labels": torch.empty((0,), dtype=torch.int64, device=images.device),
-                        "scores": torch.empty((0,), dtype=torch.float32, device=images.device),
-                    })
-                    continue
-
-                xyxy = det[:, :4].to(images.device).float()
-                conf = det[:, 4].to(images.device).float()
-                cls  = det[:, 5].to(images.device).long()
-
-                boxes = xyxy.clone()
-                boxes[:, [0, 2]] /= float(w)
-                boxes[:, [1, 3]] /= float(h)
-
-                out.append({
-                    "boxes": boxes,
-                    "labels": cls + 1,   # keep your project class indexing
-                    "scores": conf,
-                })
-
-            return None, out
 
 
 def run_model_inference(model, images: torch.Tensor):
@@ -190,6 +83,7 @@ def _model_roi_grid(model) -> int:
     YOLO models have a stride of 32, so any crop fed to them must have H and W
     divisible by 32.  SSD / RoiSSD accept arbitrary sizes.
     """
+    model = unwrap_model(model)
     if isinstance(model, YoloV8Adapter):
         return 32
     try:
@@ -238,6 +132,7 @@ def load_model_and_dataset(device, args):
     dataset_config = config['dataset_params']
     train_config   = config['train_params']
     dataset_name   = str(train_config['dataset'])
+    model_num_classes = get_model_num_classes(train_config, dataset_config, dataset_name)
 
     if dataset_name == 'vis-drone':
         dataset = VisDroneDataset(
@@ -272,6 +167,18 @@ def load_model_and_dataset(device, args):
             im_size=dataset_config['im_size'],
             transform_name=dataset_config['transform_name'],
         )
+    elif dataset_name == 'imagenet-vid':
+        dataset = ImageNetVidDataset(
+            split='test',
+            train_data_root=dataset_config['train_data_root'],
+            train_ann_root=dataset_config['train_ann_root'],
+            test_data_root=dataset_config['test_data_root'],
+            test_ann_root=dataset_config['test_ann_root'],
+            im_size=dataset_config['im_size'],
+            transform_name=dataset_config['transform_name'],
+            # task='demo',
+            filter_voc_overlap=should_filter_imagenet_vid_to_voc_overlap(train_config, dataset_config, dataset_name),
+        )
     else:
         raise Exception(f'Unknown dataset name {dataset_name!r}')
 
@@ -279,11 +186,11 @@ def load_model_and_dataset(device, args):
 
     model_name = str(train_config['model'])
     if model_name == 'ssd':
-        model = SSD(config=config['model_params'], num_classes=dataset_config['num_classes'])
+        model = SSD(config=config['model_params'], num_classes=model_num_classes)
     elif model_name == 'ssd-original':
         model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     elif model_name == 'roissd':
-        model = RoiSSD(config=config['model_params'], num_classes=dataset_config['num_classes'])
+        model = RoiSSD(config=config['model_params'], num_classes=model_num_classes)
     elif model_name == 'yolo':
         # yolo_weights = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
         # model = YoloV8Adapter(weights_path=yolo_weights, device=device)
@@ -301,6 +208,7 @@ def load_model_and_dataset(device, args):
             if os.path.exists(candidate):
                 weights_path = candidate
         model = YoloV8Adapter(weights_path=weights_path, device=device, use_predict_api=True)
+        print(f'Loaded YOLO model with weights: {weights_path}')
     else:
         raise Exception(f'Unknown model name {model_name!r}')
 
@@ -311,7 +219,9 @@ def load_model_and_dataset(device, args):
         print('Loaded SSD300_VGG16 pretrained weights from torchvision...')
         return model, dataset, data_loader, config
     if model_name == 'yolo':
-        print(f"Loaded YOLO weights: {train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))}")
+        model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
+        model.to(device=device)
+        model.eval()
         return model, dataset, data_loader, config
 
     model_task_path = os.path.join('trained_models', train_config['task_name'])
@@ -326,6 +236,10 @@ def load_model_and_dataset(device, args):
     else:
         model.load_state_dict(checkpoint)
         print('Loaded model only (old checkpoint format)')
+
+    model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
+    model.to(device=device)
+    model.eval()
 
     return model, dataset, data_loader, config
 
@@ -722,7 +636,13 @@ def process_frame(
             sx1, sy1, sx2, sy2 = snapped_roi
             rois_used.append(snapped_roi)
 
-            _, model_batch_detections = run_model_inference(model, crop_tensor.unsqueeze(0).to(model_device))
+            try:
+                _, model_batch_detections = run_model_inference(model, crop_tensor.unsqueeze(0).to(model_device))
+            except Exception as e:
+                print("im_tensor:", im_tensor.shape)
+                print("original_image_size:", (frame_h, frame_w))
+                print("roi_c:", roi_c)
+                raise RuntimeError("Error in model inference")
             all_detections.extend(
                 tensor_to_detection_list(
                     model_batch_detections[0], idx2label, sx2 - sx1, sy2 - sy1,
