@@ -18,3 +18,9 @@ __pycache__
 
 # Ignore pickle files
 *.pkl
+
+# Ignore PDF files
+*.pdf
+
+# Venv
+.venv/
