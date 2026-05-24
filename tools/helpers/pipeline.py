@@ -10,13 +10,12 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import cv2
 import numpy as np
 from dataset.imagenet_vid import ImageNetVidDataset
 import torch
 import torch.nn.functional as F
 import torchvision
-import yaml
+from tools.helpers.config_reader import load_config
 from tools.helpers.label_compat import (
     get_model_num_classes,
     maybe_wrap_model_for_dataset,
@@ -122,12 +121,7 @@ def build_tracker(tracker_cfg: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 def load_model_and_dataset(device, args):
     """Load model and dataset from a training config path (args.config_path)."""
-    with open(args.config_path, 'r') as f:
-        try:
-            config = yaml.safe_load(f)
-        except yaml.YAMLError as exc:
-            print(exc)
-            raise
+    config = load_config(args.config_path)
 
     dataset_config = config['dataset_params']
     train_config   = config['train_params']
@@ -200,7 +194,7 @@ def load_model_and_dataset(device, args):
             raise ImportError(
                 'YOLO inference requires ultralytics. Install with: pip install ultralytics'
             ) from e
-        weights_path = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
+        weights_path = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov26n.pt'))
         print('yolo weights path from config: {}'.format(weights_path))
         if not os.path.exists(weights_path):
             task_name = train_config.get('task_name', '')

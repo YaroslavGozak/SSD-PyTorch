@@ -3,20 +3,20 @@
 # so that tracker padding scales and ROI snap targets match the YOLO input resolution.
 
 extends: "benchmark-vid-base.yaml"
-train_config_path: "config/imagenet-vid-yolo.yaml"
+train_config_path: "config/imagenet-vid-roissd.yaml"
 
 benchmark_vid_params:
 
   tracker:
 
     kalman:
-      model_input_size: [320, 320]  # updated from 300 to match YOLO input
+      model_input_size: [300, 300]  # SSD
 
     static_padding:
-      model_input_size: [320, 320]  # updated from 300 to match YOLO input
+      model_input_size: [300, 300]  # SSD
 
     relative_padding:
-      model_input_size: [320, 320]  # updated from 300 to match YOLO input
+      model_input_size: [300, 300]  # SSD
 
     oracle_gt:
-      model_input_size: [320, 320]  # updated from 300 to match YOLO input
+      model_input_size: [300, 300]  # SSD

@@ -24,7 +24,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 import torch
-import yaml
 
 from tools.helpers.pipeline import (
     MERGE_STRATEGIES,
@@ -37,6 +36,7 @@ from tools.helpers.pipeline import (
     extract_gt_for_tracker
 )
 from tools.infer import compute_map
+from tools.helpers.config_reader import load_config
 
 
 # --------------------------------------------------------------------------- #
@@ -119,8 +119,7 @@ class VideoSequenceBenchmark:
     """
 
     def __init__(self, benchmark_config_path: str):
-        with open(benchmark_config_path) as f:
-            self.cfg = yaml.safe_load(f)
+        self.cfg = load_config(benchmark_config_path)
 
         p = self.cfg["benchmark_vid_params"]
         self.tracker = build_tracker(p["tracker"])

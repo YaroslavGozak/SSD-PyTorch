@@ -104,7 +104,7 @@ class YoloV8Adapter:
 
             out.append({
                 'boxes': boxes,
-                'labels': cls + 1,
+                'labels': (cls + 1),
                 'scores': conf,
             })
 
@@ -154,7 +154,10 @@ class DetectionLabelRemapAdapter:
         output = self.base_model(*args, **kwargs)
         if isinstance(output, tuple) and len(output) == 2:
             raw, detections = output
-            return raw, self._remap_output(detections)
+            print(f"[DetectionLabelRemapAdapter] Raw detections: {detections}")
+            remapped = self._remap_output(detections)
+            print(f"[DetectionLabelRemapAdapter] Remapped detections: {remapped}")
+            return raw, remapped
         return self._remap_output(output)
 
     def _remap_output(self, detections):
@@ -195,93 +198,3 @@ def unwrap_model(model):
     return model
 
 
-class YoloCocoToVidAdapter:
-    """YOLO COCO-pretrained model adapted for ImageNet-VID dataset.
-    
-    Maps COCO class labels (0-79) to ImageNet-VID class labels.
-    Filters out detections for classes not in VID.
-    """
-        
-    def __init__(
-        self,
-        weights_path: str,
-        device: torch.device,
-        use_predict_api: bool = True,
-        vid_label2idx: Dict[str, int] = None,
-    ):
-        """
-        Args:
-            weights_path: Path to YOLO weights (COCO-pretrained)
-            device: Device to run inference on
-            use_predict_api: Whether to use YOLO predict API or raw model output
-            vid_label2idx: VID dataset label to index mapping (if None, will be populated during inference)
-        """
-        self._yolo_adapter = YoloV8Adapter(weights_path, device, use_predict_api)
-        self.device = device
-        self.vid_label2idx = vid_label2idx or {}
-        
-        # Build COCO index to VID label mapping
-        self._coco_to_vid_label_map = {}
-        for coco_idx, coco_name in enumerate(COCO_CLASSES):
-            vid_name = COCO_TO_VID.get(coco_name)
-            if vid_name is not None:
-                self._coco_to_vid_label_map[coco_idx] = vid_name
-        
-        print(f"[YoloCocoToVidAdapter] Initialized with {len(self._coco_to_vid_label_map)} mappable COCO->VID classes")
-    
-    def to(self, device: torch.device = None, **_kwargs):
-        self._yolo_adapter.to(device, **_kwargs)
-        if device is not None:
-            self.device = device
-        return self
-    
-    def eval(self):
-        self._yolo_adapter.eval()
-        return self
-    
-    def parameters(self):
-        return self._yolo_adapter.parameters()
-    
-    def __call__(self, images: torch.Tensor, _targets=None):
-        # Get YOLO predictions (with COCO labels)
-        _, detections = self._yolo_adapter(images, _targets)
-        
-        # Remap labels from COCO to VID
-        remapped_detections = []
-        for det in detections:
-            remapped_det = self._remap_detection(det)
-            remapped_detections.append(remapped_det)
-        
-        return None, remapped_detections
-    
-    def _remap_detection(self, detection: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
-        """Remap detection labels from COCO to VID class space."""
-        labels = detection['labels']
-        
-        if labels.numel() == 0:
-            return detection
-        
-        # YoloV8Adapter returns labels as 1-indexed (adds 1), so subtract to get 0-indexed COCO labels
-        coco_labels = labels - 1
-        
-        # Create mask for detections that map to VID
-        keep = torch.zeros(labels.shape, dtype=torch.bool, device=labels.device)
-        vid_labels = torch.zeros(labels.shape, dtype=torch.int64, device=labels.device)
-        
-        for i, coco_idx in enumerate(coco_labels.cpu().numpy()):
-            coco_idx = int(coco_idx)
-            if coco_idx in self._coco_to_vid_label_map:
-                vid_name = self._coco_to_vid_label_map[coco_idx]
-                # Get VID label index (if vid_label2idx is populated)
-                if vid_name in self.vid_label2idx:
-                    vid_idx = self.vid_label2idx[vid_name]
-                    keep[i] = True
-                    vid_labels[i] = vid_idx
-        
-        # Filter to only keep mappable detections
-        remapped = dict(detection)
-        remapped['boxes'] = detection['boxes'][keep]
-        remapped['scores'] = detection['scores'][keep]
-        remapped['labels'] = vid_labels[keep]
-        
-        return remapped

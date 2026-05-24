@@ -32,7 +32,6 @@ model_params:
 train_params:
   model: 'roissd'
   dataset: 'voc-vid'
-  task_name: 'voc-roissd-sc-tr-roi-decrease'
   roi_mixed_stage: 3
   seed: 1111
   acc_steps: 3
@@ -42,4 +41,6 @@ train_params:
   lr: 0.0002
   log_steps : 100
   infer_conf_threshold : 0.5
-  ckpt_name: 'voc200712stage3.pth'
+  task_name: 'voc-roissd-best'
+  ckpt_name: 'voc200712.pth'
+  yolo_weights: 'best.pt'

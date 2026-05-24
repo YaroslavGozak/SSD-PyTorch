@@ -1,15 +1,8 @@
+extends: "imagenet-vid-base.yaml"
+
 dataset_params:
-  train_im_sets: ['D:\VOC\VOC2007_trainval\VOCdevkit\VOC2007', 'D:\VOC\VOC2012_train_val\VOC2012_train_val']
-  test_im_sets: ['D:\VOC\VOC2007_test\VOC2007']
-  num_classes : 21
-  im_size : 320
-  transform_name : 'ssd'
-  # resize_longer_edge
-  # roi_crop_test_transform
-  # letterbox
-  # ssd
-  # no_resize_transform
-  # fixed_padding_roi_crop_X
+  num_classes : 34 # 34 - Imagenet VID, 21 - VOC, 80 - COCO
+  im_size : 300
 
 model_params:
   im_channels : 3
@@ -31,19 +24,18 @@ model_params:
   nms_threshold : 0.45
 
 train_params:
-  model: 'roissd-mobilenet'
-  dataset: 'voc'
-  roi_mixed_stage: 2
+  model: 'roissd'
+  model_label_space: 'imagenet-vid'  # 'coco', 'image-net', 'imagenet-vid-yolo13' or 'voc' - determines how labels are remapped during training and inference
+  roi_mixed_stage: 1
   seed: 1111
   acc_steps: 3
   num_epochs: 100
-  batch_size: 32
+  batch_size: 16
   lr_steps: [ 40, 50, 60, 70, 80, 90 ]
   lr: 0.001
   freeze_backbone_bn: false
   freeze_extra_bn: false
   train_bn_affine: true
   log_steps : 100
-  infer_conf_threshold : 0.5
-  task_name: 'voc-roissdlite-mobilenet-bn'
-  ckpt_name: 'voc200712.pth'
+  task_name: 'imagenet-vid-roissd'
+  ckpt_name: 'imagenet20kstage3.pt'

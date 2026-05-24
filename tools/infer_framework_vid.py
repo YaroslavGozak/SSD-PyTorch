@@ -5,8 +5,8 @@ from typing import Any, List, Optional, Tuple
 
 import cv2
 import torch
-import yaml
 
+from tools.helpers.config_reader import load_config
 from tools.helpers.pipeline import (
     MERGE_STRATEGIES,
     FrameResult,
@@ -46,8 +46,7 @@ def _extract_sequence_meta(target: dict, fname: Any) -> Tuple[str, bool, Optiona
 
 
 def infer_sequentially_with_roi(args):
-    with open(args.benchmark_config, 'r') as f:
-        benchmark_cfg = yaml.safe_load(f)
+    benchmark_cfg = load_config(args.benchmark_config)
 
     benchmark_params = benchmark_cfg['benchmark_vid_params']
     train_args = argparse.Namespace(config_path=benchmark_cfg['train_config_path'])

@@ -9,9 +9,9 @@ VOC_FOREGROUND_CLASSES = [
 
 IMAGENET_VID_FOREGROUND_CLASSES = [
     'airplane', 'antelope', 'bear', 'bicycle', 'bird', 'bus', 'car',
-    'cattle', 'dog', 'domestic cat', 'elephant', 'fox', 'giant panda',
+    'cattle', 'dog', 'domestic cat', 'elephant', 'fox', 'giant_panda',
     'giraffe', 'horse', 'lion', 'lizard', 'monkey', 'motorcycle',
-    'otter', 'panda', 'person', 'potted plant', 'rabbit', 'red panda',
+    'otter', 'panda', 'person', 'potted_plant', 'rabbit', 'red_panda',
     'sheep', 'snake', 'squirrel', 'tiger', 'train', 'turtle', 'whale', 'zebra',
 ]
 
@@ -29,22 +29,38 @@ COCO_CLASSES = [
     'teddy bear', 'hair drier', 'toothbrush'
 ]
 
+IMAGENET_VID_YOLO13_FOREGROUND_CLASSES = [
+    'airplane',
+    'bicycle',
+    'bird',
+    'watercraft',
+    'bus',
+    'car',
+    'domestic_cat',
+    'cattle',
+    'dog',
+    'horse',
+    'motorcycle',
+    'sheep',
+    'train',
+]
+
 VOC_CLASSES = ['background'] + sorted(VOC_FOREGROUND_CLASSES)
 IMAGENET_VID_CLASSES = ['background'] + sorted(IMAGENET_VID_FOREGROUND_CLASSES)
-
+IMAGENET_VID_YOLO13_CLASSES = ['background'] + sorted(IMAGENET_VID_YOLO13_FOREGROUND_CLASSES)
 VOC_TO_IMAGENET_VID_NAME = {
     'aeroplane': 'airplane',
     'bicycle': 'bicycle',
     'bird': 'bird',
     'bus': 'bus',
     'car': 'car',
-    'cat': 'domestic cat',
+    'cat': 'domestic_cat',
     'cow': 'cattle',
     'dog': 'dog',
     'horse': 'horse',
     'motorbike': 'motorcycle',
     'person': 'person',
-    'pottedplant': 'potted plant',
+    'pottedplant': 'potted_plant',
     'sheep': 'sheep',
     'train': 'train',
 }
@@ -57,7 +73,7 @@ COCO_TO_IMAGENET_VID_NAME = {
     'aeroplane': 'airplane',
     'bus': 'bus',
     'train': 'train',
-    'cat': 'cat',
+    'cat': 'domestic_cat',
     'dog': 'dog',
     'horse': 'horse',
     'sheep': 'sheep',
@@ -86,6 +102,22 @@ COCO_TO_VID = {
     6: 12,  # train -> train
 }
 
+IMAGENET_VID_YOLO13_TO_IMAGENET_VID_NAME = {
+    'background': 'airplane',
+    'horse': 'dog',
+    # 'domestic_cat': 'horse',
+    'bicycle': 'bird',
+    'bus': 'bus',
+    'sheep': 'sheep',
+    'train': 'train',
+    'motorcycle': 'motorcycle',
+    'dog': 'cattle',
+    'bird': 'bus',
+    'airplane': 'bicycle', 
+    'car': 'car',
+    # 'horse': 'horse',
+}
+
 
 def build_label_maps(classes: List[str]) -> Tuple[Dict[str, int], Dict[int, str]]:
     label2idx = {class_name: idx for idx, class_name in enumerate(classes)}
@@ -112,6 +144,8 @@ def get_label_space_classes(label_space: str) -> List[str]:
         return list(IMAGENET_VID_CLASSES)
     if label_space == 'coco':
         return list(COCO_CLASSES)
+    if label_space == 'imagenet-vid-yolo13':
+        return list(IMAGENET_VID_YOLO13_FOREGROUND_CLASSES)
     raise ValueError(f'Unknown label space {label_space!r}')
 
 

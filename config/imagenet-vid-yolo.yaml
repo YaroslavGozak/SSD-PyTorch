@@ -1,0 +1,10 @@
+extends: "imagenet-vid-base.yaml"
+
+dataset_params:
+  num_classes : 34 # 34 - Imagenet VID, 21 - VOC, 80 - COCO
+  im_size : 320
+
+train_params:
+  model: 'yolo'
+  task_name: 'imagenet-vid-yolo'
+  yolo_weights: 'best.pt'

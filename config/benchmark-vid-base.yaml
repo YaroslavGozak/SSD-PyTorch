@@ -1,0 +1,61 @@
+# Video Sequence Benchmark configuration — YOLO (Lane B)
+# Uses 320x320 input (nearest multiple-of-32 above 300) and model_input_size: [320, 320]
+# so that tracker padding scales and ROI snap targets match the YOLO input resolution.
+
+benchmark_vid_params:
+  device: "cuda" # Options: "cpu" | "cuda"
+
+  tracker:
+    type: "oracle_gt"   # Options: kalman | static_padding | relative_padding | oracle_gt
+
+    kalman:
+      conf_det_min: 0.5
+      conf_low: 0.7
+      conf_high: 0.9
+      pmin: 8
+      iou_match_threshold: 0.1
+      max_misses: 15
+      uncertainty_scale_pos: 2.5
+      uncertainty_scale_size: 1.0
+      confidence_roi_scale: 0.10
+
+    static_padding:
+      pad_x: 64
+      pad_y: 64
+      conf_det_min: 0.0
+      hold_last_for_frames: 10  # Keep previous detections for up to N missed frames
+
+    relative_padding:
+      pad_ratio_x: 0.5
+      pad_ratio_y: 0.5
+      min_pad_x: 10
+      min_pad_y: 10
+      conf_det_min: 0.0
+
+    oracle_gt:
+      pad_x: 64
+      pad_y: 64
+      conf_det_min: 0.0
+
+  inference:
+    key_frame_interval: 1   # 1 = always full-frame (B0 mode)
+    nms_iou: 0.5
+
+  tracker_input_dropout:
+    enabled: false
+    mode: "frame"   # Options: frame | detection
+    prob: 0.5       # 0.0 - 1.0 probability of dropping the input (frame or detections) to simulate occlusion/missed detections
+    warmup_frames: 3
+    seed: null
+
+  roi_merge:
+    strategy: "none"   # Options: greedy | simple | simple_v2 | none
+    tau: 12235.0
+
+  metrics:
+    roi_coverage_threshold: 0.5   # Min GT box area fraction inside ROI to count as covered
+
+  output:
+    results_dir: "benchmark_results/vid/imagenet-vid"
+    results_filename: "comparison75.csv"
+    verbose: true
