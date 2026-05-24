@@ -2,7 +2,9 @@ import os
 import shutil
 import random
 from pathlib import Path
-from typing import Optional, Tuple, Dict
+from typing import Tuple, Dict
+import cv2
+import numpy as np
 from PIL import Image
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
@@ -12,8 +14,8 @@ from xml.dom import minidom
 # Configuration
 # =========================
 
-SOURCE_DIR = r"H:\Projects\UnrealEngine\Flying 5.3\Saved\MovieRenders\5"
-OUTPUT_DIR = r"D:\VOC\VOCUE_test5"
+SOURCE_DIR = r"H:\Projects\UnrealEngine\Flying 5.3\Saved\MovieRenders\206"
+OUTPUT_DIR = r"D:\VOC\VOCUE_2objs6"
 
 CLASS_NAME = "car"
 
@@ -77,43 +79,43 @@ def pretty_xml(element: ET.Element) -> str:
     return reparsed.toprettyxml(indent="  ")
 
 
-def compute_bbox_from_mask(mask_path: Path, threshold: int) -> Optional[Tuple[int, int, int, int, int, int]]:
+def compute_bboxes_from_mask(
+    mask_path: Path,
+    threshold: int,
+    min_component_area: int = 1,
+) -> Tuple[list[Tuple[int, int, int, int]], int, int]:
     """
     Returns:
-        xmin, ymin, xmax, ymax, width, height
+        bboxes, width, height
     Coordinates are Pascal VOC style, 1-based inclusive.
     """
-    img = Image.open(mask_path).convert("L")
-    width, height = img.size
-    pixels = img.load()
+    mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+    if mask is None:
+        raise RuntimeError(f"Failed to read mask: {mask_path}")
 
-    min_x = width
-    min_y = height
-    max_x = -1
-    max_y = -1
+    height, width = mask.shape[:2]
+    binary = (mask > threshold).astype(np.uint8)
 
-    for y in range(height):
-        for x in range(width):
-            if pixels[x, y] > threshold:
-                if x < min_x:
-                    min_x = x
-                if y < min_y:
-                    min_y = y
-                if x > max_x:
-                    max_x = x
-                if y > max_y:
-                    max_y = y
+    num_labels, _labels, stats, _centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
 
-    if max_x == -1 or max_y == -1:
-        return None
+    bboxes: list[Tuple[int, int, int, int]] = []
+    for label_idx in range(1, num_labels):
+        x = int(stats[label_idx, cv2.CC_STAT_LEFT])
+        y = int(stats[label_idx, cv2.CC_STAT_TOP])
+        w = int(stats[label_idx, cv2.CC_STAT_WIDTH])
+        h = int(stats[label_idx, cv2.CC_STAT_HEIGHT])
+        area = int(stats[label_idx, cv2.CC_STAT_AREA])
 
-    # Convert to 1-based coordinates for VOC
-    xmin = min_x + 1
-    ymin = min_y + 1
-    xmax = max_x + 1
-    ymax = max_y + 1
+        if area < min_component_area:
+            continue
 
-    return xmin, ymin, xmax, ymax, width, height
+        xmin = x + 1
+        ymin = y + 1
+        xmax = x + w
+        ymax = y + h
+        bboxes.append((xmin, ymin, xmax, ymax))
+
+    return bboxes, width, height
 
 
 def save_voc_xml(
@@ -125,10 +127,8 @@ def save_voc_xml(
     height: int,
     depth: int,
     class_name: str,
-    bbox: Tuple[int, int, int, int],
+    bboxes: list[Tuple[int, int, int, int]],
 ) -> None:
-    xmin, ymin, xmax, ymax = bbox
-
     annotation = ET.Element("annotation")
 
     folder = ET.SubElement(annotation, "folder")
@@ -155,29 +155,30 @@ def save_voc_xml(
     segmented = ET.SubElement(annotation, "segmented")
     segmented.text = "0"
 
-    obj = ET.SubElement(annotation, "object")
+    for xmin, ymin, xmax, ymax in bboxes:
+        obj = ET.SubElement(annotation, "object")
 
-    name = ET.SubElement(obj, "name")
-    name.text = class_name
+        name = ET.SubElement(obj, "name")
+        name.text = class_name
 
-    pose = ET.SubElement(obj, "pose")
-    pose.text = "Unspecified"
+        pose = ET.SubElement(obj, "pose")
+        pose.text = "Unspecified"
 
-    truncated = ET.SubElement(obj, "truncated")
-    truncated.text = "0"
+        truncated = ET.SubElement(obj, "truncated")
+        truncated.text = "0"
 
-    difficult = ET.SubElement(obj, "difficult")
-    difficult.text = "0"
+        difficult = ET.SubElement(obj, "difficult")
+        difficult.text = "0"
 
-    bndbox = ET.SubElement(obj, "bndbox")
-    xmin_el = ET.SubElement(bndbox, "xmin")
-    xmin_el.text = str(xmin)
-    ymin_el = ET.SubElement(bndbox, "ymin")
-    ymin_el.text = str(ymin)
-    xmax_el = ET.SubElement(bndbox, "xmax")
-    xmax_el.text = str(xmax)
-    ymax_el = ET.SubElement(bndbox, "ymax")
-    ymax_el.text = str(ymax)
+        bndbox = ET.SubElement(obj, "bndbox")
+        xmin_el = ET.SubElement(bndbox, "xmin")
+        xmin_el.text = str(xmin)
+        ymin_el = ET.SubElement(bndbox, "ymin")
+        ymin_el.text = str(ymin)
+        xmax_el = ET.SubElement(bndbox, "xmax")
+        xmax_el.text = str(xmax)
+        ymax_el = ET.SubElement(bndbox, "ymax")
+        ymax_el.text = str(ymax)
 
     xml_content = pretty_xml(annotation)
     with open(xml_path, "w", encoding="utf-8") as f:
@@ -298,8 +299,8 @@ def main() -> None:
         rgb_path = rgb_index[key]
         mask_path = mask_index[key]
 
-        bbox_info = compute_bbox_from_mask(mask_path, MASK_THRESHOLD)
-        if bbox_info is None:
+        bboxes, width, height = compute_bboxes_from_mask(mask_path, MASK_THRESHOLD)
+        if not bboxes:
             if SKIP_EMPTY_MASKS:
                 skipped_empty += 1
                 print(f"Skipping empty mask: {mask_path.name}")
@@ -307,8 +308,6 @@ def main() -> None:
             else:
                 print(f"Warning: empty mask, but keeping frame without object is not supported in VOC object annotation: {mask_path.name}")
                 continue
-
-        xmin, ymin, xmax, ymax, width, height = bbox_info
 
         image_id = key
         dst_image_stem = dirs["jpeg_images"] / image_id
@@ -324,7 +323,7 @@ def main() -> None:
             height=height,
             depth=depth,
             class_name=CLASS_NAME,
-            bbox=(xmin, ymin, xmax, ymax),
+            bboxes=bboxes,
         )
 
         processed_ids.append(image_id)
