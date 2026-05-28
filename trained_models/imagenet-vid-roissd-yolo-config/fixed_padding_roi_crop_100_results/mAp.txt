@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.3137  |  detector_recall = 0.6713
+AP for class antelope = 0.7094  |  detector_recall = 0.8683
+AP for class bear = 0.7905  |  detector_recall = 0.9453
+AP for class bicycle = 0.4706  |  detector_recall = 0.6793
+AP for class bird = 0.5890  |  detector_recall = 0.7325
+AP for class bus = 0.7153  |  detector_recall = 0.7700
+AP for class car = 0.5137  |  detector_recall = 0.7088
+AP for class cattle = 0.6984  |  detector_recall = 0.7590
+AP for class dog = 0.7290  |  detector_recall = 0.8351
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.7115  |  detector_recall = 0.8343
+AP for class fox = 0.8477  |  detector_recall = 0.9118
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.9952  |  detector_recall = 1.0000
+AP for class horse = 0.7046  |  detector_recall = 0.8562
+AP for class lion = 0.7156  |  detector_recall = 0.8000
+AP for class lizard = 0.6328  |  detector_recall = 0.7750
+AP for class monkey = 0.5737  |  detector_recall = 0.6693
+AP for class motorcycle = 0.7486  |  detector_recall = 0.8502
+AP for class rabbit = 0.6071  |  detector_recall = 0.7417
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.8601  |  detector_recall = 1.0000
+AP for class snake = 0.5010  |  detector_recall = 0.6698
+AP for class squirrel = 0.3829  |  detector_recall = 0.6211
+AP for class tiger = 0.8200  |  detector_recall = 0.9000
+AP for class train = 0.6796  |  detector_recall = 0.8870
+AP for class turtle = 0.4425  |  detector_recall = 0.7600
+AP for class watercraft = 0.7499  |  detector_recall = 0.8480
+AP for class whale = 0.2465  |  detector_recall = 0.5848
+AP for class zebra = 0.8962  |  detector_recall = 0.9320
+==================================================
+Mean Average Precision : 0.6535
+Mean Detector Recall   : 0.8004

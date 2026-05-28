@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.2490  |  detector_recall = 0.4662
+AP for class antelope = 0.4904  |  detector_recall = 0.6178
+AP for class bear = 0.6119  |  detector_recall = 0.7684
+AP for class bicycle = 0.2544  |  detector_recall = 0.3640
+AP for class bird = 0.4976  |  detector_recall = 0.7154
+AP for class bus = 0.5564  |  detector_recall = 0.6235
+AP for class car = 0.4491  |  detector_recall = 0.5857
+AP for class cattle = 0.8013  |  detector_recall = 0.8519
+AP for class dog = 0.5988  |  detector_recall = 0.7324
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.4219  |  detector_recall = 0.6079
+AP for class fox = 0.7906  |  detector_recall = 0.9267
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.9005  |  detector_recall = 0.9938
+AP for class horse = 0.6826  |  detector_recall = 0.7857
+AP for class lion = 0.4772  |  detector_recall = 0.6000
+AP for class lizard = 0.5156  |  detector_recall = 0.6417
+AP for class monkey = 0.5313  |  detector_recall = 0.6431
+AP for class motorcycle = 0.6476  |  detector_recall = 0.8857
+AP for class rabbit = 0.4821  |  detector_recall = 0.6083
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.5541  |  detector_recall = 0.6125
+AP for class snake = 0.3602  |  detector_recall = 0.6038
+AP for class squirrel = 0.3152  |  detector_recall = 0.5842
+AP for class tiger = 0.6907  |  detector_recall = 0.8273
+AP for class train = 0.4546  |  detector_recall = 0.6364
+AP for class turtle = 0.5082  |  detector_recall = 0.6571
+AP for class watercraft = 0.3086  |  detector_recall = 0.6174
+AP for class whale = 0.0649  |  detector_recall = 0.1436
+AP for class zebra = 0.5823  |  detector_recall = 0.6762
+==================================================
+Mean Average Precision : 0.5110
+Mean Detector Recall   : 0.6584

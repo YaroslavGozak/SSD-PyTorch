@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.4814  |  detector_recall = 0.7657
+AP for class antelope = 0.7804  |  detector_recall = 0.9574
+AP for class bear = 0.7764  |  detector_recall = 0.9048
+AP for class bicycle = 0.5151  |  detector_recall = 0.6721
+AP for class bird = 0.5573  |  detector_recall = 0.6826
+AP for class bus = 0.6848  |  detector_recall = 0.7750
+AP for class car = 0.5532  |  detector_recall = 0.7470
+AP for class cattle = 0.7370  |  detector_recall = 0.7974
+AP for class dog = 0.7291  |  detector_recall = 0.8338
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.6686  |  detector_recall = 0.8227
+AP for class fox = 0.8732  |  detector_recall = 0.9353
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.9945  |  detector_recall = 1.0000
+AP for class horse = 0.7134  |  detector_recall = 0.8288
+AP for class lion = 0.6388  |  detector_recall = 0.8056
+AP for class lizard = 0.6575  |  detector_recall = 0.7583
+AP for class monkey = 0.5791  |  detector_recall = 0.6726
+AP for class motorcycle = 0.8678  |  detector_recall = 0.9400
+AP for class rabbit = 0.6138  |  detector_recall = 0.7417
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.7303  |  detector_recall = 0.9500
+AP for class snake = 0.5638  |  detector_recall = 0.7075
+AP for class squirrel = 0.3212  |  detector_recall = 0.5526
+AP for class tiger = 0.7902  |  detector_recall = 0.9091
+AP for class train = 0.6935  |  detector_recall = 0.8304
+AP for class turtle = 0.5527  |  detector_recall = 0.7533
+AP for class watercraft = 0.6845  |  detector_recall = 0.7724
+AP for class whale = 0.2537  |  detector_recall = 0.5068
+AP for class zebra = 0.8953  |  detector_recall = 0.9769
+==================================================
+Mean Average Precision : 0.6632
+Mean Detector Recall   : 0.8000

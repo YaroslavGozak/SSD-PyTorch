@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.2356  |  detector_recall = 0.4828
+AP for class antelope = 0.4885  |  detector_recall = 0.7280
+AP for class bear = 0.4883  |  detector_recall = 0.8632
+AP for class bicycle = 0.2264  |  detector_recall = 0.3345
+AP for class bird = 0.3171  |  detector_recall = 0.6180
+AP for class bus = 0.5674  |  detector_recall = 0.7222
+AP for class car = 0.3949  |  detector_recall = 0.5913
+AP for class cattle = 0.6129  |  detector_recall = 0.7714
+AP for class dog = 0.5317  |  detector_recall = 0.7151
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.5047  |  detector_recall = 0.7251
+AP for class fox = 0.8255  |  detector_recall = 0.8867
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.8072  |  detector_recall = 0.9375
+AP for class horse = 0.6625  |  detector_recall = 0.7786
+AP for class lion = 0.6231  |  detector_recall = 0.9600
+AP for class lizard = 0.5683  |  detector_recall = 0.7167
+AP for class monkey = 0.4551  |  detector_recall = 0.5791
+AP for class motorcycle = 0.6407  |  detector_recall = 0.8952
+AP for class rabbit = 0.4485  |  detector_recall = 0.7083
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.4417  |  detector_recall = 0.7125
+AP for class snake = 0.3074  |  detector_recall = 0.6038
+AP for class squirrel = 0.2765  |  detector_recall = 0.5579
+AP for class tiger = 0.7993  |  detector_recall = 0.9000
+AP for class train = 0.4328  |  detector_recall = 0.5636
+AP for class turtle = 0.4418  |  detector_recall = 0.6714
+AP for class watercraft = 0.3053  |  detector_recall = 0.5230
+AP for class whale = 0.0169  |  detector_recall = 0.1275
+AP for class zebra = 0.5488  |  detector_recall = 0.5826
+==================================================
+Mean Average Precision : 0.4803
+Mean Detector Recall   : 0.6761
