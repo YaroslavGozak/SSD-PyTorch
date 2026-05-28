@@ -1,5 +1,7 @@
 from dataset.imagenet_vid_raw import ImageNetVidRawDataset
 from dataset.voc_raw import VOCRawDataset
+from dataset.yolo_imagenet_vid import YoloImageNetVidDataset, YoloImageNetVidRawDataset
+from tools.helpers.config_reader import load_config
 from tools.infer import infer_and_evaluate
 from tools.train_samplers.roi_mixed_sampling import MixedBatchSampler, MixedCollateFn, RoiBatchProcessor
 import torch
@@ -76,11 +78,7 @@ def prepare_targets_for_fcos(images, targets, device):
 
 def train(args):
     # Read the config file #
-    with open(args.config_path, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
+    config = load_config(args.config_path)
     print(config)
     #########################
 
@@ -95,7 +93,7 @@ def train(args):
         torch.cuda.manual_seed_all(seed)
 
     if train_config.get('dataset', 'voc') == 'imagenet-vid':
-            train_dataset = ImageNetVidRawDataset(
+        train_dataset = ImageNetVidRawDataset(
             split='train',
             train_data_root=dataset_config['train_data_root'],
             train_ann_root=dataset_config['train_ann_root'],
@@ -104,6 +102,11 @@ def train(args):
             im_size=dataset_config.get('im_size', 300),
             task=None,
         )
+    elif str(train_config['dataset']) == 'yolo-imagenet-vid':
+        train_dataset = YoloImageNetVidRawDataset(
+                     'train',
+                     yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
+                     im_size=dataset_config['im_size'])
     else:
         train_dataset = VOCRawDataset(
             split='train',
@@ -179,7 +182,14 @@ def train(args):
     optimizer = torch.optim.SGD(lr=train_config['lr'],
                                 params=model.parameters(),
                                 weight_decay=5E-4, momentum=0.9)
-    lr_scheduler = MultiStepLR(optimizer, milestones=train_config['lr_steps'], gamma=0.5)
+    
+    # Get learning rate steps for the current stage of mixed sampling
+    roi_stage = train_config.get('roi_mixed_stage', 1)
+    _stage_suffix = f'_stage{roi_stage}' if roi_stage > 1 else ''
+    _lr_steps_key = f'lr_steps{_stage_suffix}'
+    _lr_steps = train_config.get(_lr_steps_key, train_config['lr_steps'])
+    print(f"Using learning rate steps: {_lr_steps} for stage {roi_stage}")
+    lr_scheduler = MultiStepLR(optimizer, milestones=_lr_steps, gamma=0.5)
     
     # Load checkpoint if it exists (after creating optimizer and scheduler)
     if os.path.exists(model_checkpoint_path):
@@ -211,7 +221,10 @@ def train(args):
                 model.load_state_dict(checkpoint)
 
     acc_steps = train_config['acc_steps']
-    num_epochs = train_config['num_epochs']
+
+    _epochs_key = f'num_epochs{_stage_suffix}'
+    num_epochs = train_config.get(_epochs_key, train_config['num_epochs'])
+
     steps = 0
 
     i_start = 0

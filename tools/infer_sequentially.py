@@ -5,6 +5,7 @@ import os
 import yaml
 from tqdm import tqdm
 from dataset.ytbb import YTBBDataset
+from dataset.yolo_imagenet_vid import YoloImageNetVidDataset
 from model.roissd import RoiSSD
 from model.ssd import SSD
 import cv2
@@ -50,6 +51,12 @@ def load_model_and_dataset(args):
     elif str(train_config['dataset']) == 'voc-small-objects':
         dataset = VOCSmallObjectsDataset('test',
                      im_sets=dataset_config['test_im_sets'],
+                     im_size=dataset_config['im_size'],
+                     transform_name=dataset_config['transform_name'])
+    elif str(train_config['dataset']) == 'yolo-imagenet-vid':
+        dataset = YoloImageNetVidDataset(
+                     'test',
+                     yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
                      im_size=dataset_config['im_size'],
                      transform_name=dataset_config['transform_name'])
     else:

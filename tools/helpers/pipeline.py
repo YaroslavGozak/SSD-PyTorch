@@ -12,9 +12,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from dataset.imagenet_vid import ImageNetVidDataset
+from dataset.yolo_imagenet_vid import YoloImageNetVidDataset
 import torch
 import torch.nn.functional as F
 import torchvision
+from model.roissd_penalized import RoiSSDPenalized
 from tools.helpers.config_reader import load_config
 from tools.helpers.label_compat import (
     get_model_num_classes,
@@ -173,6 +175,13 @@ def load_model_and_dataset(device, args):
             # task='demo',
             filter_voc_overlap=should_filter_imagenet_vid_to_voc_overlap(train_config, dataset_config, dataset_name),
         )
+    elif dataset_name == 'yolo-imagenet-vid':
+        dataset = YoloImageNetVidDataset(
+            split='test',
+            yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
+            im_size=dataset_config['im_size'],
+            transform_name=dataset_config['transform_name'],
+        )
     else:
         raise Exception(f'Unknown dataset name {dataset_name!r}')
 
@@ -184,7 +193,7 @@ def load_model_and_dataset(device, args):
     elif model_name == 'ssd-original':
         model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     elif model_name == 'roissd':
-        model = RoiSSD(config=config['model_params'], num_classes=model_num_classes)
+        model = RoiSSDPenalized(RoiSSD(config=config['model_params'], num_classes=model_num_classes), penalty=0.05)
     elif model_name == 'yolo':
         # yolo_weights = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
         # model = YoloV8Adapter(weights_path=yolo_weights, device=device)
@@ -636,7 +645,7 @@ def process_frame(
                 print("im_tensor:", im_tensor.shape)
                 print("original_image_size:", (frame_h, frame_w))
                 print("roi_c:", roi_c)
-                raise RuntimeError("Error in model inference")
+                raise RuntimeError("Error in model inference") from e
             all_detections.extend(
                 tensor_to_detection_list(
                     model_batch_detections[0], idx2label, sx2 - sx1, sy2 - sy1,

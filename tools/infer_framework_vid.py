@@ -45,6 +45,33 @@ def _extract_sequence_meta(target: dict, fname: Any) -> Tuple[str, bool, Optiona
     return str(video_id), bool(is_first), frame_idx
 
 
+def _draw_text_with_bg(
+    image: Any,
+    text: str,
+    org: Tuple[int, int],
+    *,
+    font: int = cv2.FONT_HERSHEY_PLAIN,
+    font_scale: float = 1.0,
+    text_color: Tuple[int, int, int] = (255, 255, 255),
+    bg_color: Tuple[int, int, int] = (0, 0, 0),
+    thickness: int = 1,
+    padding: int = 2,
+) -> None:
+    """Draw text with a solid background rectangle for readability."""
+    text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    text_w, text_h = text_size
+    x, y = org
+
+    x = max(0, x)
+    y = max(text_h + padding, y)
+    x2 = x + text_w + 2 * padding
+    y2 = y + baseline + padding
+    y1 = y - text_h - padding
+
+    cv2.rectangle(image, (x, y1), (x2, y2), bg_color, thickness=-1)
+    cv2.putText(image, text, (x + padding, y), font, font_scale, text_color, thickness)
+
+
 def infer_sequentially_with_roi(args):
     benchmark_cfg = load_config(args.benchmark_config)
 
@@ -151,14 +178,16 @@ def infer_sequentially_with_roi(args):
                     x1, y1, x2, y2 = det['bbox']
                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
                     label_text = '{}:{:.2f}'.format(det['class'], det['confidence'])
-                    cv2.putText(
+                    _draw_text_with_bg(
                         display_frame,
                         label_text,
-                        (x1 + 4, max(12, y1 - 4)),
-                        cv2.FONT_HERSHEY_PLAIN,
-                        1.0,
-                        (255, 255, 255),
-                        1,
+                        (x1 + 2, max(12, y1 - 4)),
+                        font=cv2.FONT_HERSHEY_PLAIN,
+                        font_scale=1.0,
+                        text_color=(255, 255, 255),
+                        bg_color=(0, 0, 0),
+                        thickness=1,
+                        padding=2,
                     )
 
                 # Draw detections omitted from tracker input in orange.
@@ -194,11 +223,25 @@ def infer_sequentially_with_roi(args):
                 )
                 cv2.putText(display_frame, overlay, (10, 25), cv2.FONT_HERSHEY_PLAIN, 1.2, (0, 255, 0), 2)
 
+                frame_video_name = os.path.basename(os.path.dirname(fpath))
+                video_overlay = f'Video: {video_id or frame_video_name}'
+                _draw_text_with_bg(
+                    display_frame,
+                    video_overlay,
+                    (10, 48),
+                    font=cv2.FONT_HERSHEY_PLAIN,
+                    font_scale=1.1,
+                    text_color=(255, 255, 255),
+                    bg_color=(0, 0, 0),
+                    thickness=1,
+                    padding=3,
+                )
+
                 if paused:
                     cv2.putText(
                         display_frame,
                         '[PAUSED] (f=next, space=resume, ESC=quit)',
-                        (10, 50),
+                        (10, 70),
                         cv2.FONT_HERSHEY_PLAIN,
                         1.0,
                         (0, 0, 255),

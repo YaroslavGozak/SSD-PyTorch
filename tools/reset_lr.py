@@ -5,6 +5,8 @@ import torch
 import yaml
 from torch.optim.lr_scheduler import MultiStepLR
 
+from tools.helpers.config_reader import load_config
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Arguments for ssd training')
@@ -13,12 +15,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     # Read the config file #
-    with open(args.config_path, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-    #########################
+    config = load_config(args.config_path)
 
     dataset_config = config['dataset_params']
     train_config = config['train_params']

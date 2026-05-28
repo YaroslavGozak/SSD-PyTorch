@@ -1,5 +1,7 @@
 from dataset.imagenet_vid import ImageNetVidDataset
+from dataset.yolo_imagenet_vid import YoloImageNetVidDataset
 from dataset.voc_small_objects import VOCSmallObjectsDataset
+from tools.helpers.config_reader import load_config
 from tools.infer import infer_and_evaluate
 from tools.multiscale_collate import EpochAwareCollateFn
 import torch
@@ -39,13 +41,7 @@ def collate_function(data):
 
 def train(args):
     # Read the config file #
-    with open(args.config_path, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-    print(config)
-    #########################
+    config = load_config(args.config_path)
 
     dataset_config = config['dataset_params']
     train_config = config['train_params']
@@ -57,6 +53,7 @@ def train(args):
     if device.type == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
+    print(f'train config', train_config)
     if str(train_config['dataset']) == 'vis-drone':
         dataset = VisDroneDataset('train',
                      im_sets=dataset_config['train_im_sets'],
@@ -81,6 +78,12 @@ def train(args):
                      train_ann_root=dataset_config['train_ann_root'],
                      test_data_root=dataset_config['test_data_root'],
                      test_ann_root=dataset_config['test_ann_root'],
+                     im_size=dataset_config['im_size'],
+                     transform_name=dataset_config['transform_name'])
+    elif str(train_config['dataset']) == 'yolo-imagenet-vid':
+        dataset = YoloImageNetVidDataset(
+                     'train',
+                     yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
                      im_size=dataset_config['im_size'],
                      transform_name=dataset_config['transform_name'])
     else:

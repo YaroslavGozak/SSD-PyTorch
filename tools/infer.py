@@ -1,4 +1,5 @@
 from dataset.visdrone import VisDroneDataset
+from tools.helpers.config_reader import load_config
 from tools.voc.adapters.coco_to_voc_adapter import CocoToVocAdapter
 import torch
 import argparse
@@ -10,6 +11,7 @@ from tqdm import tqdm
 import torchvision
 from dataset.ytbb import YTBBDataset
 from dataset.imagenet_vid import ImageNetVidDataset
+from dataset.yolo_imagenet_vid import YoloImageNetVidDataset
 from model.roissd import RoiSSD
 from model.roissd_mobilenet import RoiSSDMobileNet
 from model.ssd import SSD
@@ -223,11 +225,7 @@ def build_fasterrcnn_model(num_classes):
 
 def load_model_and_dataset(args, transform_name=None):
     # Read the config file #
-    with open(args.config_path, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
+    config = load_config(args.config_path)
     ########################
 
     dataset_config = config['dataset_params']
@@ -262,6 +260,12 @@ def load_model_and_dataset(args, transform_name=None):
                      im_size=dataset_config['im_size'],
                      transform_name=transform_name or dataset_config['transform_name'],
                      filter_voc_overlap=should_filter_imagenet_vid_to_voc_overlap(train_config, dataset_config, dataset_name))
+    elif dataset_name == 'yolo-imagenet-vid':
+        dataset = YoloImageNetVidDataset(
+                     'test',
+                     yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
+                     im_size=dataset_config['im_size'],
+                     transform_name=transform_name or dataset_config['transform_name'])
     else:
         raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
     test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
@@ -425,6 +429,41 @@ def run_detector(model, im_tensor, target, model_name='ssd', conf_threshold=None
         except Exception:
             _, detections = model(im_tensor)
     return detections
+
+
+def append_model_results_csv(model_task_path, config, evaluated_dataset, mean_ap, mean_recall):
+    """Append one validation summary row to model-level results.csv."""
+    if not os.path.exists(model_task_path):
+        os.makedirs(model_task_path, exist_ok=True)
+
+    results_csv_path = os.path.join(model_task_path, 'results.csv')
+    file_exists = os.path.exists(results_csv_path)
+
+    train_cfg = config.get('train_params', {})
+    row = {
+        'task_name': str(train_cfg.get('task_name', '')),
+        'model': str(train_cfg.get('model', '')),
+        'dataset': str(train_cfg.get('dataset', '')),
+        'ckpt_name': str(train_cfg.get('ckpt_name', '')),
+        'evaluated_dataset': str(evaluated_dataset),
+        'mAP': float(mean_ap),
+        'mean_detector_recall': float(mean_recall),
+    }
+    fieldnames = [
+        'task_name',
+        'model',
+        'dataset',
+        'ckpt_name',
+        'evaluated_dataset',
+        'mAP',
+        'mean_detector_recall',
+    ]
+
+    with open(results_csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def infer(args):
@@ -641,6 +680,15 @@ def evaluate_map(args):
             print(f'Results saved to {csv_file_path}')
         else:
             print('No results path provided, skipping saving mAP results to file.')
+
+        append_model_results_csv(
+            model_task_path=model_task_path,
+            config=config,
+            evaluated_dataset=transform_name,
+            mean_ap=mean_ap,
+            mean_recall=mean_recall,
+        )
+        print('Appended summary to {}'.format(os.path.join(model_task_path, 'results.csv')))
 
         if is_yolo:
             os.environ.pop('YOLO_ROI_DEBUG_DIR', None)

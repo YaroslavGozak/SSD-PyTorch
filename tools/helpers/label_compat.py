@@ -43,6 +43,16 @@ def should_filter_imagenet_vid_to_voc_overlap(train_config, dataset_config, data
 def maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name: str):
     dataset_label_space = infer_dataset_label_space(dataset_name)
     model_label_space = get_model_label_space(train_config, dataset_name)
+    if {
+        str(model_label_space),
+        str(dataset_label_space),
+    } <= {"imagenet-vid", "yolo-imagenet-vid"}:
+        print(
+            "No label remapping needed "
+            f"(model_label_space={model_label_space}, dataset_label_space={dataset_label_space})"
+        )
+        return model
+
     if model_label_space == dataset_label_space:
         print(f"No label remapping needed (model_label_space={model_label_space}, dataset_label_space={dataset_label_space})")
         return model

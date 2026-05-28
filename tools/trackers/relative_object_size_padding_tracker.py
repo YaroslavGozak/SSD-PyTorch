@@ -7,7 +7,7 @@ No temporal state — suitable as a baseline variant.
 Interface matches KalmanRoiTracker.
 """
 import math
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class RelativeObjectSizePaddingTracker:
@@ -26,6 +26,7 @@ class RelativeObjectSizePaddingTracker:
         min_pad_x: int = 10,
         min_pad_y: int = 10,
         conf_det_min: float = 0.0,
+        model_input_size: Optional[Tuple[int, int]] = None,
     ):
         self.pad_ratio_x = pad_ratio_x
         self.pad_ratio_y = pad_ratio_y
@@ -33,6 +34,7 @@ class RelativeObjectSizePaddingTracker:
         self.min_pad_y = min_pad_y
         self.conf_det_min = conf_det_min
         self._next_id = 1
+        self.model_input_size = model_input_size  # (tensor_h, tensor_w)
 
     def update(self, detections: List[Dict[str, Any]], frame_shape: Tuple[int, int]) -> Dict[str, Any]:
         """
@@ -41,6 +43,7 @@ class RelativeObjectSizePaddingTracker:
         Returns: {tracks: [...], rois: [...]}
         """
         frame_h, frame_w = frame_shape
+        
         tracks, rois = [], []
 
         for det in detections:
