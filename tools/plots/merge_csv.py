@@ -3,15 +3,15 @@
 Merge fixed_padding_roi_crop_NNN_results/mAp.csv files into fixed_padding_results.csv
 
 Usage:
-    python merge_csv.py                          # Process all models
-    python merge_csv.py voc-roissd               # Process specific model
-    python merge_csv.py /path/to/model           # Process using full path
+    python merge_csv.py                                           # Process all models
+    python merge_csv.py --target-model-dir voc-roissd             # Process specific model by name
+    python merge_csv.py --target-model-dir /path/to/model         # Process specific model by full path
 """
 
 import os
 import csv
 import re
-import sys
+import argparse
 from pathlib import Path
 
 
@@ -50,6 +50,7 @@ def merge_padding_results(model_folder):
     
     # Write merged CSV with crop_px as first column
     if results:
+        results.sort(key=lambda row: int(row['crop_px']))
         output_path = os.path.join(model_folder, 'fixed_padding_results.csv')
         fieldnames = ['crop_px'] + [k for k in results[0].keys() if k != 'crop_px']
         
@@ -66,6 +67,17 @@ def merge_padding_results(model_folder):
 
 
 def main():
+    parser = argparse.ArgumentParser(
+        description='Merge fixed_padding_roi_crop_*_results/mAp.csv files into fixed_padding_results.csv'
+    )
+    parser.add_argument(
+        '--target-model-dir',
+        type=str,
+        default=None,
+        help='Specific model directory to process (model name under trained_models or full path)',
+    )
+    args = parser.parse_args()
+
     base_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'trained_models')
     
     if not os.path.exists(base_dir):
@@ -73,8 +85,8 @@ def main():
         return
     
     # Check if model name/path was provided
-    if len(sys.argv) > 1:
-        model_spec = sys.argv[1]
+    if args.target_model_dir:
+        model_spec = args.target_model_dir
         
         # Check if it's a full path
         if os.path.isdir(model_spec):
@@ -87,7 +99,7 @@ def main():
         
         if not os.path.isdir(model_folder):
             print(f"Error: Model directory not found: {model_folder}")
-            sys.exit(1)
+            raise SystemExit(1)
         
         print(f"Processing: {model_name}\n")
         result = merge_padding_results(model_folder)

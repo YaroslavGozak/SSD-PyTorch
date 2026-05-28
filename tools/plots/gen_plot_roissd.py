@@ -19,6 +19,7 @@ MODEL_LABELS = {
     # 'voc-yolo26m': 'YOLOv26m',
     # 'imagenet-vid-roissd' : 'RoI-SSD (ImageNet-VID)',
     'imagenet-vid-yolo26n' : 'YOLO 26n (ImageNet-VID)',
+    'imagenet-vid-roissd-yolo-config' : 'ROI-SSD (Full ImageNet-VID)',
 }
 
 def _load_voc_ssd_baseline():
