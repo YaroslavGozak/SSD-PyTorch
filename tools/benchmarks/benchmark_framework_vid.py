@@ -118,8 +118,26 @@ class VideoSequenceBenchmark:
     Config is the benchmark_vid YAML.
     """
 
-    def __init__(self, benchmark_config_path: str):
+    def __init__(self, benchmark_config_path: str, extra_run_metadata: Optional[Dict[str, Any]] = None):
         self.cfg = load_config(benchmark_config_path)
+        self._extra_run_metadata = dict(extra_run_metadata or {})
+        self._init_from_cfg()
+
+    @classmethod
+    def from_config_dict(
+        cls,
+        cfg: Dict[str, Any],
+        extra_run_metadata: Optional[Dict[str, Any]] = None,
+    ) -> "VideoSequenceBenchmark":
+        """Construct benchmark from an already-loaded config dict."""
+        obj = cls.__new__(cls)
+        obj.cfg = cfg
+        obj._extra_run_metadata = dict(extra_run_metadata or {})
+        obj._init_from_cfg()
+        return obj
+
+    def _init_from_cfg(self) -> None:
+        """Initialize benchmark state from self.cfg."""
 
         p = self.cfg["benchmark_vid_params"]
         self.tracker = build_tracker(p["tracker"])
@@ -139,15 +157,20 @@ class VideoSequenceBenchmark:
         tracker_cfg = p.get("tracker", {})
         kalman_cfg = tracker_cfg.get("kalman", {})
         static_padding_cfg = tracker_cfg.get("static_padding", {})
+        relative_padding_cfg = tracker_cfg.get("relative_padding", {})
         oracle_gt_cfg = tracker_cfg.get("oracle_gt", {})
         dropout_cfg = p.get("tracker_input_dropout", {})
 
         self.run_metadata = {
             "benchmark_device": str(p.get("device", "cpu")),
-            "benchmark_tracker_type": str(tracker_cfg.get("type", "unknown")),
+            "benchmark_tracker_type": "none" if self.key_frame_interval == 1 else str(tracker_cfg.get("type", "unknown")),
             "kalman_pmin": int(kalman_cfg.get("pmin", 0)),
             "static_pad_x": int(static_padding_cfg.get("pad_x", 0)),
             "static_pad_y": int(static_padding_cfg.get("pad_y", 0)),
+            "relative_pad_ratio_x": float(relative_padding_cfg.get("pad_ratio_x", 0.0)),
+            "relative_pad_ratio_y": float(relative_padding_cfg.get("pad_ratio_y", 0.0)),
+            "relative_min_pad_x": int(relative_padding_cfg.get("min_pad_x", 0)),
+            "relative_min_pad_y": int(relative_padding_cfg.get("min_pad_y", 0)),
             "oracle_gt_pad_x": int(oracle_gt_cfg.get("pad_x", 0)),
             "oracle_gt_pad_y": int(oracle_gt_cfg.get("pad_y", 0)),
             "static_hold_last_for_frames": int(static_padding_cfg.get("hold_last_for_frames", 0)),
@@ -156,6 +179,7 @@ class VideoSequenceBenchmark:
             "tracker_dropout_prob": float(dropout_cfg.get("prob", 0.0)),
             "tracker_dropout_warmup_frames": int(dropout_cfg.get("warmup_frames", 0)),
             "tracker_dropout_seed": dropout_cfg.get("seed", ""),
+            **self._extra_run_metadata,
         }
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
