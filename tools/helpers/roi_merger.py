@@ -190,7 +190,7 @@ def simple_roi_merge_v2(rois, area_ratio_max: float = 1.4):
             merged.append(cluster_box)
     return merged
 
-def greedy_roi_merge(rois, area_ratio_max: float = 1.9, tau = 5000.0):  # A_union / (A_i + A_j) <= 1.4 => merge ok)
+def greedy_roi_merge(rois, area_ratio_max: float = 100, tau = 5000.0):  # A_union / (A_i + A_j) <= 1.4 => merge ok)
     """
     rois: list of ROIs [(x1,y1,x2,y2), ...]
     tau: threshold (K/c_full), additional launch costs

@@ -163,7 +163,10 @@ class VideoSequenceBenchmark:
 
         self.run_metadata = {
             "benchmark_device": str(p.get("device", "cpu")),
+            "key_frame_interval": self.key_frame_interval,
             "benchmark_tracker_type": "none" if self.key_frame_interval == 1 else str(tracker_cfg.get("type", "unknown")),
+            "merge_fn": str(roi_m.get("strategy", "unknown")),
+            "merge_tau": self.merge_tau,
             "kalman_pmin": int(kalman_cfg.get("pmin", 0)),
             "static_pad_x": int(static_padding_cfg.get("pad_x", 0)),
             "static_pad_y": int(static_padding_cfg.get("pad_y", 0)),
