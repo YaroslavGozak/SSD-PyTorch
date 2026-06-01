@@ -8,7 +8,6 @@ import torch
 import argparse
 import os
 import numpy as np
-import yaml
 import random
 import csv
 import torchvision
@@ -200,7 +199,7 @@ def train(args):
         if isinstance(checkpoint, dict) and 'model' in checkpoint:
             model.load_state_dict(checkpoint['model'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            lr_scheduler.load_state_dict(checkpoint['scheduler'])
+            # lr_scheduler.load_state_dict(checkpoint['scheduler'])
             print('Restored optimizer and scheduler state')
         else:
             # Old format - just model state_dict
@@ -220,6 +219,7 @@ def train(args):
             else:
                 model.load_state_dict(checkpoint)
 
+    print(f"lr_scheduler.milestones: {lr_scheduler.milestones}")
     acc_steps = train_config['acc_steps']
 
     _epochs_key = f'num_epochs{_stage_suffix}'
