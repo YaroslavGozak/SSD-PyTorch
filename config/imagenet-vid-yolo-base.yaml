@@ -1,0 +1,18 @@
+dataset_params:
+  # ImageNet-VID dataset configuration (actual ILSVRC2015 structure)
+  # Separate Data and Annotations root directories per split
+  # No split files needed - loader walks directory tree to find all frames
+  yolo_dataset_yaml: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\imagenet_vid_yolo_sampled\imagenet_vid.yaml'
+  filter_voc_overlap: false
+  transform_name : 'ssd'
+  num_classes : 31
+  # resize_longer_edge
+  # roi_crop_test_transform
+  # letterbox
+  # ssd
+  # no_resize_transform
+  # fixed_padding_roi_crop_X
+
+train_params:
+  dataset: 'yolo-imagenet-vid'
+  infer_conf_threshold : 0.5

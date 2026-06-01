@@ -5,7 +5,7 @@ dataset_params:
   train_data_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Data\VID\train'
   train_ann_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Annotations\VID\train'
   test_data_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Data\VID\val'
-  test_ann_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Subset75Annotations\annotations\val'
+  test_ann_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\VocAnnotations\VID\val'
   filter_voc_overlap: false
   transform_name : 'ssd'
   # resize_longer_edge

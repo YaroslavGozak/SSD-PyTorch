@@ -20,3 +20,6 @@ benchmark_vid_params:
 
     oracle_gt:
       model_input_size: [300, 300]  # SSD
+
+    sort:
+      model_input_size: [300, 300]  # SSD

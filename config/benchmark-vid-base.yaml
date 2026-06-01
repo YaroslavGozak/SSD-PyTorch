@@ -37,6 +37,16 @@ benchmark_vid_params:
       pad_y: 64
       conf_det_min: 0.0
 
+    sort:
+      max_age: 10
+      min_hits: 3
+      iou_threshold: 0.3
+      conf_det_min: 0.0
+      pad_x: 16
+      pad_y: 16
+      hold_last_for_frames: 3
+      min_roi_size: 2
+
   inference:
     key_frame_interval: 1   # 1 = always full-frame (B0 mode)
     nms_iou: 0.5
