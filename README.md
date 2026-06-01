@@ -6,6 +6,29 @@ Most of the code is just parts of pytorch ssd implementation and all I have done
 
 The repo provides code to train on voc dataset. Specifically I trained on trainval images of VOC 2007 dataset and for testing, I use VOC2007 test set.
 
+| model | c(t) sec/pixel | K(t) sec | τ pixels |
+| --- | --- | --- | --- |
+| roissd | 0.00000155 | 0.02155055 | 13883.8 |
+| yolo | 0.00000013 | 0.00858294 | 66691.3 |
+|  |  |  |  |
+
+**Таблиця 2. Параметри лінійної моделі вартості та поріг злиття \( \tau = K_t / c_t \) на різних пристроях для ROI-SSD та YOLO**
+
+| Модель | Система | Режим | Пристрій | \(c_t\) (sec/pixel) | \(K_t\) (sec) | \(\tau\) (pixels) |
+|:---:|:---:|:---:|---|---:|---:|---:|
+| RoiSSD | A | — | GPU RTX 3060 Ti 8GB | \(8.0 \cdot 10^{-8}\) | 0.018254 | 225,677 |
+| RoiSSD | A | — | CPU i7-11700K | \(1.48 \cdot 10^{-6}\) | 0.0256 | 17,295 |
+| RoiSSD | B | — | GPU RTX 3060 12GB | \(7.0 \cdot 10^{-8}\) | 0.013174 | 185,870 |
+| RoiSSD | B | — | CPU i9-9900KF | \(1.70 \cdot 10^{-6}\) | 0.011117 | 6,549–7,679 |
+| RoiSSD | C | Plugged | GPU RTX 4050 Laptop | \(8.0 \cdot 10^{-8}\) | 0.008102 | 96,216 |
+| RoiSSD | C | Plugged | CPU Core 5 210H | \(2.16 \cdot 10^{-6}\) | 0.010341 | 4,778 |
+| RoiSSD | D | Energy saving | GPU RTX 4050 Laptop | \(5.0 \cdot 10^{-8}\) | 0.018075 | 400,144 |
+| RoiSSD | D | Energy saving | CPU i5 H210 | \(3.85 \cdot 10^{-6}\) | 0.012567 | 3,268 |
+| RoiSSD | E | — | CPU Raspberry Pi 5 4GB | \(1.328 \cdot 10^{-5}\) | 0.030140 | 2,269 (≈1300–3500) |
+| YOLO26n | A | — | GPU RTX 3060 Ti 8GB | \(1.0 \cdot 10^{-8}\) | 0.0189 | 3,920,311 |
+| YOLO26n | A | — | CPU i7-11700K | \(1.66 \cdot 10^{-7}\) | 0.0150 | 90,006 |
+
+
 ## SSD Explanation and Implementation Video
 <a href="https://youtu.be/c_nEue9itwg">
    <img alt="SSD Explanation and Implementation" src="https://github.com/user-attachments/assets/663754cf-93a7-4b7a-9a0f-ff094f73e90a" width="400">
