@@ -1,36 +1,36 @@
 Class Wise Average Precisions and Detector Recall
 ==================================================
 AP for class background = nan  |  detector_recall = nan
-AP for class airplane = 0.2668  |  detector_recall = 0.5904
-AP for class antelope = 0.6646  |  detector_recall = 0.7806
-AP for class bear = 0.7544  |  detector_recall = 0.9150
-AP for class bicycle = 0.4588  |  detector_recall = 0.6385
-AP for class bird = 0.5964  |  detector_recall = 0.7226
-AP for class bus = 0.6903  |  detector_recall = 0.7200
-AP for class car = 0.5117  |  detector_recall = 0.6920
-AP for class cattle = 0.6708  |  detector_recall = 0.7615
-AP for class dog = 0.7165  |  detector_recall = 0.8100
+AP for class airplane = 0.2754  |  detector_recall = 0.5802
+AP for class antelope = 0.7324  |  detector_recall = 0.8056
+AP for class bear = 0.8064  |  detector_recall = 0.9550
+AP for class bicycle = 0.4479  |  detector_recall = 0.6321
+AP for class bird = 0.6034  |  detector_recall = 0.6890
+AP for class bus = 0.7219  |  detector_recall = 0.7800
+AP for class car = 0.5506  |  detector_recall = 0.7202
+AP for class cattle = 0.6430  |  detector_recall = 0.6872
+AP for class dog = 0.7216  |  detector_recall = 0.8270
 AP for class domestic_cat = nan  |  detector_recall = nan
-AP for class elephant = 0.7104  |  detector_recall = 0.8285
-AP for class fox = 0.8235  |  detector_recall = 0.8882
+AP for class elephant = 0.7471  |  detector_recall = 0.8285
+AP for class fox = 0.8796  |  detector_recall = 0.8824
 AP for class giant_panda = nan  |  detector_recall = nan
-AP for class hamster = 0.9960  |  detector_recall = 1.0000
-AP for class horse = 0.7131  |  detector_recall = 0.8356
-AP for class lion = 0.7257  |  detector_recall = 0.9524
-AP for class lizard = 0.6052  |  detector_recall = 0.7500
-AP for class monkey = 0.5618  |  detector_recall = 0.6457
-AP for class motorcycle = 0.7308  |  detector_recall = 0.8519
-AP for class rabbit = 0.5943  |  detector_recall = 0.7250
+AP for class hamster = 0.9894  |  detector_recall = 1.0000
+AP for class horse = 0.7254  |  detector_recall = 0.7877
+AP for class lion = 0.8637  |  detector_recall = 0.9524
+AP for class lizard = 0.6552  |  detector_recall = 0.7750
+AP for class monkey = 0.5977  |  detector_recall = 0.6325
+AP for class motorcycle = 0.7801  |  detector_recall = 0.8807
+AP for class rabbit = 0.6720  |  detector_recall = 0.7417
 AP for class red_panda = nan  |  detector_recall = nan
-AP for class sheep = 0.8643  |  detector_recall = 1.0000
-AP for class snake = 0.4467  |  detector_recall = 0.6792
-AP for class squirrel = 0.3594  |  detector_recall = 0.6158
-AP for class tiger = 0.7626  |  detector_recall = 0.9182
-AP for class train = 0.6990  |  detector_recall = 0.8696
-AP for class turtle = 0.5140  |  detector_recall = 0.8067
-AP for class watercraft = 0.7254  |  detector_recall = 0.8040
-AP for class whale = 0.2376  |  detector_recall = 0.4706
-AP for class zebra = 0.9276  |  detector_recall = 0.9708
+AP for class sheep = 0.8365  |  detector_recall = 0.9875
+AP for class snake = 0.4823  |  detector_recall = 0.7075
+AP for class squirrel = 0.4500  |  detector_recall = 0.6474
+AP for class tiger = 0.8176  |  detector_recall = 0.9182
+AP for class train = 0.7019  |  detector_recall = 0.8522
+AP for class turtle = 0.5199  |  detector_recall = 0.6733
+AP for class watercraft = 0.7458  |  detector_recall = 0.7960
+AP for class whale = 0.2779  |  detector_recall = 0.5571
+AP for class zebra = 0.9231  |  detector_recall = 0.9667
 ==================================================
-Mean Average Precision : 0.6418
-Mean Detector Recall   : 0.7868
+Mean Average Precision : 0.6729
+Mean Detector Recall   : 0.7875
