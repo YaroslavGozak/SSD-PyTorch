@@ -34,6 +34,7 @@ from model.roissd import RoiSSD
 from model.ssd import SSD
 from tools.helpers.roi_merger import greedy_roi_merge, simple_roi_merge, simple_roi_merge_v2
 from tools.trackers.kalman_roi_tracker import KalmanRoiTracker
+from tools.trackers.sort_tracker import SortTracker
 from tools.trackers.static_padding_tracker import StaticPaddingTracker
 from tools.trackers.relative_object_size_padding_tracker import RelativeObjectSizePaddingTracker
 from tools.trackers.oracle_gt_tracker import OracleGtTracker
@@ -114,6 +115,9 @@ def build_tracker(tracker_cfg: Dict[str, Any]):
     elif kind == "oracle_gt":
         p = tracker_cfg.get("oracle_gt", {})
         return OracleGtTracker(**p)
+    elif kind == "sort":
+        p = tracker_cfg.get("sort", {})
+        return SortTracker(**p)
     else:
         raise ValueError(f"Unknown tracker type: {kind!r}")
 
@@ -231,7 +235,7 @@ def load_model_and_dataset(device, args):
     ckpt_path = os.path.join(model_task_path, train_config['ckpt_name'])
     assert os.path.exists(ckpt_path), f'No checkpoint exists at {ckpt_path}'
     
-    print('Loading checkpoint...')
+    print(f'Loading checkpoint for model {model.__class__.__name__}...')
     checkpoint = torch.load(ckpt_path, map_location=device)
     if isinstance(checkpoint, dict) and 'model' in checkpoint:
         model.load_state_dict(checkpoint['model'])
@@ -598,7 +602,7 @@ def process_frame(
     Returns a FrameResult with detections, ROI metadata, and timing.
     """
     if merge_fn is None:
-        merge_fn = MERGE_STRATEGIES["greedy"]
+        merge_fn = MERGE_STRATEGIES["none"]
     if roi_grid is None:
         roi_grid = _model_roi_grid(model)
 

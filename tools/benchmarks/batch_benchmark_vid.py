@@ -20,7 +20,7 @@ from tools.benchmarks.benchmark_framework_vid import VideoSequenceBenchmark
 from tools.helpers.config_reader import load_config
 
 
-SUPPORTED_TRACKERS = {"static_padding", "relative_padding", "kalman", "oracle_gt"}
+SUPPORTED_TRACKERS = {"static_padding", "relative_padding", "kalman", "oracle_gt", "sort"}
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
