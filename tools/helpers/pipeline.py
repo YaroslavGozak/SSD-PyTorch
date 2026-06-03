@@ -31,6 +31,7 @@ from dataset.voc_vid import VOCVideoDataset
 from dataset.voc_small_objects import VOCSmallObjectsDataset
 from dataset.ytbb import YTBBDataset
 from model.roissd import RoiSSD
+from model.roissd_mobilenet import RoiSSDMobileNet
 from model.ssd import SSD
 from tools.helpers.roi_merger import greedy_roi_merge, simple_roi_merge, simple_roi_merge_v2
 from tools.trackers.kalman_roi_tracker import KalmanRoiTracker
@@ -125,71 +126,102 @@ def build_tracker(tracker_cfg: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Model + dataset loading
 # ---------------------------------------------------------------------------
-def load_model_and_dataset(device, args):
-    """Load model and dataset from a training config path (args.config_path)."""
-    config = load_config(args.config_path)
+def resolve_device(requested_device=None):
+    """Resolve a torch.device with safe CUDA/MPS fallbacks."""
+    if requested_device is None:
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return torch.device('mps')
+        return torch.device('cpu')
 
+    requested = str(requested_device)
+    if requested.startswith('cuda') and not torch.cuda.is_available():
+        print(f'Requested device {requested!r} is unavailable; falling back to CPU')
+        return torch.device('cpu')
+    if requested == 'mps' and not (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()):
+        print('Requested device \'mps\' is unavailable; falling back to CPU')
+        return torch.device('cpu')
+    return torch.device(requested)
+
+
+def load_dataset(config, split: str = 'test', transform_name: Optional[str] = None):
+    """Load dataset from a parsed training config dict."""
     dataset_config = config['dataset_params']
     train_config   = config['train_params']
     dataset_name   = str(train_config['dataset'])
-    model_num_classes = get_model_num_classes(train_config, dataset_config, dataset_name)
+    split = str(split)
+    transform_name = transform_name or dataset_config.get('transform_name')
 
     if dataset_name == 'vis-drone':
         dataset = VisDroneDataset(
-            'test',
-            im_sets=dataset_config['test_im_sets'],
+            split,
+            im_sets=dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets'],
             im_size=dataset_config['im_size'],
         )
     elif dataset_name == 'ytbb':
         dataset = YTBBDataset(
-            'test',
+            split,
             root_dir=dataset_config['root_dir'],
             im_size=dataset_config['im_size'],
         )
     elif dataset_name == 'voc':
         dataset = VOCDataset(
-            'test',
-            im_sets=dataset_config['test_im_sets'],
+            split,
+            im_sets=dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets'],
             im_size=dataset_config['im_size'],
-            transform_name=dataset_config['transform_name'],
+            transform_name=transform_name,
         )
     elif dataset_name in ('voc-vid', 'voc-video'):
         dataset = VOCVideoDataset(
-            'test',
-            im_sets=dataset_config['test_im_sets'],
+            split,
+            im_sets=dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets'],
             im_size=dataset_config['im_size'],
-            transform_name=dataset_config['transform_name'],
+            transform_name=transform_name,
         )
     elif dataset_name == 'voc-small-objects':
         dataset = VOCSmallObjectsDataset(
-            'test',
-            im_sets=dataset_config['test_im_sets'],
+            split,
+            im_sets=dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets'],
             im_size=dataset_config['im_size'],
-            transform_name=dataset_config['transform_name'],
+            transform_name=transform_name,
         )
     elif dataset_name == 'imagenet-vid':
         dataset = ImageNetVidDataset(
-            split='test',
+            split=split,
             train_data_root=dataset_config['train_data_root'],
             train_ann_root=dataset_config['train_ann_root'],
             test_data_root=dataset_config['test_data_root'],
             test_ann_root=dataset_config['test_ann_root'],
             im_size=dataset_config['im_size'],
-            transform_name=dataset_config['transform_name'],
+            transform_name=transform_name,
             # task='demo',
             filter_voc_overlap=should_filter_imagenet_vid_to_voc_overlap(train_config, dataset_config, dataset_name),
         )
     elif dataset_name == 'yolo-imagenet-vid':
         dataset = YoloImageNetVidDataset(
-            split='test',
+            split=split,
             yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
             im_size=dataset_config['im_size'],
-            transform_name=dataset_config['transform_name'],
+            transform_name=transform_name,
         )
     else:
         raise Exception(f'Unknown dataset name {dataset_name!r}')
 
-    data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    return dataset
+
+
+def load_model(
+    config,
+    dataset=None,
+    load_checkpoint: bool = True,
+    use_penalized_roissd: bool = True,
+):
+    """Load model from a parsed training config dict."""
+    dataset_config = config['dataset_params']
+    train_config   = config['train_params']
+    dataset_name   = str(train_config['dataset'])
+    model_num_classes = get_model_num_classes(train_config, dataset_config, dataset_name)
 
     model_name = str(train_config['model'])
     if model_name == 'ssd':
@@ -197,7 +229,10 @@ def load_model_and_dataset(device, args):
     elif model_name == 'ssd-original':
         model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     elif model_name == 'roissd':
-        model = RoiSSDPenalized(RoiSSD(config=config['model_params'], num_classes=model_num_classes), penalty=0.05)
+        base_model = RoiSSD(config=config['model_params'], num_classes=model_num_classes)
+        model = RoiSSDPenalized(base_model, penalty=0.05) if use_penalized_roissd else base_model
+    elif model_name == 'roissd-mobilenet':
+        model = RoiSSDMobileNet(config=config['model_params'], num_classes=model_num_classes)
     elif model_name == 'yolo':
         # yolo_weights = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
         # model = YoloV8Adapter(weights_path=yolo_weights, device=device)
@@ -214,29 +249,29 @@ def load_model_and_dataset(device, args):
             candidate = os.path.join('trained_models', task_name, weights_path)
             if os.path.exists(candidate):
                 weights_path = candidate
-        model = YoloV8Adapter(weights_path=weights_path, device=device, use_predict_api=True)
+        yolo_device = resolve_device(train_config.get('device', 'cpu'))
+        model = YoloV8Adapter(weights_path=weights_path, device=yolo_device, use_predict_api=True)
         print(f'Loaded YOLO model with weights: {weights_path}')
     else:
         raise Exception(f'Unknown model name {model_name!r}')
 
-    model.to(device=device)
-    model.eval()
-
     if model_name == 'ssd-original':
         print('Loaded SSD300_VGG16 pretrained weights from torchvision...')
-        return model, dataset, data_loader, config
+        return model
     if model_name == 'yolo':
-        model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
-        model.to(device=device)
-        model.eval()
-        return model, dataset, data_loader, config
+        if dataset is not None:
+            model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
+        return model
+
+    if not load_checkpoint:
+        return model
 
     model_task_path = os.path.join('trained_models', train_config['task_name'])
     ckpt_path = os.path.join(model_task_path, train_config['ckpt_name'])
     assert os.path.exists(ckpt_path), f'No checkpoint exists at {ckpt_path}'
     
     print(f'Loading checkpoint for model {model.__class__.__name__}...')
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    checkpoint = torch.load(ckpt_path, map_location='cpu')
     if isinstance(checkpoint, dict) and 'model' in checkpoint:
         model.load_state_dict(checkpoint['model'])
         print('Loaded model from full checkpoint format')
@@ -244,7 +279,23 @@ def load_model_and_dataset(device, args):
         model.load_state_dict(checkpoint)
         print('Loaded model only (old checkpoint format)')
 
-    model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
+    if dataset is not None:
+        model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
+
+    return model
+
+
+def load_model_and_dataset(device, args):
+    """Load model and dataset from a training config path (args.config_path)."""
+    config = load_config(args.config_path)
+    if device is None:
+        cfg_device = config.get('benchmark_vid_params', {}).get('device')
+        device = resolve_device(cfg_device)
+    else:
+        device = resolve_device(device)
+    dataset = load_dataset(config, split='test')
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    model = load_model(config=config, dataset=dataset, load_checkpoint=True)
     model.to(device=device)
     model.eval()
 

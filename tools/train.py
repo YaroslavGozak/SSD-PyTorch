@@ -1,27 +1,17 @@
-from dataset.imagenet_vid import ImageNetVidDataset
-from dataset.yolo_imagenet_vid import YoloImageNetVidDataset
-from dataset.voc_small_objects import VOCSmallObjectsDataset
 from tools.helpers.config_reader import load_config
+from tools.helpers.pipeline import load_dataset, load_model
 from tools.infer import infer_and_evaluate
 from tools.multiscale_collate import EpochAwareCollateFn
 import torch
 import argparse
 import os
 import numpy as np
-import yaml
 import random
 import csv
 import torchvision
 from tqdm import tqdm
-from dataset.visdrone import VisDroneDataset
-from dataset.voc import VOCDataset
-from dataset.ytbb import YTBBDataset
-from model.roissd import RoiSSD
-from model.roissd_mobilenet import RoiSSDMobileNet
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
-
-from model.ssd import SSD
 
 if not torch.cuda.is_available():
     raise Exception('CUDA not available')
@@ -54,40 +44,7 @@ def train(args):
         torch.cuda.manual_seed_all(seed)
 
     print(f'train config', train_config)
-    if str(train_config['dataset']) == 'vis-drone':
-        dataset = VisDroneDataset('train',
-                     im_sets=dataset_config['train_im_sets'],
-                     im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'ytbb':
-        dataset = YTBBDataset('train',
-                     root_dir=dataset_config['root_dir'],
-                     im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'voc':
-        dataset = VOCDataset('train',
-                     im_sets=dataset_config['train_im_sets'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
-    elif str(train_config['dataset']) == 'voc-small-objects':
-        dataset = VOCSmallObjectsDataset('train',
-                     im_sets=dataset_config['train_im_sets'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
-    elif str(train_config['dataset']) == 'imagenet-vid':
-        dataset = ImageNetVidDataset('train',
-                     train_data_root=dataset_config['train_data_root'],
-                     train_ann_root=dataset_config['train_ann_root'],
-                     test_data_root=dataset_config['test_data_root'],
-                     test_ann_root=dataset_config['test_ann_root'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
-    elif str(train_config['dataset']) == 'yolo-imagenet-vid':
-        dataset = YoloImageNetVidDataset(
-                     'train',
-                     yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
-    else:
-        raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
+    dataset = load_dataset(config, split='train')
     
     _fill = tuple(a + b for a, b in zip([123.0, 117.0, 104.0], (20, 20, 15)))  # correct colour
     if dataset_config['transform_name'] == 'no_resize_transform':
@@ -108,18 +65,12 @@ def train(args):
                                prefetch_factor=2  # Prefetch 2 batches per worker
                                ) 
 
-    # Instantiate model and load checkpoint if present
-    if str(train_config['model']) == 'ssd':
-        model = SSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    elif str(train_config['model']) == 'roissd':
-        model = RoiSSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    elif str(train_config['model']) == 'roissd-mobilenet':
-        model = RoiSSDMobileNet(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    else:
-        raise Exception('Unknown model name {}'.format(train_config['model']))
+    model = load_model(
+        config=config,
+        dataset=None,
+        load_checkpoint=False,
+        use_penalized_roissd=False,
+    )
     
     pretrained_detector = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     pretrained_detector.to(device)

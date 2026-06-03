@@ -2,6 +2,7 @@ from dataset.imagenet_vid_raw import ImageNetVidRawDataset
 from dataset.voc_raw import VOCRawDataset
 from dataset.yolo_imagenet_vid import YoloImageNetVidDataset, YoloImageNetVidRawDataset
 from tools.helpers.config_reader import load_config
+from tools.helpers.pipeline import load_model
 from tools.infer import infer_and_evaluate
 from tools.train_samplers.roi_mixed_sampling import MixedBatchSampler, MixedCollateFn, RoiBatchProcessor
 import torch
@@ -88,7 +89,7 @@ def train(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    if device == 'cuda':
+    if device.type == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
     if train_config.get('dataset', 'voc') == 'imagenet-vid':
@@ -139,17 +140,15 @@ def train(args):
     )
 
     # Instantiate model and load checkpoint if present
-    if model_name == 'ssd':
-        model = SSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    elif model_name == 'roissd':
-        model = RoiSSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    elif model_name == 'roissd-mobilenet':
-        model = RoiSSDMobileNet(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    elif model_name == 'fcos':
+    if model_name == 'fcos':
         model = build_fcos_model(num_classes=dataset_config['num_classes'])
+    elif model_name in ('ssd', 'roissd', 'roissd-mobilenet'):
+        model = load_model(
+            config=config,
+            dataset=None,
+            load_checkpoint=False,
+            use_penalized_roissd=False,
+        )
     else:
         raise Exception('Unknown model name {}'.format(train_config['model']))
     

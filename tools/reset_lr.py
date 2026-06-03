@@ -1,23 +1,10 @@
 import argparse
 import os
-from model.roissd_mobilenet import RoiSSDMobileNet
-from model.roissd import RoiSSD
-from model.ssd import SSD
 import torch
 from torch.optim.lr_scheduler import MultiStepLR
 
 from tools.helpers.config_reader import load_config
-
-
-def build_model_from_config(config, dataset_config, train_config):
-    model_name = str(train_config['model'])
-    if model_name == 'ssd':
-        return SSD(config=config['model_params'], num_classes=dataset_config['num_classes'])
-    if model_name == 'roissd':
-        return RoiSSD(config=config['model_params'], num_classes=dataset_config['num_classes'])
-    if model_name == 'roissd-mobilenet':
-        return RoiSSDMobileNet(config=config['model_params'], num_classes=dataset_config['num_classes'])
-    raise ValueError(f'Unknown model name {model_name!r} in train_params.model')
+from tools.helpers.pipeline import load_model
 
 
 if __name__ == '__main__':
@@ -29,7 +16,6 @@ if __name__ == '__main__':
     # Read the config file #
     config = load_config(args.config_path)
 
-    dataset_config = config['dataset_params']
     train_config = config['train_params']
 
     model_task_path = os.path.join('trained_models', train_config['task_name'])
@@ -40,7 +26,8 @@ if __name__ == '__main__':
         print('Loading checkpoint as one exists')
         checkpoint = torch.load(model_checkpoint_path, map_location='cpu')
 
-        model = build_model_from_config(config, dataset_config, train_config)
+        model = load_model(config=config, dataset=None, load_checkpoint=False)
+        model.to(device='cpu')
         optimizer = torch.optim.SGD(
             lr=train_config['lr'],
             params=model.parameters(),
