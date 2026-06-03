@@ -1,0 +1,45 @@
+extends: "imagenet-vid-yolo-base.yaml"
+
+dataset_params:
+  # num_classes : 34 # 34 - Imagenet VID, 21 - VOC, 80 - COCO
+  im_size : 320
+
+model_params:
+  im_channels : 3
+  aspect_ratios : [
+    [ 1., 2., 0.5 ],
+    [ 1., 2., 3., 0.5, .333 ],
+    [ 1., 2., 3., 0.5, .333 ],
+    [ 1., 2., 3., 0.5, .333 ],
+    [ 1., 2., 0.5 ],
+    [ 1., 2., 0.5 ]
+  ]
+  # scales : [0.2, 0.35, 0.5, 0.65, 0.8, 0.95]
+  scales : [0.1, 0.2, 0.375, 0.55, 0.725, 0.9]
+  iou_threshold : 0.5
+  low_score_threshold : 0.01
+  neg_pos_ratio : 3
+  pre_nms_topK : 400
+  detections_per_img : 200
+  nms_threshold : 0.45
+
+train_params:
+  model: 'roissd-mobilenet'
+  model_label_space: 'yolo-imagenet-vid'  # 'coco', 'image-net', 'imagenet-vid-yolo13' or 'voc' - determines how labels are remapped during training and inference
+  roi_mixed_stage: 1
+  seed: 2222
+  acc_steps: 3
+  num_epochs: 100
+  num_epochs_stage2: 20
+  num_epochs_stage3: 20
+  batch_size: 20
+  lr_steps: [ 50, 60, 70, 80, 90 ]
+  lr_steps_stage2: [ 5, 15 ]
+  lr_steps_stage3: [ 10, 15 ]
+  lr: 0.001
+  freeze_backbone_bn: false
+  freeze_extra_bn: false
+  train_bn_affine: true
+  log_steps : 100
+  task_name: 'imagenet-vid-roissd-mobilenet-yolo-config'
+  ckpt_name: 'imagenet20260603.pt'
