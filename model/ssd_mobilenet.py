@@ -119,7 +119,7 @@ def apply_regression_pred_to_default_boxes(box_transform_pred,
 
 def generate_default_boxes(feat, aspect_ratios, scales):
     r"""
-    Method to generate default_boxes for all feature maps of the image
+    Method to generate default_boxes for all feature maps the image
     :param feat: List[(Tensor of shape B x C x Feat_H x Feat x W)]
     :param aspect_ratios: List[List[float]] aspect ratios for each feature map
     :param scales: List[float] scales for each feature map
@@ -199,35 +199,45 @@ def generate_default_boxes(feat, aspect_ratios, scales):
     return dboxes
 
 
+class SSDLiteHead(nn.Module):
+    def __init__(self, in_channels, out_channels, bn_eps=0.001, bn_momentum=0.03):
+        super().__init__()
+        self.depthwise = nn.Conv2d(
+            in_channels,
+            in_channels,
+            kernel_size=3,
+            padding=1,
+            groups=in_channels,
+            bias=False,
+        )
+        self.bn = nn.BatchNorm2d(in_channels, eps=bn_eps, momentum=bn_momentum)
+        self.act = nn.ReLU6(inplace=True)
+        self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.bn(x)
+        x = self.act(x)
+        return self.pointwise(x)
+
+
 class SSDMobileNet(nn.Module):
     r"""
-    Main Class for SSD. Does the following steps
-    to generate detections/losses.
-    During initialization
-    1. Load MobileNetV2 Imagenet pretrained model
-    2. Extract Backbone from MobileNetV2 and add extra conv layers
-    3. Add class prediction and bbox transformation prediction layers
-    4. Initialize all conv2d layers
+    SSD-style detector with MobileNetV3-Large backbone and SSDLite-like heads.
 
-    During Forward Pass
-    1. Get conv4_3 output
-    2. Normalize and scale conv4_3 output (feat_output_1)
-    3. Pass the unscaled conv4_3 to conv5_3 layers and conv layers
-        replacing fc6 and fc7 of vgg (feat_output_2)
-    4. Pass the conv_fc7 output to extra conv layers (feat_output_3-6)
-    5. Get the classification and regression predictions for all 6 feature maps
-    6. Generate default_boxes for all these feature maps(8732 x 4)
-    7a. If in training assign targets for these default_boxes and
-        compute localization and classification losses
-    7b. If in inference mode, then do all pre-nms filtering, nms
-        and then post nms filtering and return the detected boxes,
-        their labels and their scores
+    This keeps the project's custom loss and default-box logic, while matching
+    torchvision ssdlite320_mobilenet_v3_large building blocks more closely:
+    - MobileNetV3-Large feature extractor
+    - depthwise-separable SSDLite prediction heads
+    - depthwise-separable extra pyramid blocks
     """
     def __init__(self, config, num_classes=21):
         super().__init__()
+        bn_eps = 0.001
+        bn_momentum = 0.03
         self.aspect_ratios = config['aspect_ratios']
 
-        self.scales = config['scales']
+        self.scales = list(config['scales'])
         self.scales.append(1.0)
 
         self.num_classes = num_classes
@@ -238,87 +248,99 @@ class SSDMobileNet(nn.Module):
         self.nms_threshold = config['nms_threshold']
         self.detections_per_img = config['detections_per_img']
 
-        # Load imagenet pretrained vgg network
-        backbone = torchvision.models.mobilenet_v2(
-            weights=torchvision.models.MobileNet_V2_Weights.IMAGENET1K_V1
+        # Load MobileNetV3-Large backbone configured like torchvision SSDLite.
+        use_pretrained_backbone = bool(config.get('pretrained_backbone', False))
+        mobilenet_weights = (
+            torchvision.models.MobileNet_V3_Large_Weights.IMAGENET1K_V2
+            if use_pretrained_backbone
+            else None
         )
+        try:
+            backbone = torchvision.models.mobilenet_v3_large(
+                weights=mobilenet_weights,
+                reduced_tail=True,
+                norm_layer=lambda c: nn.BatchNorm2d(c, eps=bn_eps, momentum=bn_momentum),
+            )
+        except RuntimeError as e:
+            if use_pretrained_backbone:
+                print(f'Warning: could not load pretrained MobileNetV3-Large weights with reduced_tail=True: {e}')
+                print('Falling back to random initialization for reduced-tail backbone.')
+                backbone = torchvision.models.mobilenet_v3_large(
+                    weights=None,
+                    reduced_tail=True,
+                    norm_layer=lambda c: nn.BatchNorm2d(c, eps=bn_eps, momentum=bn_momentum),
+                )
+            else:
+                raise
 
-        # MobileNetV2 feature extraction points
-        # Block indices for different scales:
-        # - Block 3: 32x32 feature maps (channels: 32)  
-        # - Block 6: 16x16 feature maps (channels: 64)
-        # - Block 13: 8x8 feature maps (channels: 160)
-        # - Final: 4x4 feature maps (channels: 1280)
-        
-        # Extract features up to block 13 (equivalent to conv4_3 in VGG)
-        self.features_low = nn.Sequential(*backbone.features[:7])   # Up to block 3
-        self.features_mid = nn.Sequential(*backbone.features[7:14]) # Blocks 4-13
-        self.features_high = nn.Sequential(*backbone.features[14:]) # Final blocks
-        
-        # Freeze early layers for fine-tuning
-        for param in self.features_low.parameters():
-            param.requires_grad = False
-
-        # Scale parameter for block 13 output (equivalent to conv4_3)
-        self.scale_weight = nn.Parameter(torch.ones(96) * 20) # 160 channels in block 13
-
-        ###################################
-        # Conv5_3 + Conv for fc6 and fc 7 #
-        ###################################
-        # Conv modules replacing fc6 and fc7
-        # Ideally we would copy the weights
-        # but here we are just adding new layers
-        # and not copying fc6 and fc7 weights by
-        # subsampling
-        # Replace VGG's fc6/fc7 equivalent - use final MobileNetV2 features
-        # MobileNetV2 ends with 1280 channels, so we build from there
-        self.fcs = nn.Sequential(
-            nn.Conv2d(in_channels=1280, out_channels=1024, kernel_size=3, 
-                    padding=1, dilation=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=1024, out_channels=1024, kernel_size=1),
-            nn.ReLU(inplace=True),
+        # Match torchvision SSDLiteFeatureExtractorMobileNet feature split:
+        # - first source feature: up to expand conv (112 -> 672)
+        # - second source feature: remainder of block + two IR blocks + final 1x1 conv to 480
+        self.features_stage1 = nn.Sequential(
+            *backbone.features[:13],
+            backbone.features[13].block[0],
+        )
+        self.features_stage2 = nn.Sequential(
+            nn.Sequential(*backbone.features[13].block[1:]),
+            backbone.features[14],
+            backbone.features[15],
+            backbone.features[16],
         )
 
         ##########################
         # Additional Conv Layers #
         ##########################
-        # Modules to take from 19x19 to 10x10
+        # SSDLite-style depthwise-separable pyramid blocks.
         self.conv8_2 = nn.Sequential(
-            nn.Conv2d(1024, 256, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 512, kernel_size=3, padding=1,
-                      stride=2),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(480, 256, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(256, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1, groups=256, bias=False),
+            nn.BatchNorm2d(256, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(256, 512, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(512, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
         )
 
-        # Modules to take from 10x10 to 5x5
         self.conv9_2 = nn.Sequential(
-            nn.Conv2d(512, 128, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1,
-                      stride=2),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(512, 128, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(128, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1, groups=128, bias=False),
+            nn.BatchNorm2d(128, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(128, 256, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(256, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
         )
 
-        # Modules to take from 5x5 to 3x3
         self.conv10_2 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(256, 128, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(128, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1, groups=128, bias=False),
+            nn.BatchNorm2d(128, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(128, 256, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(256, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
         )
 
-        # Modules to take from 3x3 to 1x1
         self.conv11_2 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(256, 64, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(64, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1, groups=64, bias=False),
+            nn.BatchNorm2d(64, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(64, 128, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(128, eps=bn_eps, momentum=bn_momentum),
+            nn.ReLU6(inplace=True),
         )
 
-        # Must match conv4_3, fcs, conv8_2, conv9_2, conv10_2, conv11_2
-        out_channels = [96, 1024, 512, 256, 256, 256]
+        # Must match feature maps: stage1, stage2, conv8_2, conv9_2, conv10_2, conv11_2
+        out_channels = [672, 480, 512, 256, 256, 128]
 
         #####################
         # Prediction Layers #
@@ -326,22 +348,31 @@ class SSDMobileNet(nn.Module):
         self.cls_heads = nn.ModuleList()
         for channels, aspect_ratio in zip(out_channels, self.aspect_ratios):
             # extra 1 is added for scale of sqrt(sk*sk+1)
-            self.cls_heads.append(nn.Conv2d(channels,
-                                            self.num_classes * (len(aspect_ratio)+1),
-                                            kernel_size=3,
-                                            padding=1))
+            self.cls_heads.append(
+                SSDLiteHead(
+                    channels,
+                    self.num_classes * (len(aspect_ratio) + 1),
+                    bn_eps=bn_eps,
+                    bn_momentum=bn_momentum,
+                )
+            )
 
         self.bbox_reg_heads = nn.ModuleList()
         for channels, aspect_ratio in zip(out_channels, self.aspect_ratios):
             # extra 1 is added for scale of sqrt(sk*sk+1)
-            self.bbox_reg_heads.append(nn.Conv2d(channels, 4 * (len(aspect_ratio)+1),
-                                                 kernel_size=3,
-                                                 padding=1))
+            self.bbox_reg_heads.append(
+                SSDLiteHead(
+                    channels,
+                    4 * (len(aspect_ratio) + 1),
+                    bn_eps=bn_eps,
+                    bn_momentum=bn_momentum,
+                )
+            )
 
         #############################
         # Conv Layer Initialization #
         #############################
-        for layer in self.fcs.modules():
+        for layer in self.features_stage2.modules():
             if isinstance(layer, nn.Conv2d):
                 torch.nn.init.xavier_uniform_(layer.weight)
                 if layer.bias is not None:
@@ -354,57 +385,13 @@ class SSDMobileNet(nn.Module):
                     if layer.bias is not None:
                         torch.nn.init.constant_(layer.bias, 0.0)
 
-        for module in self.cls_heads:
-            torch.nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                torch.nn.init.constant_(module.bias, 0.0)
-        for module in self.bbox_reg_heads:
-            torch.nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                torch.nn.init.constant_(module.bias, 0.0)
-
-    def set_freeze_level(self, freeze_level='conv1_conv2'):
-        """
-        Control which layers to freeze for fine-tuning
-        
-        Args:
-            freeze_level (str): 
-                - 'none': Train all layers
-                - 'conv1_conv2': Freeze conv1 and conv2 blocks (recommended for VisDrone)
-                - 'conservative': Freeze early VGG layers (up to conv3_1)
-                - 'aggressive': Freeze most VGG backbone (up to conv4_3)
-                - 'backbone_only': Freeze entire VGG backbone, train only SSD heads
-        """
-        # First, unfreeze all parameters
-        for param in self.parameters():
-            param.requires_grad = True
-            
-        if freeze_level == 'none':
-            return
-        elif freeze_level == 'conv1_conv2':
-            # Freeze conv1 and conv2 blocks (layers 0-9)
-            freeze_up_to = 9
-        elif freeze_level == 'conservative':
-            # Freeze up to conv3_1 (layers 0-16)
-            freeze_up_to = 16
-        elif freeze_level == 'aggressive':
-            # Freeze up to conv4_3 (most of backbone)
-            freeze_up_to = len(self.features) - 1
-        elif freeze_level == 'backbone_only':
-            # Freeze entire backbone
-            for param in self.features.parameters():
-                param.requires_grad = False
-            for param in self.conv5_3_fc.parameters():
-                param.requires_grad = False
-            return
-        else:
-            raise ValueError(f"Unknown freeze_level: {freeze_level}")
-            
-        # Freeze specified layers
-        for i, layer in enumerate(self.features):
-            if i <= freeze_up_to:
-                for param in layer.parameters():
-                    param.requires_grad = False
+        for module_list in [self.cls_heads, self.bbox_reg_heads]:
+            for module in module_list:
+                for layer in module.modules():
+                    if isinstance(layer, nn.Conv2d):
+                        torch.nn.init.xavier_uniform_(layer.weight)
+                        if layer.bias is not None:
+                            torch.nn.init.constant_(layer.bias, 0.0)
 
     def compute_loss(
             self,
@@ -500,33 +487,25 @@ class SSDMobileNet(nn.Module):
                                cls_loss[background_idxs].sum()) / N,
         }
 
-    def forward(self, x, targets=None):
-        # Extract features at different scales from MobileNetV2
-        low_features = self.features_low(x)      # Early features
-        mid_features = self.features_mid(low_features)  # Block 13 output (like conv4_3)
-        high_features = self.features_high(mid_features) # Final MobileNetV2 output
+    def forward(self, x, targets=None, ignore_regions=None):
+        del ignore_regions
 
-        # Scale block 13 output (equivalent to conv4_3 scaling)
-        mid_features_scaled = (self.scale_weight.view(1, -1, 1, 1) *
-                                torch.nn.functional.normalize(mid_features))
-
-        # Process final features through fc-like layers
-        conv_fc_out = self.fcs(high_features)
-
-        # Additional conv layers
-        conv8_2_out = self.conv8_2(conv_fc_out)
+        # MobileNetV3-Large feature extraction and SSDLite-like pyramid.
+        feat_672 = self.features_stage1(x)
+        feat_480 = self.features_stage2(feat_672)
+        conv8_2_out = self.conv8_2(feat_480)
         conv9_2_out = self.conv9_2(conv8_2_out)
         conv10_2_out = self.conv10_2(conv9_2_out)
-        # conv11_2_out = self.conv11_2(conv10_2_out)
+        conv11_2_out = self.conv11_2(conv10_2_out)
 
         # Feature maps for predictions
         outputs = [
-            mid_features_scaled,  # ~19x19 (from block 13)
-            conv_fc_out,         # ~10x10 (processed final features)
-            conv8_2_out,         # ~5x5
-            conv9_2_out,         # ~3x3  
-            conv10_2_out,        # ~2x2
-            # conv11_2_out,        # ~1x1
+            feat_672,
+            feat_480,
+            conv8_2_out,
+            conv9_2_out,
+            conv10_2_out,
+            conv11_2_out,
         ]
 
         # Classification and bbox regression for all feature maps
