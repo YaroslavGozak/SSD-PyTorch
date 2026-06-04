@@ -4,6 +4,7 @@ import os
 import yaml
 import random
 import csv
+from typing import Any, Dict, List
 from tqdm import tqdm
 import numpy as np
 import cv2
@@ -269,8 +270,6 @@ def infer(args):
         cfg_preview = yaml.safe_load(file)
     model_name = str(cfg_preview['train_params']['model'])
     transform_name = cfg_preview['dataset_params'].get('transform_name', 'ssd')
-    if model_name == 'yolo':
-        transform_name = 'fixed_padding_roi_crop_yolo_0'
 
     model, dataset_dataset, test_dataset_loader, config = load_model_and_dataset(args, transform_name)
     conf_threshold = config['train_params'].get('infer_conf_threshold', None)
@@ -353,151 +352,200 @@ def infer(args):
     print('Done Detecting...')
 
 
-def evaluate_map(args):
+def _evaluate_single_transform(
+    args,
+    *,
+    transform_name: str,
+    evaluated_dataset: str,
+    model_name: str,
+    yolo_debug_suffix: str = '',
+) -> Dict[str, Any]:
+    is_yolo = model_name == 'yolo'
+
+    model, voc, test_dataset, config = load_model_and_dataset(args, transform_name=transform_name)
+    model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
+
+    if args.results_path:
+        run_results_path = os.path.join(args.results_path, evaluated_dataset + '_results')
+    else:
+        run_results_path = os.path.join(model_task_path, evaluated_dataset + '_results')
+
+    if is_yolo:
+        debug_root = os.path.join(run_results_path, 'samples', 'yolo_transform_debug')
+        pad_debug_dir = os.path.join(debug_root, yolo_debug_suffix or evaluated_dataset)
+        os.makedirs(pad_debug_dir, exist_ok=True)
+        os.environ['YOLO_ROI_DEBUG_DIR'] = pad_debug_dir
+        os.environ.setdefault('YOLO_ROI_DEBUG_MAX', '3')
+
+    print('Results will be saved to {}'.format(run_results_path))
+
+    gts = []
+    preds = []
+    difficults = []
+    for im_tensor, target, fname in tqdm(test_dataset):
+        im_tensor = im_tensor.float().to(device)
+        target_bboxes = target['bboxes'].float()[0].to(device)
+        target_labels = target['labels'].long()[0].to(device)
+        difficult = target['difficult'].long()[0].to(device)
+        conf_threshold = config['train_params'].get('infer_conf_threshold', None)
+        ssd_detections = run_detector(
+            model,
+            im_tensor,
+            target,
+            model_name=model_name,
+            conf_threshold=conf_threshold,
+        )
+
+        boxes = ssd_detections[0]['boxes']
+        labels = ssd_detections[0]['labels']
+        scores = ssd_detections[0]['scores']
+
+        pred_boxes = {}
+        gt_boxes = {}
+        difficult_boxes = {}
+
+        for label_name in voc.label2idx:
+            pred_boxes[label_name] = []
+            gt_boxes[label_name] = []
+            difficult_boxes[label_name] = []
+
+        for idx, box in enumerate(boxes):
+            x1, y1, x2, y2 = box.detach().cpu().numpy()
+            label = labels[idx].detach().cpu().item()
+            score = scores[idx].detach().cpu().item()
+            label_name = voc.idx2label[label]
+            pred_boxes[label_name].append([x1, y1, x2, y2, score])
+        for idx, box in enumerate(target_bboxes):
+            x1, y1, x2, y2 = box.detach().cpu().numpy()
+            label = target_labels[idx].detach().cpu().item()
+            label_name = voc.idx2label[label]
+            gt_boxes[label_name].append([x1, y1, x2, y2])
+            difficult_boxes[label_name].append(difficult[idx].detach().cpu().item())
+
+        gts.append(gt_boxes)
+        preds.append(pred_boxes)
+        difficults.append(difficult_boxes)
+
+    mean_ap, all_aps, mean_recall, all_recalls = compute_map(preds, gts, method='area', difficult=difficults)
+    print('Class Wise Average Precisions and Detector Recall')
+    for idx in range(len(voc.idx2label)):
+        lbl = voc.idx2label[idx]
+        print('AP for class {} = {:.4f}  |  detector_recall = {:.4f}'.format(
+            lbl, all_aps[lbl], all_recalls[lbl]))
+    print('Mean Average Precision : {:.4f}'.format(mean_ap))
+    print('Mean Detector Recall   : {:.4f}'.format(mean_recall))
+
+    map_file_path = os.path.join(run_results_path, 'mAp.txt')
+    os.makedirs(run_results_path, exist_ok=True)
+    with open(map_file_path, 'w') as f:
+        f.write('Class Wise Average Precisions and Detector Recall\n')
+        f.write('=' * 50 + '\n')
+        for idx in range(len(voc.idx2label)):
+            lbl = voc.idx2label[idx]
+            f.write('AP for class {} = {:.4f}  |  detector_recall = {:.4f}\n'.format(
+                lbl, all_aps[lbl], all_recalls[lbl]))
+        f.write('=' * 50 + '\n')
+        f.write('Mean Average Precision : {:.4f}\n'.format(mean_ap))
+        f.write('Mean Detector Recall   : {:.4f}\n'.format(mean_recall))
+
+    print(f'Results saved to {map_file_path}')
+
+    csv_file_path = os.path.join(run_results_path, 'mAp.csv')
+    with open(csv_file_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+
+        header = ([voc.idx2label[idx] for idx in range(len(voc.idx2label))] + ['mAP']
+                + ['detector_recall_' + voc.idx2label[idx] for idx in range(len(voc.idx2label))]
+                + ['mean_detector_recall'])
+        writer.writerow(header)
+
+        data = ([all_aps[voc.idx2label[idx]] for idx in range(len(voc.idx2label))] + [mean_ap]
+                + [all_recalls[voc.idx2label[idx]] for idx in range(len(voc.idx2label))]
+                + [mean_recall])
+        writer.writerow(data)
+
+    print(f'Results saved to {csv_file_path}')
+
+    append_model_results_csv(
+        model_task_path=model_task_path,
+        config=config,
+        evaluated_dataset=evaluated_dataset,
+        mean_ap=mean_ap,
+        mean_recall=mean_recall,
+    )
+    print('Appended summary to {}'.format(os.path.join(model_task_path, 'results.csv')))
+
+    if is_yolo:
+        os.environ.pop('YOLO_ROI_DEBUG_DIR', None)
+
+    return {
+        'evaluated_dataset': evaluated_dataset,
+        'transform_name': transform_name,
+        'mAP': float(mean_ap),
+        'mean_detector_recall': float(mean_recall),
+        'results_path': run_results_path,
+    }
+
+
+def evaluate_map_default(args) -> Dict[str, Any]:
+    with open(args.config_path, 'r') as file:
+        cfg_preview = yaml.safe_load(file)
+    model_name = str(cfg_preview['train_params']['model'])
+    transform_name = str(cfg_preview['dataset_params'].get('transform_name', 'ssd'))
+    run = _evaluate_single_transform(
+        args,
+        transform_name=transform_name,
+        evaluated_dataset=transform_name,
+        model_name=model_name,
+    )
+    return {'mode': 'default', 'runs': [run]}
+
+
+def evaluate_map_pad_loop(args) -> Dict[str, Any]:
     with open(args.config_path, 'r') as file:
         cfg_preview = yaml.safe_load(file)
     model_name = str(cfg_preview['train_params']['model'])
     is_yolo = model_name == 'yolo'
 
+    runs: List[Dict[str, Any]] = []
     for pad in range(0, 201, 10):
         print('Evaluating mAP with padding {}...'.format(pad))
         if is_yolo:
             transform_name = 'fixed_padding_roi_crop_yolo_{}'.format(pad)
         else:
             transform_name = 'fixed_padding_roi_crop_{}'.format(pad)
-
-        model, voc, test_dataset, config = load_model_and_dataset(args, transform_name=transform_name)
-        model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
-        args.results_path = os.path.join(model_task_path, transform_name + '_results')
-
-        if is_yolo:
-            debug_root = os.path.join(args.results_path, 'samples', 'yolo_transform_debug')
-            pad_debug_dir = os.path.join(debug_root, 'pad_{}'.format(pad))
-            os.makedirs(pad_debug_dir, exist_ok=True)
-            os.environ['YOLO_ROI_DEBUG_DIR'] = pad_debug_dir
-            os.environ.setdefault('YOLO_ROI_DEBUG_MAX', '3')
-
-        print('Results will be saved to {}'.format(args.results_path))
-
-        gts = []
-        preds = []
-        difficults = []
-        for im_tensor, target, fname in tqdm(test_dataset):
-            im_tensor = im_tensor.float().to(device)
-            target_bboxes = target['bboxes'].float()[0].to(device)
-            target_labels = target['labels'].long()[0].to(device)
-            difficult = target['difficult'].long()[0].to(device)
-            conf_threshold = config['train_params'].get('infer_conf_threshold', None)
-            ssd_detections = run_detector(
-                model,
-                im_tensor,
-                target,
-                model_name=model_name,
-                conf_threshold=conf_threshold,
-            )
-
-            boxes = ssd_detections[0]['boxes']
-            labels = ssd_detections[0]['labels']
-            scores = ssd_detections[0]['scores']
-
-            pred_boxes = {}
-            gt_boxes = {}
-            difficult_boxes = {}
-
-            for label_name in voc.label2idx:
-                pred_boxes[label_name] = []
-                gt_boxes[label_name] = []
-                difficult_boxes[label_name] = []
-
-            for idx, box in enumerate(boxes):
-                x1, y1, x2, y2 = box.detach().cpu().numpy()
-                label = labels[idx].detach().cpu().item()
-                score = scores[idx].detach().cpu().item()
-                label_name = voc.idx2label[label]
-                pred_boxes[label_name].append([x1, y1, x2, y2, score])
-            for idx, box in enumerate(target_bboxes):
-                x1, y1, x2, y2 = box.detach().cpu().numpy()
-                label = target_labels[idx].detach().cpu().item()
-                label_name = voc.idx2label[label]
-                gt_boxes[label_name].append([x1, y1, x2, y2])
-                difficult_boxes[label_name].append(difficult[idx].detach().cpu().item())
-
-            gts.append(gt_boxes)
-            preds.append(pred_boxes)
-            difficults.append(difficult_boxes)
-        mean_ap, all_aps, mean_recall, all_recalls = compute_map(preds, gts, method='area', difficult=difficults)
-        print('Class Wise Average Precisions and Detector Recall')
-        for idx in range(len(voc.idx2label)):
-            lbl = voc.idx2label[idx]
-            print('AP for class {} = {:.4f}  |  detector_recall = {:.4f}'.format(
-                lbl, all_aps[lbl], all_recalls[lbl]))
-        print('Mean Average Precision : {:.4f}'.format(mean_ap))
-        print('Mean Detector Recall   : {:.4f}'.format(mean_recall))
-
-        model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
-        # Write results to map.txt
-        
-        if args.results_path:
-            map_file_path = os.path.join(args.results_path, 'mAp.txt')
-            if not os.path.exists(args.results_path):
-                os.makedirs(args.results_path, exist_ok=True)
-            with open(map_file_path, 'w') as f:
-                f.write('Class Wise Average Precisions and Detector Recall\n')
-                f.write('=' * 50 + '\n')
-                for idx in range(len(voc.idx2label)):
-                    lbl = voc.idx2label[idx]
-                    f.write('AP for class {} = {:.4f}  |  detector_recall = {:.4f}\n'.format(
-                        lbl, all_aps[lbl], all_recalls[lbl]))
-                f.write('=' * 50 + '\n')
-                f.write('Mean Average Precision : {:.4f}\n'.format(mean_ap))
-                f.write('Mean Detector Recall   : {:.4f}\n'.format(mean_recall))
-            
-            print(f'Results saved to {map_file_path}')
-            
-            # Save results to CSV file
-            csv_file_path = os.path.join(args.results_path, 'mAp.csv')
-            with open(csv_file_path, 'w', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                
-                # Header row: class names + mAP + detector_recall columns
-                header = ([voc.idx2label[idx] for idx in range(len(voc.idx2label))] + ['mAP']
-                        + ['detector_recall_' + voc.idx2label[idx] for idx in range(len(voc.idx2label))]
-                        + ['mean_detector_recall'])
-                writer.writerow(header)
-                
-                # Data row: AP values + mean AP + recall values + mean recall
-                data = ([all_aps[voc.idx2label[idx]] for idx in range(len(voc.idx2label))] + [mean_ap]
-                        + [all_recalls[voc.idx2label[idx]] for idx in range(len(voc.idx2label))]
-                        + [mean_recall])
-                writer.writerow(data)
-            
-            print(f'Results saved to {csv_file_path}')
-        else:
-            print('No results path provided, skipping saving mAP results to file.')
-
-        append_model_results_csv(
-            model_task_path=model_task_path,
-            config=config,
+        runs.append(_evaluate_single_transform(
+            args,
+            transform_name=transform_name,
             evaluated_dataset=transform_name,
-            mean_ap=mean_ap,
-            mean_recall=mean_recall,
-        )
-        print('Appended summary to {}'.format(os.path.join(model_task_path, 'results.csv')))
+            model_name=model_name,
+            yolo_debug_suffix='pad_{}'.format(pad),
+        ))
+    return {'mode': 'pad-loop', 'runs': runs}
 
-        if is_yolo:
-            os.environ.pop('YOLO_ROI_DEBUG_DIR', None)
+
+def evaluate_map(args) -> Dict[str, Any]:
+    eval_mode = str(getattr(args, 'eval_mode', 'default')).strip().lower()
+    if eval_mode == 'default':
+        return evaluate_map_default(args)
+    if eval_mode == 'pad-loop':
+        return evaluate_map_pad_loop(args)
+    raise ValueError('Unknown eval mode: {}. Expected default|pad-loop'.format(eval_mode))
 
 def infer_and_evaluate(args):
+    output: Dict[str, Any] = {'inference_ran': False, 'evaluation': None}
     with torch.no_grad():
         if args.infer_samples:
             infer(args)
+            output['inference_ran'] = True
         else:
             print('Not Inferring for samples as `infer_samples` argument is False')
 
         if args.evaluate:
-            evaluate_map(args)
+            output['evaluation'] = evaluate_map(args)
         else:
             print('Not Evaluating as `evaluate` argument is False')
+    return output
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Arguments for ssd inference')
@@ -509,6 +557,8 @@ if __name__ == '__main__':
                         default=True, type=bool)
     parser.add_argument('--results-path', dest='results_path',
                         default=None, type=str)
+    parser.add_argument('--eval-mode', dest='eval_mode', choices=['default', 'pad-loop'],
+                        default='default', type=str)
     args = parser.parse_args()
 
     infer_and_evaluate(args)

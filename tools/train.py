@@ -21,6 +21,38 @@ def collate_function(data):
     return tuple(zip(*data))
 
 
+def append_epoch_metrics_csv(
+    csv_file_path,
+    *,
+    epoch,
+    classification_loss,
+    detection_loss,
+    learning_rate,
+    mean_ap,
+    mean_detector_recall,
+):
+    file_exists = os.path.exists(csv_file_path)
+    with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        if not file_exists:
+            writer.writerow([
+                'epoch',
+                'classification_loss',
+                'detection_loss',
+                'learning_rate',
+                'mAP',
+                'mean_detector_recall',
+            ])
+        writer.writerow([
+            int(epoch),
+            float(classification_loss),
+            float(detection_loss),
+            float(learning_rate),
+            float(mean_ap),
+            float(mean_detector_recall),
+        ])
+
+
 def train(args):
     # Read the config file #
     config = load_config(args.config_path)
@@ -253,30 +285,53 @@ def train(args):
         torch.save(checkpoint, model_checkpoint_path)
         torch.save(i, os.path.join(model_task_path, 'epoch.pth'))
         
-        # Save losses to CSV file
-        csv_file_path = os.path.join(model_task_path, 'training_losses.csv')
-        file_exists = os.path.exists(csv_file_path)
-        
-        with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
-            writer = csv.writer(csvfile)
-            
-            # Write header if file doesn't exist
-            if not file_exists:
-                writer.writerow(['epoch', 'classification_loss', 'detection_loss', 'learning_rate'])
-            
-            # Write current epoch data
-            writer.writerow([i+1, np.mean(ssd_classification_losses), np.mean(ssd_localization_losses), lr_scheduler.get_last_lr()[0]])
+        # Per-epoch intermediate mAP on dataset with config transform.
+        epoch_eval_results_path = os.path.join(model_task_path, 'epoch_{:04d}_default_eval_results'.format(i + 1))
+        epoch_eval_args = argparse.Namespace(**vars(args))
+        epoch_eval_args.infer_samples = False
+        epoch_eval_args.evaluate = True
+        epoch_eval_args.eval_mode = 'default'
+        epoch_eval_args.results_path = epoch_eval_results_path
+        epoch_eval_result = infer_and_evaluate(epoch_eval_args)
+
+        epoch_map = float('nan')
+        epoch_recall = float('nan')
+        if isinstance(epoch_eval_result, dict):
+            evaluation = epoch_eval_result.get('evaluation', {})
+            if isinstance(evaluation, dict):
+                runs = evaluation.get('runs', [])
+                if runs:
+                    epoch_map = float(runs[0].get('mAP', float('nan')))
+                    epoch_recall = float(runs[0].get('mean_detector_recall', float('nan')))
+                else:
+                    epoch_map = float(evaluation.get('mAP', float('nan')))
+                    epoch_recall = float(evaluation.get('mean_detector_recall', float('nan')))
+
+        metrics_csv_path = os.path.join(model_task_path, 'training_metrics.csv')
+        append_epoch_metrics_csv(
+            metrics_csv_path,
+            epoch=i + 1,
+            classification_loss=np.mean(ssd_classification_losses),
+            detection_loss=np.mean(ssd_localization_losses),
+            learning_rate=lr_scheduler.get_last_lr()[0],
+            mean_ap=epoch_map,
+            mean_detector_recall=epoch_recall,
+        )
     print('Done Training...')
     print('Evaluating...')
-    args.infer_samples = True
-    args.evaluate = True
-    args.results_path = os.path.join(model_task_path, dataset_config['transform_name'] + '_results')
-    infer_and_evaluate(args)
+    final_eval_args = argparse.Namespace(**vars(args))
+    final_eval_args.infer_samples = True
+    final_eval_args.evaluate = True
+    final_eval_args.eval_mode = args.final_eval_mode
+    final_eval_args.results_path = os.path.join(model_task_path, 'final_{}_results'.format(args.final_eval_mode))
+    infer_and_evaluate(final_eval_args)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Arguments for ssd training')
     parser.add_argument('--config', dest='config_path',
                         default='config/voc.yaml', type=str)
+    parser.add_argument('--final-eval-mode', dest='final_eval_mode',
+                        choices=['default', 'pad-loop'], default='pad-loop', type=str)
     args = parser.parse_args()
     train(args)
