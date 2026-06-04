@@ -1,6 +1,3 @@
-from dataset.visdrone import VisDroneDataset
-from tools.helpers.config_reader import load_config
-from tools.voc.adapters.coco_to_voc_adapter import CocoToVocAdapter
 import torch
 import argparse
 import os
@@ -8,36 +5,16 @@ import yaml
 import random
 import csv
 from tqdm import tqdm
-import torchvision
-from dataset.ytbb import YTBBDataset
-from dataset.imagenet_vid import ImageNetVidDataset
-from dataset.yolo_imagenet_vid import YoloImageNetVidDataset
-from model.roissd import RoiSSD
-from model.roissd_mobilenet import RoiSSDMobileNet
-from model.ssd import SSD
 import numpy as np
 import cv2
-from dataset.voc import VOCDataset
-from dataset.voc_small_objects import VOCSmallObjectsDataset
-from torch.utils.data.dataloader import DataLoader
-from tools.helpers.label_compat import (
-    VOC_LABEL2IDX,
-    get_model_label_space,
-    get_model_num_classes,
-    maybe_wrap_model_for_dataset,
-    should_filter_imagenet_vid_to_voc_overlap,
-)
 from model.model_adapters import DetectionLabelRemapAdapter, YoloV8Adapter
 from tools.helpers.pipeline import (
-    load_dataset as pipeline_load_dataset,
-    load_model as pipeline_load_model,
+    load_model_and_dataset as pipeline_load_model_and_dataset,
     resolve_device,
 )
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if torch.backends.mps.is_available():
-    device = torch.device('mps')
-    print('Using mps')
+device = resolve_device(None)
+print('Using device {}'.format(device))
 
 
 def get_iou(det, gt):
@@ -196,143 +173,14 @@ def compute_map(det_boxes, gt_boxes, iou_threshold=0.5, method='area', difficult
     return mean_ap, all_aps, mean_recall, all_recalls
 
 
-def resolve_optional_weights_path(train_config, key_name):
-    weights_path = str(train_config.get(key_name, '')).strip()
-    if not weights_path:
-        return None
-    if os.path.exists(weights_path):
-        return weights_path
-
-    task_name = str(train_config.get('task_name', '')).strip()
-    if task_name:
-        candidate = os.path.join('trained_models', task_name, weights_path)
-        if os.path.exists(candidate):
-            return candidate
-    return weights_path
-
-
-def build_fcos_model(num_classes):
-    return torchvision.models.detection.fcos_resnet50_fpn(
-        weights=None,
-        weights_backbone=torchvision.models.ResNet50_Weights.DEFAULT,
-        num_classes=num_classes,
-    )
-
-
-def build_fasterrcnn_model(num_classes):
-    return torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
-        weights=None,
-        weights_backbone=torchvision.models.MobileNet_V3_Large_Weights.DEFAULT,
-        num_classes=num_classes,
-        box_score_thresh=0.9,
-    )
-
-
 def load_model_and_dataset(args, transform_name=None):
-    # Read the config file #
-    config = load_config(args.config_path)
-    ########################
-
-    dataset_config = config['dataset_params']
-    train_config = config['train_params']
-    dataset_name = str(train_config['dataset'])
-    model_num_classes = get_model_num_classes(train_config, dataset_config, dataset_name)
-    global device
-    requested_device = train_config.get('device', config.get('infer_params', {}).get('device'))
-    device = resolve_device(requested_device if requested_device is not None else device)
-
-    dataset = pipeline_load_dataset(
-        config,
-        split='test',
-        transform_name=transform_name or dataset_config.get('transform_name'),
+    model, dataset, test_dataset_loader, config = pipeline_load_model_and_dataset(
+        device=device,
+        args=args,
+        transform_name=transform_name,
     )
-    test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
-
-    model_name = str(train_config['model'])
-    if model_name in ('ssd', 'roissd', 'roissd-mobilenet', 'yolo'):
-        model = pipeline_load_model(
-            config=config,
-            dataset=dataset,
-            load_checkpoint=True,
-            use_penalized_roissd=False,
-        )
-        model.to(device=torch.device(device))
-        model.eval()
-        if hasattr(model, 'low_score_threshold'):
-            model.low_score_threshold = float(train_config.get('infer_conf_threshold', 0.05))
-        return model, dataset, test_dataset_loader, config
-    elif model_name == 'fcos':
-        model = build_fcos_model(num_classes=model_num_classes)
-    elif model_name == 'fasterrcnn':
-        base_model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
-            weights=torchvision.models.detection.FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT,
-            box_score_thresh=0.9,
-        )
-        adapter_label2idx = dataset.label2idx
-        if get_model_label_space(train_config, dataset_name) == 'voc':
-            adapter_label2idx = VOC_LABEL2IDX
-        model = CocoToVocAdapter(
-            base_model=base_model,
-            voc_label2idx=adapter_label2idx,
-            conf_threshold=train_config.get('infer_conf_threshold', 0.05),
-            normalize_boxes=True,
-        )
-    else:
-        raise Exception('Unknown model name {}'.format(train_config['model']))
-   
-    model.to(device=torch.device(device))
-    model.eval()
-
-    if model_name == 'fcos' and hasattr(model, 'score_thresh'):
-        model.score_thresh = float(train_config.get('infer_conf_threshold', 0.05))
-
-    model_task_path = os.path.join('trained_models', train_config['task_name'])
-    model_checkpoint_path = os.path.join(model_task_path, train_config['ckpt_name'])
-    if model_name in ('fcos', 'fasterrcnn') and not os.path.exists(model_checkpoint_path):
-        custom_weights_path = resolve_optional_weights_path(train_config, 'ckpt_name')
-        print('custom_weights_path', custom_weights_path)
-        if custom_weights_path and os.path.exists(custom_weights_path):
-            model_checkpoint_path = custom_weights_path
-    # assert os.path.exists(model_checkpoint_path), \
-    #     "No checkpoint exists at {}".format(model_checkpoint_path)
-    print('Model checkpoint path resolved to {}'.format(model_checkpoint_path))
-    # Load checkpoint if it exists (after creating optimizer and scheduler)
-    if os.path.exists(model_checkpoint_path):
-        print('Loading checkpoint as one exists')
-        checkpoint = torch.load(
-            model_checkpoint_path,
-            map_location=device)
-
-        state_dict = checkpoint['model'] if isinstance(checkpoint, dict) and 'model' in checkpoint else checkpoint
-        
-        # Handle both old format (state_dict only) and new format (full checkpoint)
-        if model_name == 'fasterrcnn' and hasattr(model, 'base_model'):
-            try:
-                model.load_state_dict(state_dict)
-                print('Loaded adapter checkpoint format')
-            except RuntimeError:
-                if isinstance(state_dict, dict) and any(k.startswith('base_model.') for k in state_dict.keys()):
-                    stripped_state_dict = {
-                        k[len('base_model.'):]: v
-                        for k, v in state_dict.items()
-                        if k.startswith('base_model.')
-                    }
-                    model.base_model.load_state_dict(stripped_state_dict)
-                else:
-                    model.base_model.load_state_dict(state_dict)
-                print('Loaded base Faster R-CNN checkpoint into adapter')
-        elif isinstance(checkpoint, dict) and 'model' in checkpoint:
-            model.load_state_dict(state_dict)
-            print('Restored optimizer and scheduler state')
-        else:
-            # Old format - just model state_dict
-            model.load_state_dict(state_dict)
-            print('Loaded model only (old checkpoint format)')
-
-    model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
-    model.to(device=torch.device(device))
-    model.eval()
-
+    if hasattr(model, 'low_score_threshold'):
+        model.low_score_threshold = float(config['train_params'].get('infer_conf_threshold', 0.05))
     return model, dataset, test_dataset_loader, config
 
 
@@ -366,26 +214,6 @@ def run_detector(model, im_tensor, target, model_name='ssd', conf_threshold=None
                 'scores': res.boxes.conf.to(im_tensor.device).float(),
             })
         return detections
-
-    if model_name == 'fcos':
-        detections = model([im_tensor.squeeze(0)])
-        _, _, h, w = im_tensor.shape
-        normalized_detections = []
-        for detection in detections:
-            boxes_xyxy = detection['boxes'].to(im_tensor.device).float()
-            boxes_norm = boxes_xyxy.clone()
-            if len(boxes_norm) > 0:
-                boxes_norm[:, [0, 2]] /= float(w)
-                boxes_norm[:, [1, 3]] /= float(h)
-            normalized_detections.append({
-                'boxes': boxes_norm,
-                'labels': detection['labels'].to(im_tensor.device).long(),
-                'scores': detection['scores'].to(im_tensor.device).float(),
-            })
-        return normalized_detections
-
-    if model_name == 'fasterrcnn':
-        return model([im_tensor.squeeze(0)])
 
     try:
         _, detections = model(im_tensor, [target])

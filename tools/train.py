@@ -1,5 +1,5 @@
 from tools.helpers.config_reader import load_config
-from tools.helpers.pipeline import load_dataset, load_model
+from tools.helpers.pipeline import load_dataset, load_model, resolve_device
 from tools.infer import infer_and_evaluate
 from tools.multiscale_collate import EpochAwareCollateFn
 import torch
@@ -13,16 +13,8 @@ from tqdm import tqdm
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
-if not torch.cuda.is_available():
-    raise Exception('CUDA not available')
-else:
-    print('Running on CUDA')
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-if torch.backends.mps.is_available():
-    device = torch.device('mps')
-    print('Using mps')
+device = resolve_device(None)
+print('Using device {}'.format(device))
 
 
 def collate_function(data):
@@ -70,6 +62,7 @@ def train(args):
         dataset=None,
         load_checkpoint=False,
         use_penalized_roissd=False,
+        model_device=device,
     )
     
     pretrained_detector = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
@@ -77,6 +70,7 @@ def train(args):
     pretrained_detector.eval()
     
     model.to(device)
+    model.train()
 
     if str(train_config['model']) == 'roissd-mobilenet' and hasattr(model, 'set_batch_norm_frozen'):
         model.set_batch_norm_frozen(
@@ -94,8 +88,6 @@ def train(args):
             print(f"  Inf count: {torch.isinf(param).sum().item()}")
             raise RuntimeError("Model weights contain NaN/Inf - cannot continue training")
             
-    model.train()
-    
     model_task_path = os.path.join('trained_models', train_config['task_name'])
     model_checkpoint_path = os.path.join(model_task_path, train_config['ckpt_name'])
     if not os.path.exists(model_task_path):

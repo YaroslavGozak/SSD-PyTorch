@@ -216,6 +216,7 @@ def load_model(
     dataset=None,
     load_checkpoint: bool = True,
     use_penalized_roissd: bool = True,
+    model_device: Optional[torch.device] = None,
 ):
     """Load model from a parsed training config dict."""
     dataset_config = config['dataset_params']
@@ -249,7 +250,10 @@ def load_model(
             candidate = os.path.join('trained_models', task_name, weights_path)
             if os.path.exists(candidate):
                 weights_path = candidate
-        yolo_device = resolve_device(train_config.get('device', 'cpu'))
+        if model_device is not None:
+            yolo_device = resolve_device(model_device)
+        else:
+            yolo_device = resolve_device(train_config.get('device', 'cpu'))
         model = YoloV8Adapter(weights_path=weights_path, device=yolo_device, use_predict_api=True)
         print(f'Loaded YOLO model with weights: {weights_path}')
     else:
@@ -285,7 +289,7 @@ def load_model(
     return model
 
 
-def load_model_and_dataset(device, args):
+def load_model_and_dataset(device, args, transform_name: Optional[str] = None):
     """Load model and dataset from a training config path (args.config_path)."""
     config = load_config(args.config_path)
     if device is None:
@@ -293,9 +297,9 @@ def load_model_and_dataset(device, args):
         device = resolve_device(cfg_device)
     else:
         device = resolve_device(device)
-    dataset = load_dataset(config, split='test')
+    dataset = load_dataset(config, split='test', transform_name=transform_name)
     data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
-    model = load_model(config=config, dataset=dataset, load_checkpoint=True)
+    model = load_model(config=config, dataset=dataset, load_checkpoint=True, model_device=device)
     model.to(device=device)
     model.eval()
 
