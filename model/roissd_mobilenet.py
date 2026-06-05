@@ -630,7 +630,7 @@ class RoiSSDMobileNet(nn.Module):
         # Aggregated bbox loss and classification targets
         # for all batch images
         bbox_loss = torch.stack(bbox_loss)
-        cls_targets = torch.stack(cls_targets)  # (B, 8732)
+        cls_targets = torch.stack(cls_targets)
 
         # Calculate classification loss for ALL default_boxes
         num_classes = cls_logits.size(-1)

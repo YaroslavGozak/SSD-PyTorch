@@ -23,22 +23,24 @@ if __name__ == '__main__':
 
     # Load checkpoint if it exists (after creating optimizer and scheduler)
     if os.path.exists(model_checkpoint_path):
-        print('Loading checkpoint as one exists')
+        print(f'Loading checkpoint {model_checkpoint_path}')
         checkpoint = torch.load(model_checkpoint_path, map_location='cpu')
 
         model = load_model(config=config, dataset=None, load_checkpoint=False)
         model.to(device='cpu')
+        lr = train_config['lr']
+        lr_steps = train_config['lr_steps']
         optimizer = torch.optim.SGD(
-            lr=train_config['lr'],
+            lr=lr,
             params=model.parameters(),
             weight_decay=5E-4,
             momentum=0.9,
         )
-        lr_scheduler = MultiStepLR(optimizer, milestones=train_config['lr_steps'], gamma=0.5)
+        lr_scheduler = MultiStepLR(optimizer, milestones=lr_steps, gamma=0.5)
         
         # Handle both old format (state_dict only) and new format (full checkpoint)
         if isinstance(checkpoint, dict) and 'model' in checkpoint:
-            print('Checkpoint contains full state (model, optimizer, scheduler). Resetting learning rate and epoch.')
+            print(f'Checkpoint contains full state (model, optimizer, scheduler). Resetting learning rate to {lr} with steps {lr_steps} and epoch to 0.')
             model.load_state_dict(checkpoint['model'])
         else:
             print('Checkpoint contains model state only (old format). Rewriting as full checkpoint with reset optimizer/scheduler.')

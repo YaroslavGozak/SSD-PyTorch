@@ -192,6 +192,18 @@ This works because `dataset/imagenet_vid.py` already walks the image tree and on
 * ```python -m tools.train``` for training SSD on VOC dataset
 * ```python -m tools.infer --evaluate False --infer_samples True``` for generating inference predictions
 * ```python -m tools.infer --evaluate True --infer_samples False``` for evaluating on test dataset
+* ```python -m tools.infer --evaluate True --infer_samples False --eval-mode default``` to evaluate once on the dataset transform defined in config (`dataset_params.transform_name`)
+* ```python -m tools.infer --evaluate True --infer_samples False --eval-mode pad-loop``` to run fixed-padding sweep evaluation (`fixed_padding_roi_crop_{X}` or `fixed_padding_roi_crop_yolo_{X}`)
+* ```python -m tools.train --final-eval-mode pad-loop``` to train with per-epoch intermediate default-transform mAP and a final pad-loop evaluation
+
+### Inference/Evaluation modes
+`tools/infer.py` supports:
+* `--eval-mode default`: single evaluation pass using config transform.
+* `--eval-mode pad-loop`: multi-run padding sweep from `0..200` with step `10`.
+
+During training, `tools/train.py` now performs:
+* intermediate mAP evaluation at the end of each epoch using `default` mode.
+* final post-training evaluation using `--final-eval-mode` (`default` or `pad-loop`).
 
 ## Configuration
 * ```config/voc.yaml``` - Allows you to play with different components of SSD on voc dataset  
@@ -204,6 +216,13 @@ For every run a folder of `task_name` key in config will be created
 
 During training of SSD the following output will be saved 
 * Latest Model checkpoint in ```task_name``` directory
+* Per-epoch unified metrics CSV at ```task_name/training_metrics.csv``` with columns:
+    * `epoch`
+    * `classification_loss`
+    * `detection_loss`
+    * `learning_rate`
+    * `mAP`
+    * `mean_detector_recall`
 
 During inference the following output will be saved
 * Sample prediction outputs for images in ```task_name/samples```
