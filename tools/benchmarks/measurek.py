@@ -1,15 +1,11 @@
 import argparse
 import time
-
-import numpy as np
-import torchvision
-from dataset.voc import VOCDataset
-from model.roissd_mobilenet import RoiSSDMobileNet
-from tools.voc.adapters.coco_to_voc_adapter import CocoToVocAdapter
 import torch
-import yaml
-
+import torchvision
+import numpy as np
+from model.roissd_mobilenet import RoiSSDMobileNet
 from model.roissd import RoiSSD
+from tools.helpers.config_reader import load_config
 
 
 def run_forward(model, x, is_yolo=False):
@@ -87,7 +83,6 @@ def build_fcos_model(num_classes):
         num_classes=num_classes,
     )
 
-
 def build_fasterrcnn_model(num_classes):
     return torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
         weights=None,
@@ -108,23 +103,11 @@ if __name__ == "__main__":
     parser.add_argument("--cuda", action="store_true", help="Also benchmark on CUDA if available")
     args = parser.parse_args()
 
-    # Read the config file #
-    with open(args.config, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-            raise
-
+    config = load_config(args.config)
     dataset_config = config['dataset_params']
     train_config = config['train_params']
     model = None
     is_yolo = False
-
-    dataset = VOCDataset('test',
-        im_sets=dataset_config['test_im_sets'],
-        im_size=dataset_config['im_size'],
-        transform_name='ssd')
 
     if args.model == "roissd":
         model = RoiSSD(
@@ -143,18 +126,6 @@ if __name__ == "__main__":
     elif args.model == 'fcos':
         model = build_fcos_model(num_classes=dataset_config['num_classes'])
         print("Benchmarking model: FCOS")
-        is_yolo = False
-    elif args.model == 'fasterrcnn':
-        base_model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
-            weights=torchvision.models.detection.FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT,
-            box_score_thresh=0.9,
-        )
-        model = CocoToVocAdapter(
-            base_model=base_model,
-            voc_label2idx=dataset.label2idx,
-            conf_threshold=train_config.get('infer_conf_threshold', 0.05),
-            normalize_boxes=True,
-        )
         is_yolo = False
     elif args.model == 'yolo':
         try:
