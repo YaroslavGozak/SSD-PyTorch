@@ -1,142 +1,42 @@
 # Batch tracker sweep for tools.benchmarks.batch_benchmark_vid
 # Base benchmark config (model, dataset, output path) is passed via CLI.
 
-sweep_name: "roissd_cuda"
+sweep_name: "roissd_cpu"
 
 experiments:
-  # - name: "oracle_gt_0"
-  #   tracker_type: "oracle_gt"
-  #   tracker_params:
-  #     pad_x: 0
-  #     pad_y: 0
-
-  # - name: "oracle_gt_16"
-  #   tracker_type: "oracle_gt"
-  #   tracker_params:
-  #     pad_x: 16
-  #     pad_y: 16
-
-  # - name: "oracle_gt_32"
-  #   tracker_type: "oracle_gt"
-  #   tracker_params:
-  #     pad_x: 32
-  #     pad_y: 32
-
-  # - name: "oracle_gt_64"
-  #   tracker_type: "oracle_gt"
-  #   tracker_params:
-  #     pad_x: 64
-  #     pad_y: 64
-
-  # - name: "static_padding_0"
-  #   tracker_type: "static_padding"
-  #   tracker_params:
-  #     pad_x: 0
-  #     pad_y: 0
-
-  # - name: "static_padding_16"
-  #   tracker_type: "static_padding"
-  #   tracker_params:
-  #     pad_x: 16
-  #     pad_y: 16
-
-  # - name: "static_padding_32"
-  #   tracker_type: "static_padding"
-  #   tracker_params:
-  #     pad_x: 32
-  #     pad_y: 32
-
-  # - name: "static_padding_64"
-  #   tracker_type: "static_padding"
-  #   tracker_params:
-  #     pad_x: 64
-  #     pad_y: 64
-
-  # - name: "relative_padding_0p1"
-  #   tracker_type: "relative_padding"
-  #   tracker_params:
-  #     pad_ratio_x: 0.1
-  #     pad_ratio_y: 0.1
-  #     min_pad_x: 0
-  #     min_pad_y: 0
-
-  # - name: "relative_padding_0p2"
-  #   tracker_type: "relative_padding"
-  #   tracker_params:
-  #     pad_ratio_x: 0.2
-  #     pad_ratio_y: 0.2
-  #     min_pad_x: 0
-  #     min_pad_y: 0
-
-  # - name: "relative_padding_0p3"
-  #   tracker_type: "relative_padding"
-  #   tracker_params:
-  #     pad_ratio_x: 0.3
-  #     pad_ratio_y: 0.3
-  #     min_pad_x: 0
-  #     min_pad_y: 0
-
-  # - name: "relative_padding_0p4"
-  #   tracker_type: "relative_padding"
-  #   tracker_params:
-  #     pad_ratio_x: 0.4
-  #     pad_ratio_y: 0.4
-  #     min_pad_x: 0
-  #     min_pad_y: 0
-
-  # - name: "relative_padding_0p5"
-  #   tracker_type: "relative_padding"
-  #   tracker_params:
-  #     pad_ratio_x: 0.5
-  #     pad_ratio_y: 0.5
-  #     min_pad_x: 0
-  #     min_pad_y: 0
-
-  # - name: "kalman_pmin_4"
-  #   tracker_type: "kalman"
-  #   tracker_params:
-  #     pmin: 4
-
-  # - name: "kalman_pmin_8"
-  #   tracker_type: "kalman"
-  #   tracker_params:
-  #     pmin: 8
-
-  # - name: "kalman_pmin_16"
-  #   tracker_type: "kalman"
-  #   tracker_params:
-  #     pmin: 16
-
-  # - name: "kalman_pmin_32"
-  #   tracker_type: "kalman"
-  #   tracker_params:
-  #     pmin: 32
+  # Optional per-experiment top-level overrides (shorthand for benchmark_vid_params):
+  # inference:
+  #   key_frame_interval: 10
+  #   nms_iou: 0.5
+  # roi_merge:
+  #   strategy: "greedy"   # Options: greedy | simple | simple_v2 | none
+  #   tau: 225677
+  #   adaptive_tau: false
+  #   adaptive_tau_window_size: 100
+  #   adaptive_tau_min_samples: 30
+  #   adaptive_tau_min_fullframe_samples: 3
+  #   adaptive_tau_min_area_span_ratio: 3.0
+  #   adaptive_tau_alpha: 0.1
+  #   adaptive_tau_log_every_frames: 100
+  #   adaptive_tau_min: 1200
+  #   adaptive_tau_max: 20000
 
   - name: "kalman_pmin_64"
     tracker_type: "kalman"
     tracker_params:
       pmin: 64
-
-  - name: "sort_0"
-    tracker_type: "sort"
-    tracker_params:
-      pad_x: 0
-      pad_y: 0
-
-  - name: "sort_16"
-    tracker_type: "sort"
-    tracker_params:
-      pad_x: 16
-      pad_y: 16
-
-  - name: "sort_32"
-    tracker_type: "sort"
-    tracker_params:
-      pad_x: 32
-      pad_y: 32
-
-  - name: "sort_64"
-    tracker_type: "sort"
-    tracker_params:
-      pad_x: 64
-      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 18000
+      adaptive_tau: False
+      adaptive_tau_window_size: 300
+      adaptive_tau_min_samples: 30
+      adaptive_tau_min_fullframe_samples: 3
+      adaptive_tau_min_area_span_ratio: 3.0
+      adaptive_tau_alpha: 0.1
+      adaptive_tau_log_every_frames: 100
+      adaptive_tau_min: 1200
+      adaptive_tau_max: 400000

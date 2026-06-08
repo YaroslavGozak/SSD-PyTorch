@@ -21,6 +21,7 @@ from tools.helpers.config_reader import load_config
 
 
 SUPPORTED_TRACKERS = {"static_padding", "relative_padding", "kalman", "oracle_gt", "sort"}
+SUPPORTED_ROI_MERGE_STRATEGIES = {"greedy", "simple", "simple_v2", "none"}
 
 
 def _deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -51,6 +52,8 @@ def _validate_sweep_config(sweep_cfg: Dict[str, Any]) -> Tuple[str, List[Dict[st
         tracker_type = exp.get("tracker_type")
         tracker_params = exp.get("tracker_params", {})
         benchmark_overrides = exp.get("benchmark_overrides", {})
+        inference = exp.get("inference", {})
+        roi_merge = exp.get("roi_merge", {})
 
         if not isinstance(name, str) or not name.strip():
             raise ValueError(f"Experiment #{i} has invalid 'name'.")
@@ -63,12 +66,25 @@ def _validate_sweep_config(sweep_cfg: Dict[str, Any]) -> Tuple[str, List[Dict[st
             raise TypeError(f"Experiment '{name}' has non-dict 'tracker_params'.")
         if not isinstance(benchmark_overrides, dict):
             raise TypeError(f"Experiment '{name}' has non-dict 'benchmark_overrides'.")
+        if not isinstance(inference, dict):
+            raise TypeError(f"Experiment '{name}' has non-dict 'inference'.")
+        if not isinstance(roi_merge, dict):
+            raise TypeError(f"Experiment '{name}' has non-dict 'roi_merge'.")
+
+        strategy = roi_merge.get("strategy")
+        if strategy is not None and strategy not in SUPPORTED_ROI_MERGE_STRATEGIES:
+            raise ValueError(
+                f"Experiment '{name}' has unsupported roi_merge.strategy '{strategy}'. "
+                f"Expected one of {sorted(SUPPORTED_ROI_MERGE_STRATEGIES)}."
+            )
 
         validated.append({
             "name": name,
             "tracker_type": tracker_type,
             "tracker_params": tracker_params,
             "benchmark_overrides": benchmark_overrides,
+            "inference": inference,
+            "roi_merge": roi_merge,
         })
 
     return sweep_name, validated
@@ -85,6 +101,16 @@ def _build_experiment_cfg(base_cfg: Dict[str, Any], exp: Dict[str, Any]) -> Dict
     tracker_cfg["type"] = tracker_type
     tracker_cfg.setdefault(tracker_type, {})
     tracker_cfg[tracker_type] = _deep_merge(tracker_cfg[tracker_type], exp["tracker_params"])
+
+    inference_override = exp.get("inference", {})
+    if inference_override:
+        inference_cfg = benchmark_vid_params.setdefault("inference", {})
+        benchmark_vid_params["inference"] = _deep_merge(inference_cfg, inference_override)
+
+    roi_merge_override = exp.get("roi_merge", {})
+    if roi_merge_override:
+        roi_merge_cfg = benchmark_vid_params.setdefault("roi_merge", {})
+        benchmark_vid_params["roi_merge"] = _deep_merge(roi_merge_cfg, roi_merge_override)
 
     return cfg
 
