@@ -14,12 +14,13 @@ Usage:
         --benchmark-config config/benchmark_vid.yaml
 """
 import argparse
+from collections import deque
 import csv
 import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -37,6 +38,131 @@ from tools.helpers.pipeline import (
 )
 from tools.infer import compute_map
 from tools.helpers.config_reader import load_config
+
+
+class OnlineCostModel:
+    """Online estimator for T(A) = K + cA and adaptive tau = K/c."""
+
+    def __init__(
+        self,
+        *,
+        window_size: int,
+        min_samples: int,
+        min_fullframe_samples: int,
+        min_area_span_ratio: float,
+        alpha_tau: float,
+        tau_init: Optional[float],
+        tau_min: Optional[float],
+        tau_max: Optional[float],
+    ):
+        self.window_size = max(1, int(window_size))
+        self.min_samples = max(2, int(min_samples))
+        self.min_fullframe_samples = max(1, int(min_fullframe_samples))
+        self.min_area_span_ratio = max(1.0, float(min_area_span_ratio))
+        self.alpha_tau = min(max(float(alpha_tau), 0.0), 1.0)
+        self.tau_min = float(tau_min) if tau_min is not None else None
+        self.tau_max = float(tau_max) if tau_max is not None else None
+
+        self.samples: Deque[Tuple[float, float, str, int]] = deque(maxlen=self.window_size)
+        self.tau_current: Optional[float] = float(tau_init) if tau_init is not None else None
+        self.tau_raw: Optional[float] = None
+        self.K_t: Optional[float] = None
+        self.c_t: Optional[float] = None
+        self.valid: bool = False
+        self.update_count: int = 0
+        self.area_span_ratio: float = float('nan')
+
+    def _counts(self) -> Tuple[int, int]:
+        full = sum(1 for _, _, mode, _ in self.samples if mode == 'full_frame')
+        roi = sum(1 for _, _, mode, _ in self.samples if mode == 'roi')
+        return full, roi
+
+    def get_tau(self, default_tau: float) -> float:
+        return float(self.tau_current) if self.tau_current is not None else float(default_tau)
+
+    def add_observation(
+        self,
+        *,
+        area: float,
+        time_sec: float,
+        mode: str,
+        frame_idx: int,
+    ) -> Optional[Dict[str, Any]]:
+        if area <= 0.0 or time_sec <= 0.0:
+            return None
+        mode_name = 'full_frame' if mode == 'full_frame' else 'roi'
+        self.samples.append((float(area), float(time_sec), mode_name, int(frame_idx)))
+        return self._try_update(frame_idx=int(frame_idx))
+
+    def _try_update(self, *, frame_idx: int) -> Optional[Dict[str, Any]]:
+        if len(self.samples) < self.min_samples:
+            self.valid = False
+            return None
+
+        full_count, roi_count = self._counts()
+        if full_count < self.min_fullframe_samples:
+            self.valid = False
+            return None
+
+        area = np.array([s[0] for s in self.samples], dtype=np.float64)
+        lat = np.array([s[1] for s in self.samples], dtype=np.float64)
+
+        p10, p90 = np.percentile(area, [10, 90])
+        span = float(p90 / max(p10, 1.0))
+        self.area_span_ratio = span
+        if span < self.min_area_span_ratio:
+            self.valid = False
+            return None
+
+        area_mean = float(np.mean(area))
+        lat_mean = float(np.mean(lat))
+        denom = float(np.sum((area - area_mean) ** 2))
+        if denom <= 1e-9:
+            self.valid = False
+            return None
+
+        c_t = float(np.sum((area - area_mean) * (lat - lat_mean)) / denom)
+        K_t = float(lat_mean - c_t * area_mean)
+        if c_t <= 0.0 or K_t <= 0.0:
+            self.valid = False
+            return None
+
+        tau_raw = float(K_t / c_t)
+        if self.tau_min is not None:
+            tau_raw = max(tau_raw, self.tau_min)
+        if self.tau_max is not None:
+            tau_raw = min(tau_raw, self.tau_max)
+
+        old_tau = self.tau_current
+        if old_tau is None:
+            tau_new = tau_raw
+        else:
+            tau_new = (1.0 - self.alpha_tau) * float(old_tau) + self.alpha_tau * tau_raw
+
+        self.tau_raw = tau_raw
+        self.tau_current = tau_new
+        self.K_t = K_t
+        self.c_t = c_t
+        self.valid = True
+
+        changed = (old_tau is None) or (abs(tau_new - old_tau) / max(abs(old_tau), 1e-9) > 0.03)  # log if tau changes by more than 3%
+        if changed:
+            self.update_count += 1
+            return {
+                'frame_idx': int(frame_idx),
+                'old_tau': float(old_tau) if old_tau is not None else float('nan'),
+                'new_tau': float(tau_new),
+                'tau_raw': float(tau_raw),
+                'K_t': float(K_t),
+                'c_t': float(c_t),
+                'sample_count': int(len(self.samples)),
+                'fullframe_count': int(full_count),
+                'roi_count': int(roi_count),
+                'area_span_ratio': float(self.area_span_ratio),
+                'valid': bool(self.valid),
+                'update_count': int(self.update_count),
+            }
+        return None
 
 
 # --------------------------------------------------------------------------- #
@@ -147,6 +273,17 @@ class VideoSequenceBenchmark:
         roi_m = p["roi_merge"]
         self.merge_fn = MERGE_STRATEGIES[roi_m["strategy"]]
         self.merge_tau = float(roi_m.get("tau", 150000.0))
+        self.adaptive_tau_enabled = bool(roi_m.get('adaptive_tau', False))
+        self.adaptive_tau_window_size = int(roi_m.get('adaptive_tau_window_size', 100))
+        self.adaptive_tau_min_samples = int(roi_m.get('adaptive_tau_min_samples', 30))
+        self.adaptive_tau_min_fullframe_samples = int(roi_m.get('adaptive_tau_min_fullframe_samples', 3))
+        self.adaptive_tau_min_area_span_ratio = float(roi_m.get('adaptive_tau_min_area_span_ratio', 3.0))
+        self.adaptive_tau_alpha = float(roi_m.get('adaptive_tau_alpha', 0.1))
+        self.adaptive_tau_log_every_frames = max(1, int(roi_m.get('adaptive_tau_log_every_frames', 100)))
+        tau_min_cfg = roi_m.get('adaptive_tau_min', None)
+        tau_max_cfg = roi_m.get('adaptive_tau_max', None)
+        self.adaptive_tau_min = float(tau_min_cfg) if tau_min_cfg is not None else None
+        self.adaptive_tau_max = float(tau_max_cfg) if tau_max_cfg is not None else None
         self.tracker_input_dropout_cfg = p.get("tracker_input_dropout", None)
         self.coverage_threshold = float(p["metrics"]["roi_coverage_threshold"])
         out = p["output"]
@@ -167,6 +304,15 @@ class VideoSequenceBenchmark:
             "benchmark_tracker_type": "none" if self.key_frame_interval == 1 else str(tracker_cfg.get("type", "unknown")),
             "merge_fn": str(roi_m.get("strategy", "unknown")),
             "merge_tau": self.merge_tau,
+            "adaptive_tau_enabled": self.adaptive_tau_enabled,
+            "adaptive_tau_window_size": self.adaptive_tau_window_size,
+            "adaptive_tau_min_samples": self.adaptive_tau_min_samples,
+            "adaptive_tau_min_fullframe_samples": self.adaptive_tau_min_fullframe_samples,
+            "adaptive_tau_min_area_span_ratio": self.adaptive_tau_min_area_span_ratio,
+            "adaptive_tau_alpha": self.adaptive_tau_alpha,
+            "adaptive_tau_log_every_frames": self.adaptive_tau_log_every_frames,
+            "adaptive_tau_min": self.adaptive_tau_min if self.adaptive_tau_min is not None else "",
+            "adaptive_tau_max": self.adaptive_tau_max if self.adaptive_tau_max is not None else "",
             "kalman_pmin": int(kalman_cfg.get("pmin", 0)),
             "static_pad_x": int(static_padding_cfg.get("pad_x", 0)),
             "static_pad_y": int(static_padding_cfg.get("pad_y", 0)),
@@ -187,8 +333,104 @@ class VideoSequenceBenchmark:
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
+        if self.adaptive_tau_enabled and str(roi_m.get('strategy', '')).strip().lower() != 'greedy':
+            print(
+                "[adaptive_tau] Disabled because roi_merge.strategy is not 'greedy'. "
+                "Adaptive tau currently applies to greedy merge only."
+            )
+            self.adaptive_tau_enabled = False
+            self.run_metadata['adaptive_tau_enabled'] = False
+
+        self.cost_model: Optional[OnlineCostModel] = None
+        self.adaptive_tau_log_path: Optional[str] = None
+        if self.adaptive_tau_enabled:
+            self.cost_model = OnlineCostModel(
+                window_size=self.adaptive_tau_window_size,
+                min_samples=self.adaptive_tau_min_samples,
+                min_fullframe_samples=self.adaptive_tau_min_fullframe_samples,
+                min_area_span_ratio=self.adaptive_tau_min_area_span_ratio,
+                alpha_tau=self.adaptive_tau_alpha,
+                tau_init=self.merge_tau,
+                tau_min=self.adaptive_tau_min,
+                tau_max=self.adaptive_tau_max,
+            )
+            runs_dir = os.path.join(self.output_dir, 'runs')
+            Path(runs_dir).mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+            self.adaptive_tau_log_path = os.path.join(runs_dir, f'adaptive_tau_{ts}.csv')
+            with open(self.adaptive_tau_log_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(
+                    f,
+                    fieldnames=[
+                        'timestamp_utc',
+                        'frame_idx',
+                        'old_tau',
+                        'tau_current',
+                        'tau_raw',
+                        'K_t',
+                        'c_t',
+                        'sample_count',
+                        'fullframe_count',
+                        'roi_count',
+                        'area_span_ratio',
+                        'model_valid',
+                        'update_count',
+                        'tau_min',
+                        'tau_max',
+                        'alpha_tau',
+                        'window_size',
+                    ],
+                )
+                writer.writeheader()
+
         # Build an args namespace that load_model_and_dataset expects
         self._train_config_path = self.cfg["train_config_path"]
+
+    def _append_adaptive_tau_log(self, event: Dict[str, Any]) -> None:
+        if not self.adaptive_tau_log_path:
+            return
+        with open(self.adaptive_tau_log_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    'timestamp_utc',
+                    'frame_idx',
+                    'old_tau',
+                    'tau_current',
+                    'tau_raw',
+                    'K_t',
+                    'c_t',
+                    'sample_count',
+                    'fullframe_count',
+                    'roi_count',
+                    'area_span_ratio',
+                    'model_valid',
+                    'update_count',
+                    'tau_min',
+                    'tau_max',
+                    'alpha_tau',
+                    'window_size',
+                ],
+            )
+            writer.writerow({
+                'timestamp_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'frame_idx': event['frame_idx'],
+                'old_tau': event['old_tau'],
+                'tau_current': event['new_tau'],
+                'tau_raw': event['tau_raw'],
+                'K_t': event['K_t'],
+                'c_t': event['c_t'],
+                'sample_count': event['sample_count'],
+                'fullframe_count': event['fullframe_count'],
+                'roi_count': event['roi_count'],
+                'area_span_ratio': event['area_span_ratio'],
+                'model_valid': event['valid'],
+                'update_count': event['update_count'],
+                'tau_min': self.adaptive_tau_min if self.adaptive_tau_min is not None else '',
+                'tau_max': self.adaptive_tau_max if self.adaptive_tau_max is not None else '',
+                'alpha_tau': self.adaptive_tau_alpha,
+                'window_size': self.adaptive_tau_window_size,
+            })
 
     def run(self) -> Dict[str, Any]:
         run_start_time = time.perf_counter()
@@ -250,6 +492,10 @@ class VideoSequenceBenchmark:
 
                 effective_frame_idx = frame_idx_in_video if frame_idx_in_video is not None else frame_idx
 
+                effective_merge_tau = self.merge_tau
+                if self.adaptive_tau_enabled and self.cost_model is not None:
+                    effective_merge_tau = self.cost_model.get_tau(default_tau=self.merge_tau)
+
                 result: FrameResult = process_frame(
                     model=model,
                     idx2label=dataset.idx2label,
@@ -263,13 +509,43 @@ class VideoSequenceBenchmark:
                     conf_threshold=conf_threshold,
                     nms_iou=self.nms_iou,
                     merge_fn=self.merge_fn,
-                    merge_tau=self.merge_tau,
+                    merge_tau=effective_merge_tau,
                     model_device=model_device,
                     tracker_input_dropout_cfg=self.tracker_input_dropout_cfg,
                 )
+
                 next_frame_rois = result.next_frame_rois
                 final_dets = result.final_detections
                 rois_used = result.rois_used
+
+                if self.adaptive_tau_enabled and self.cost_model is not None:
+                    if result.use_full_frame:
+                        obs_area = float(frame_area)
+                        obs_mode = 'full_frame'
+                    else:
+                        obs_area = float(sum(max(0, r[2] - r[0]) * max(0, r[3] - r[1]) for r in rois_used))
+                        obs_mode = 'roi'
+                    obs_time = float(max(result.latency_s - result.merge_latency_s, 0.0))
+                    event = self.cost_model.add_observation(
+                        area=obs_area,
+                        time_sec=obs_time,
+                        mode=obs_mode,
+                        frame_idx=effective_frame_idx,
+                    )
+                    if event is not None:
+                        print(
+                            "[adaptive_tau] frame={} tau {:.2f} -> {:.2f} "
+                            "(raw={:.2f}, K={:.6f}, c={:.10f}, n={})".format(
+                                event['frame_idx'],
+                                event['old_tau'],
+                                event['new_tau'],
+                                event['tau_raw'],
+                                event['K_t'],
+                                event['c_t'],
+                                event['sample_count'],
+                            )
+                        )
+                        self._append_adaptive_tau_log(event)
 
                 # Accumulate timing into separate buckets for reporting
                 if result.use_full_frame:
@@ -337,6 +613,35 @@ class VideoSequenceBenchmark:
         def sperc(a, p): return float(np.nanpercentile(a, p)) if len(a) else float("nan")
 
         all_lat_ms = ms(lat_full + lat_roi)
+        adaptive_tau_stats: Dict[str, Any] = {}
+        if self.adaptive_tau_enabled and self.cost_model is not None:
+            full_count, roi_count = self.cost_model._counts()
+            adaptive_tau_stats = {
+                'adaptive_tau_current': float(self.cost_model.get_tau(default_tau=self.merge_tau)),
+                'adaptive_tau_raw': float(self.cost_model.tau_raw) if self.cost_model.tau_raw is not None else float('nan'),
+                'adaptive_tau_K_t_current': float(self.cost_model.K_t) if self.cost_model.K_t is not None else float('nan'),
+                'adaptive_tau_c_t_current': float(self.cost_model.c_t) if self.cost_model.c_t is not None else float('nan'),
+                'cost_model_sample_count': int(len(self.cost_model.samples)),
+                'cost_model_fullframe_count': int(full_count),
+                'cost_model_roi_count': int(roi_count),
+                'cost_model_area_span_ratio': float(self.cost_model.area_span_ratio),
+                'cost_model_valid': bool(self.cost_model.valid),
+                'tau_update_count': int(self.cost_model.update_count),
+            }
+        else:
+            adaptive_tau_stats = {
+                'adaptive_tau_current': float(self.merge_tau),
+                'adaptive_tau_raw': float('nan'),
+                'adaptive_tau_K_t_current': float('nan'),
+                'adaptive_tau_c_t_current': float('nan'),
+                'cost_model_sample_count': 0,
+                'cost_model_fullframe_count': 0,
+                'cost_model_roi_count': 0,
+                'cost_model_area_span_ratio': float('nan'),
+                'cost_model_valid': False,
+                'tau_update_count': 0,
+            }
+
         return {
             "dataset":   cfg["train_params"]["dataset"],
             "model":     model_label,
@@ -347,6 +652,11 @@ class VideoSequenceBenchmark:
             "num_frames": n_frames,
             "key_frame_interval": self.key_frame_interval,
             "tracker_type": self.cfg["benchmark_vid_params"]["tracker"]["type"],
+            "adaptive_tau_enabled": self.adaptive_tau_enabled,
+            "adaptive_tau_alpha": self.adaptive_tau_alpha,
+            "adaptive_tau_window_size": self.adaptive_tau_window_size,
+            "adaptive_tau_min": self.adaptive_tau_min if self.adaptive_tau_min is not None else float('nan'),
+            "adaptive_tau_max": self.adaptive_tau_max if self.adaptive_tau_max is not None else float('nan'),
             # Detection quality
             "mAP50": float(mAP50),
             "mAP95": float(mAP95),
@@ -373,6 +683,7 @@ class VideoSequenceBenchmark:
             # Coverage
             "gt_roi_coverage_mean": smean(np.array(gt_coverages)),
             "gt_roi_coverage_p5":   sperc(np.array(gt_coverages), 5),
+            **adaptive_tau_stats,
         }
 
     def _print(self, m: Dict[str, Any], elapsed_s: float) -> None:
@@ -385,6 +696,10 @@ class VideoSequenceBenchmark:
         if m.get("model_yolo_weights"):
             print(f"YOLO weights: {m['model_yolo_weights']}")
         print(f"Frames: {m['num_frames']}  Key-frame interval: {m['key_frame_interval']}")
+        print(
+            f"Adaptive tau: {m.get('adaptive_tau_enabled', False)} "
+            f"(current={m.get('adaptive_tau_current', float('nan')):.2f}, updates={m.get('tau_update_count', 0)})"
+        )
         print(f"Elapsed total time: {elapsed_s:.1f} s")
         print(f"\n{'Detection Quality':─<35}")
         print(f"  mAP@0.50          : {m['mAP50']:.4f}")
