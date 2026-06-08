@@ -1,6 +1,7 @@
 import torch
 import argparse
 import os
+import time
 import yaml
 import random
 import csv
@@ -226,12 +227,21 @@ def run_detector(model, im_tensor, target, model_name='ssd', conf_threshold=None
     return detections
 
 
-def append_model_results_csv(model_task_path, config, evaluated_dataset, mean_ap, mean_recall):
-    """Append one validation summary row to model-level results.csv."""
+def append_model_results_csv(
+    model_task_path,
+    config,
+    evaluated_dataset,
+    mean_ap,
+    mean_recall,
+    mean_latency_ms,
+    mean_fps,
+    output_csv_name='results.csv',
+):
+    """Append one validation summary row to a model-level summary CSV file."""
     if not os.path.exists(model_task_path):
         os.makedirs(model_task_path, exist_ok=True)
 
-    results_csv_path = os.path.join(model_task_path, 'results.csv')
+    results_csv_path = os.path.join(model_task_path, output_csv_name)
     file_exists = os.path.exists(results_csv_path)
 
     train_cfg = config.get('train_params', {})
@@ -243,6 +253,8 @@ def append_model_results_csv(model_task_path, config, evaluated_dataset, mean_ap
         'evaluated_dataset': str(evaluated_dataset),
         'mAP': float(mean_ap),
         'mean_detector_recall': float(mean_recall),
+        'mean_latency_ms': float(mean_latency_ms),
+        'mean_fps': float(mean_fps),
     }
     fieldnames = [
         'task_name',
@@ -252,6 +264,8 @@ def append_model_results_csv(model_task_path, config, evaluated_dataset, mean_ap
         'evaluated_dataset',
         'mAP',
         'mean_detector_recall',
+        'mean_latency_ms',
+        'mean_fps',
     ]
 
     with open(results_csv_path, 'a', newline='', encoding='utf-8') as csvfile:
@@ -359,35 +373,44 @@ def _evaluate_single_transform(
     evaluated_dataset: str,
     model_name: str,
     yolo_debug_suffix: str = '',
+    summary_csv_name: str = 'results.csv',
 ) -> Dict[str, Any]:
     is_yolo = model_name == 'yolo'
+
+    # Only fixed-padding YOLO transform emits debug artifacts.
+    debug_enabled = is_yolo and transform_name.startswith('fixed_padding_roi_crop_yolo_')
+    if debug_enabled:
+        with open(args.config_path, 'r') as file:
+            cfg_preview = yaml.safe_load(file)
+        task_name = str(cfg_preview.get('train_params', {}).get('task_name', ''))
+        if args.results_path:
+            preview_run_results_path = os.path.join(args.results_path, evaluated_dataset + '_results')
+        else:
+            preview_run_results_path = os.path.join('trained_models', task_name, evaluated_dataset + '_results')
+
+        debug_root = os.path.join(preview_run_results_path, 'samples', 'yolo_transform_debug')
+        pad_debug_dir = os.path.join(debug_root, yolo_debug_suffix or evaluated_dataset)
+        os.environ['YOLO_ROI_DEBUG_DIR'] = pad_debug_dir
+        os.environ.setdefault('YOLO_ROI_DEBUG_MAX', '3')
+    else:
+        os.environ.pop('YOLO_ROI_DEBUG_DIR', None)
 
     model, voc, test_dataset, config = load_model_and_dataset(args, transform_name=transform_name)
     model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
 
-    if args.results_path:
-        run_results_path = os.path.join(args.results_path, evaluated_dataset + '_results')
-    else:
-        run_results_path = os.path.join(model_task_path, evaluated_dataset + '_results')
-
-    if is_yolo:
-        debug_root = os.path.join(run_results_path, 'samples', 'yolo_transform_debug')
-        pad_debug_dir = os.path.join(debug_root, yolo_debug_suffix or evaluated_dataset)
-        os.makedirs(pad_debug_dir, exist_ok=True)
-        os.environ['YOLO_ROI_DEBUG_DIR'] = pad_debug_dir
-        os.environ.setdefault('YOLO_ROI_DEBUG_MAX', '3')
-
-    print('Results will be saved to {}'.format(run_results_path))
+    print('Results will be appended to {}'.format(summary_csv_name))
 
     gts = []
     preds = []
     difficults = []
+    latencies_s: List[float] = []
     for im_tensor, target, fname in tqdm(test_dataset):
         im_tensor = im_tensor.float().to(device)
         target_bboxes = target['bboxes'].float()[0].to(device)
         target_labels = target['labels'].long()[0].to(device)
         difficult = target['difficult'].long()[0].to(device)
         conf_threshold = config['train_params'].get('infer_conf_threshold', None)
+        t0 = time.perf_counter()
         ssd_detections = run_detector(
             model,
             im_tensor,
@@ -395,6 +418,7 @@ def _evaluate_single_transform(
             model_name=model_name,
             conf_threshold=conf_threshold,
         )
+        latencies_s.append(time.perf_counter() - t0)
 
         boxes = ssd_detections[0]['boxes']
         labels = ssd_detections[0]['labels']
@@ -427,6 +451,10 @@ def _evaluate_single_transform(
         difficults.append(difficult_boxes)
 
     mean_ap, all_aps, mean_recall, all_recalls = compute_map(preds, gts, method='area', difficult=difficults)
+    mean_latency_s = float(np.mean(latencies_s)) if latencies_s else float('nan')
+    mean_latency_ms = mean_latency_s * 1000.0 if not np.isnan(mean_latency_s) else float('nan')
+    mean_fps = (1.0 / mean_latency_s) if (latencies_s and mean_latency_s > 0.0) else float('nan')
+
     print('Class Wise Average Precisions and Detector Recall')
     for idx in range(len(voc.idx2label)):
         lbl = voc.idx2label[idx]
@@ -434,37 +462,8 @@ def _evaluate_single_transform(
             lbl, all_aps[lbl], all_recalls[lbl]))
     print('Mean Average Precision : {:.4f}'.format(mean_ap))
     print('Mean Detector Recall   : {:.4f}'.format(mean_recall))
-
-    map_file_path = os.path.join(run_results_path, 'mAp.txt')
-    os.makedirs(run_results_path, exist_ok=True)
-    with open(map_file_path, 'w') as f:
-        f.write('Class Wise Average Precisions and Detector Recall\n')
-        f.write('=' * 50 + '\n')
-        for idx in range(len(voc.idx2label)):
-            lbl = voc.idx2label[idx]
-            f.write('AP for class {} = {:.4f}  |  detector_recall = {:.4f}\n'.format(
-                lbl, all_aps[lbl], all_recalls[lbl]))
-        f.write('=' * 50 + '\n')
-        f.write('Mean Average Precision : {:.4f}\n'.format(mean_ap))
-        f.write('Mean Detector Recall   : {:.4f}\n'.format(mean_recall))
-
-    print(f'Results saved to {map_file_path}')
-
-    csv_file_path = os.path.join(run_results_path, 'mAp.csv')
-    with open(csv_file_path, 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-
-        header = ([voc.idx2label[idx] for idx in range(len(voc.idx2label))] + ['mAP']
-                + ['detector_recall_' + voc.idx2label[idx] for idx in range(len(voc.idx2label))]
-                + ['mean_detector_recall'])
-        writer.writerow(header)
-
-        data = ([all_aps[voc.idx2label[idx]] for idx in range(len(voc.idx2label))] + [mean_ap]
-                + [all_recalls[voc.idx2label[idx]] for idx in range(len(voc.idx2label))]
-                + [mean_recall])
-        writer.writerow(data)
-
-    print(f'Results saved to {csv_file_path}')
+    print('Mean Latency (ms)      : {:.4f}'.format(mean_latency_ms))
+    print('Mean FPS               : {:.4f}'.format(mean_fps))
 
     append_model_results_csv(
         model_task_path=model_task_path,
@@ -472,10 +471,13 @@ def _evaluate_single_transform(
         evaluated_dataset=evaluated_dataset,
         mean_ap=mean_ap,
         mean_recall=mean_recall,
+        mean_latency_ms=mean_latency_ms,
+        mean_fps=mean_fps,
+        output_csv_name=summary_csv_name,
     )
-    print('Appended summary to {}'.format(os.path.join(model_task_path, 'results.csv')))
+    print('Appended summary to {}'.format(os.path.join(model_task_path, summary_csv_name)))
 
-    if is_yolo:
+    if debug_enabled:
         os.environ.pop('YOLO_ROI_DEBUG_DIR', None)
 
     return {
@@ -483,7 +485,9 @@ def _evaluate_single_transform(
         'transform_name': transform_name,
         'mAP': float(mean_ap),
         'mean_detector_recall': float(mean_recall),
-        'results_path': run_results_path,
+        'mean_latency_ms': float(mean_latency_ms),
+        'mean_fps': float(mean_fps),
+        'results_path': summary_csv_name,
     }
 
 
@@ -524,13 +528,40 @@ def evaluate_map_pad_loop(args) -> Dict[str, Any]:
     return {'mode': 'pad-loop', 'runs': runs}
 
 
+def evaluate_map_fixed_size_loop(args) -> Dict[str, Any]:
+    with open(args.config_path, 'r') as file:
+        cfg_preview = yaml.safe_load(file)
+    model_name = str(cfg_preview['train_params']['model'])
+    is_yolo = model_name == 'yolo'
+
+    runs: List[Dict[str, Any]] = []
+    for h in range(32, 321, 32):
+        for w in range(32, 321, 32):
+            print('Evaluating mAP with fixed size {}x{}...'.format(h, w))
+            if is_yolo:
+                transform_name = 'fixed_size_yolo_{}x{}'.format(h, w)
+            else:
+                transform_name = 'fixed_size_{}x{}'.format(h, w)
+            runs.append(_evaluate_single_transform(
+                args,
+                transform_name=transform_name,
+                evaluated_dataset=transform_name,
+                model_name=model_name,
+                yolo_debug_suffix='size_{}x{}'.format(h, w),
+                summary_csv_name='fixed_size_results.csv',
+            ))
+    return {'mode': 'fixed-size-loop', 'runs': runs}
+
+
 def evaluate_map(args) -> Dict[str, Any]:
     eval_mode = str(getattr(args, 'eval_mode', 'default')).strip().lower()
     if eval_mode == 'default':
         return evaluate_map_default(args)
     if eval_mode == 'pad-loop':
         return evaluate_map_pad_loop(args)
-    raise ValueError('Unknown eval mode: {}. Expected default|pad-loop'.format(eval_mode))
+    if eval_mode == 'fixed-size-loop':
+        return evaluate_map_fixed_size_loop(args)
+    raise ValueError('Unknown eval mode: {}. Expected default|pad-loop|fixed-size-loop'.format(eval_mode))
 
 def infer_and_evaluate(args):
     output: Dict[str, Any] = {'inference_ran': False, 'evaluation': None}
@@ -557,7 +588,7 @@ if __name__ == '__main__':
                         default=True, type=bool)
     parser.add_argument('--results-path', dest='results_path',
                         default=None, type=str)
-    parser.add_argument('--eval-mode', dest='eval_mode', choices=['default', 'pad-loop'],
+    parser.add_argument('--eval-mode', dest='eval_mode', choices=['default', 'pad-loop', 'fixed-size-loop'],
                         default='default', type=str)
     args = parser.parse_args()
 
