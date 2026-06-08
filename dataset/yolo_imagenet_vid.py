@@ -13,6 +13,7 @@ from torchvision.io import read_image
 
 from dataset.transforms.fixed_padding_roi_crop_test_transform import FixedPaddingRoiCropTestTransform
 from dataset.transforms.fixed_padding_roi_crop_yolo_test_transform import FixedPaddingRoiCropYOLOTestTransform
+from dataset.transforms.fixed_size_test_transform import FixedSizeTestTransform
 from dataset.transforms.letterbox_transform import LetterboxTransform
 from dataset.transforms.no_resize_transform import NoResizeTransform
 from dataset.transforms.resize_longer_edge_test_transform import ResizeLongerEdgeTestTransform
@@ -296,6 +297,20 @@ class YoloImageNetVidDataset(Dataset):
                 self.imagenet_std,
                 pad_x=pad_value,
                 pad_y=pad_value,
+            ).transforms
+        elif self.transform_name.startswith("fixed_size_yolo_"):
+            # Pattern: fixed_size_yolo_{H}x{W}  e.g. fixed_size_yolo_96x128
+            hw = self.transform_name[len("fixed_size_yolo_"):]
+            h_str, w_str = hw.split("x")
+            self.transforms = FixedSizeTestTransform(
+                int(h_str), int(w_str), self.imagenet_mean, self.imagenet_std, normalize=False
+            ).transforms
+        elif self.transform_name.startswith("fixed_size_"):
+            # Pattern: fixed_size_{H}x{W}  e.g. fixed_size_96x128
+            hw = self.transform_name[len("fixed_size_"):]
+            h_str, w_str = hw.split("x")
+            self.transforms = FixedSizeTestTransform(
+                int(h_str), int(w_str), self.imagenet_mean, self.imagenet_std, normalize=True
             ).transforms
         else:
             raise ValueError(f'Unknown transform name "{self.transform_name}"')

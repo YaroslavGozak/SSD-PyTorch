@@ -1,33 +1,31 @@
 import argparse
 import glob
 
-import yaml
-from dataset.visdrone import VisDroneDataset
-from dataset.voc import VOCDataset
-from dataset.voc_small_objects import VOCSmallObjectsDataset
 import torch
 import matplotlib.pyplot as plt
 import tqdm
 
-from dataset.ytbb import YTBBDataset
-from tools.utils.roi_merger import area
+from tools.helpers.config_reader import load_config
+from tools.helpers.pipeline import load_dataset
 
 IMG_DIR = "D:\\YouTube\\ytbb_dataset\\ResizedSequences\\AAB6lO-XiKE"
 
 if not torch.cuda.is_available():
-    raise Exception('CUDA not available')
+    print('Running on CPU')
+    # raise Exception('CUDA not available')
 else:
     print('Running on CUDA')
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-if torch.backends.mps.is_available():
-    device = torch.device('mps')
-    print('Using mps')
-
 
 def collate_function(data):
     return tuple(zip(*data))
+
+
+def area(box):
+    xmin, ymin, xmax, ymax = box
+    return max(0.0, xmax - xmin) * max(0.0, ymax - ymin)
 
 
 def test_transform(args):
@@ -38,40 +36,13 @@ def test_transform(args):
         return img.numpy()
     
     # Read the config file #
-    with open(args.config_path, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-    print(config)
+    config = load_config(args.config_path)
     #########################
 
     dataset_config = config['dataset_params']
-    train_config = config['train_params']
     split = args.split
-    im_sets = dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets']
-    transform_name = dataset_config['transform_name']
-    # dataset = YTBBDataset('train', "D:\\Datasets\\YouTube\\ytbb_dataset", im_size=512)
-    if str(train_config['dataset']) == 'vis-drone':
-        dataset = VisDroneDataset('test',
-                     im_sets=dataset_config['test_im_sets'],
-                     im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'ytbb':
-        dataset = YTBBDataset('test',
-                     root_dir=dataset_config['root_dir'],
-                     im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'voc':
-        dataset = VOCDataset('test',
-                     im_sets=dataset_config['test_im_sets'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
-    elif str(train_config['dataset']) == 'voc-small-objects':
-        dataset = VOCSmallObjectsDataset('test',
-                     im_sets=dataset_config['test_im_sets'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
-    else:
-        raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
+    transform_name = args.transform or dataset_config['transform_name']
+    dataset = load_dataset(config, split=split, transform_name=transform_name)
 
     fig, ax = plt.subplots(1, 1, figsize=(12, 6))
     image_paths = sorted(glob.glob(f"{IMG_DIR}/*.jpg"))
@@ -122,9 +93,12 @@ def test_transform(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Arguments for ssd training (testing transform)')
     parser.add_argument('--config', dest='config_path',
-                        default='config/voc.yaml', type=str)
+                        default='config/imagenet-vid-roissd.yaml', type=str)
     parser.add_argument('--split', dest='split',
                         default='train', type=str)
+    parser.add_argument('--transform', dest='transform', default=None, type=str,
+                        help='Override transform_name from config. '
+                             'E.g. fixed_size_96x128  or  fixed_size_yolo_96x128')
     args = parser.parse_args()
     
     test_transform(args)
