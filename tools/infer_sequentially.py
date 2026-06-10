@@ -159,11 +159,11 @@ def infer_sequentially(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Sequential inference with visualization')
     parser.add_argument('--config', dest='config_path',
-                        default='config/voc.yaml', type=str,
+                        default='config/imagenet-vid-roissd.yaml', type=str,
                         help='Path to the configuration file')
     parser.add_argument('--frame-delay', dest='frame_delay',
-                        default=100, type=int,
-                        help='Delay between frames in milliseconds (default: 100)')
+                        default=30, type=int,
+                        help='Delay between frames in milliseconds (default: 30)')
     args = parser.parse_args()
 
     with torch.no_grad():
