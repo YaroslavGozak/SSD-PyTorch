@@ -1,0 +1,133 @@
+# Batch tracker sweep for tools.benchmarks.batch_benchmark_vid
+# Base benchmark config (model, dataset, output path) is passed via CLI.
+
+sweep_name: "rpi"
+
+experiments:
+  - name: "static_padding_32"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "simple"
+      tau: 225677
+
+  - name: "static_padding_32"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "greedy"
+      tau: 225677
+
+  - name: "static_padding_32"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "greedy"
+      tau: 2000
+
+  - name: "static_padding_32"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 2000
+
+  - name: "sort_32"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "simple"
+      tau: 225677
+
+  - name: "sort_32"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "greedy"
+      tau: 225677
+
+  - name: "sort_32"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "greedy"
+      tau: 2000
+
+  - name: "sort_32"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 2000
+
+  - name: "kalman_32"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "simple"
+      tau: 225677
+
+  - name: "kalman_32"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "greedy"
+      tau: 225677
+
+  - name: "kalman_32"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "greedy"
+      tau: 2000
+
+  - name: "kalman_32"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 32
+    inference:
+      key_frame_interval: 10
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 2000

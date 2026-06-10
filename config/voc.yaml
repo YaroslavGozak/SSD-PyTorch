@@ -31,7 +31,7 @@ model_params:
   nms_threshold : 0.45
 
 train_params:
-  model: 'roissd-mobilenet'
+  model: 'roissd'
   dataset: 'voc'
   roi_mixed_stage: 2
   seed: 1111
@@ -45,5 +45,5 @@ train_params:
   train_bn_affine: true
   log_steps : 100
   infer_conf_threshold : 0.5
-  task_name: 'voc-roissdlite-mobilenet-bn'
-  ckpt_name: 'voc200712.pth'
+  task_name: 'voc-roissd-0-pad'
+  ckpt_name: 'voc200712v2stage3.pth'
