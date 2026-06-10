@@ -1,0 +1,80 @@
+# Video Sequence Benchmark configuration — YOLO (Lane B)
+# Uses 320x320 input (nearest multiple-of-32 above 300) and model_input_size: [320, 320]
+# so that tracker padding scales and ROI snap targets match the YOLO input resolution.
+
+benchmark_vid_params:
+  device: "cpu" # Options: "cpu" | "cuda"
+
+  tracker:
+    type: "oracle_gt"   # Options: kalman | static_padding | relative_padding | oracle_gt | sort
+
+    kalman:
+      conf_det_min: 0.5
+      conf_low: 0.7
+      conf_high: 0.9
+      pmin: 8
+      iou_match_threshold: 0.1
+      max_misses: 15
+      uncertainty_scale_pos: 2.5
+      uncertainty_scale_size: 1.0
+      confidence_roi_scale: 0.10
+
+    static_padding:
+      pad_x: 16
+      pad_y: 16
+      conf_det_min: 0.0
+      hold_last_for_frames: 10  # Keep previous detections for up to N missed frames
+
+    relative_padding:
+      pad_ratio_x: 0.1
+      pad_ratio_y: 0.1
+      min_pad_x: 0
+      min_pad_y: 0
+      conf_det_min: 0.0
+
+    oracle_gt:
+      pad_x: 32
+      pad_y: 32
+      conf_det_min: 0.0
+
+    sort:
+      max_age: 10
+      min_hits: 3
+      iou_threshold: 0.3
+      conf_det_min: 0.0
+      pad_x: 16
+      pad_y: 16
+      hold_last_for_frames: 3
+      min_roi_size: 2
+
+  inference:
+    key_frame_interval: 1  # 1 = always full-frame (B0 mode)
+    nms_iou: 0.5
+
+  tracker_input_dropout:
+    enabled: false
+    mode: "frame"   # Options: frame | detection
+    prob: 0.5       # 0.0 - 1.0 probability of dropping the input (frame or detections) to simulate occlusion/missed detections
+    warmup_frames: 3
+    seed: null
+
+  roi_merge:
+    strategy: "greedy"   # Options: greedy | simple | simple_v2 | none
+    tau: 225677
+    adaptive_tau: false
+    adaptive_tau_window_size: 100
+    adaptive_tau_min_samples: 30
+    adaptive_tau_min_fullframe_samples: 3
+    adaptive_tau_min_area_span_ratio: 3.0
+    adaptive_tau_alpha: 0.1
+    adaptive_tau_log_every_frames: 100
+    adaptive_tau_min: 1200
+    adaptive_tau_max: 20000
+
+  metrics:
+    roi_coverage_threshold: 0.5   # Min GT box area fraction inside ROI to count as covered
+
+  output:
+    results_dir: "benchmark_results/raspberry"
+    results_filename: "comparison.csv"
+    verbose: true
