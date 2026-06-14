@@ -1,0 +1,84 @@
+# Batch tracker sweep for tools.benchmarks.batch_benchmark_vid
+# Base benchmark config (model, dataset, output path) is passed via CLI.
+
+sweep_name: "adaptive_tau"
+
+experiments:
+
+  - name: "sort_16_tau_1200"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 1200
+      adaptive_tau: False
+
+  - name: "static_pad_16_tau_1200"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 1200
+      adaptive_tau: False
+
+  - name: "sort_16_tau_3100"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_16_tau_3100"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_16_tau_5000"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 5000
+      adaptive_tau: False
+
+  - name: "static_pad_16_tau_5000"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 5000
+      adaptive_tau: False
