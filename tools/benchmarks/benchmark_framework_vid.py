@@ -519,20 +519,36 @@ class VideoSequenceBenchmark:
                 rois_used = result.rois_used
 
                 if self.adaptive_tau_enabled and self.cost_model is not None:
-                    if result.use_full_frame:
-                        obs_area = float(frame_area)
-                        obs_mode = 'full_frame'
-                    else:
-                        obs_area = float(sum(max(0, r[2] - r[0]) * max(0, r[3] - r[1]) for r in rois_used))
-                        obs_mode = 'roi'
                     obs_time = float(max(result.latency_s - result.merge_latency_s, 0.0))
-                    event = self.cost_model.add_observation(
-                        area=obs_area,
-                        time_sec=obs_time,
-                        mode=obs_mode,
-                        frame_idx=effective_frame_idx,
-                    )
-                    if event is not None:
+                    events = []
+                    if result.use_full_frame:
+                        event = self.cost_model.add_observation(
+                            area=float(frame_area),
+                            time_sec=obs_time,
+                            mode='full_frame',
+                            frame_idx=effective_frame_idx,
+                        )
+                        if event is not None:
+                            events.append(event)
+                    else:
+                        roi_areas = [
+                            float(max(0, r[2] - r[0]) * max(0, r[3] - r[1]))
+                            for r in rois_used
+                            if (r[2] - r[0]) > 0 and (r[3] - r[1]) > 0
+                        ]
+                        if roi_areas:
+                            per_roi_time = obs_time / float(len(roi_areas))
+                            for roi_area in roi_areas:
+                                event = self.cost_model.add_observation(
+                                    area=roi_area,
+                                    time_sec=per_roi_time,
+                                    mode='roi',
+                                    frame_idx=effective_frame_idx,
+                                )
+                                if event is not None:
+                                    events.append(event)
+
+                    for event in events:
                         print(
                             "[adaptive_tau] frame={} tau {:.2f} -> {:.2f} "
                             "(raw={:.2f}, K={:.6f}, c={:.10f}, n={})".format(
