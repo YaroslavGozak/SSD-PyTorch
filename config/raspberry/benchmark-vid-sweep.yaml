@@ -8,8 +8,8 @@ experiments:
   - name: "sort_16_tau_1200"
     tracker_type: "sort"
     tracker_params:
-      pad_x: 64
-      pad_y: 64
+      pad_x: 16
+      pad_y: 16
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
@@ -21,8 +21,8 @@ experiments:
   - name: "static_pad_16_tau_1200"
     tracker_type: "static_padding"
     tracker_params:
-      pad_x: 64
-      pad_y: 64
+      pad_x: 16
+      pad_y: 16
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
@@ -34,8 +34,8 @@ experiments:
   - name: "sort_16_tau_3100"
     tracker_type: "sort"
     tracker_params:
-      pad_x: 64
-      pad_y: 64
+      pad_x: 16
+      pad_y: 16
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
@@ -47,8 +47,8 @@ experiments:
   - name: "static_pad_16_tau_3100"
     tracker_type: "static_padding"
     tracker_params:
-      pad_x: 64
-      pad_y: 64
+      pad_x: 16
+      pad_y: 16
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
@@ -60,8 +60,8 @@ experiments:
   - name: "sort_16_tau_5000"
     tracker_type: "sort"
     tracker_params:
-      pad_x: 64
-      pad_y: 64
+      pad_x: 16
+      pad_y: 16
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
@@ -73,8 +73,8 @@ experiments:
   - name: "static_pad_16_tau_5000"
     tracker_type: "static_padding"
     tracker_params:
-      pad_x: 64
-      pad_y: 64
+      pad_x: 16
+      pad_y: 16
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
