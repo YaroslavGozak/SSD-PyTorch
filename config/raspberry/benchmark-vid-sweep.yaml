@@ -5,11 +5,11 @@ sweep_name: "adaptive_tau"
 
 experiments:
 
-  - name: "sort_16_tau_1200"
+  - name: "sort_4_tau_1200"
     tracker_type: "sort"
     tracker_params:
-      pad_x: 16
-      pad_y: 16
+      pad_x: 4
+      pad_y: 4
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
@@ -18,11 +18,10 @@ experiments:
       tau: 1200
       adaptive_tau: False
 
-  - name: "static_pad_16_tau_1200"
-    tracker_type: "static_padding"
+  - name: "kalman_4_tau_1200"
+    tracker_type: "kalman"
     tracker_params:
-      pad_x: 16
-      pad_y: 16
+      pmin: 4
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
@@ -31,24 +30,24 @@ experiments:
       tau: 1200
       adaptive_tau: False
 
-  - name: "sort_16_tau_3100"
-    tracker_type: "sort"
-    tracker_params:
-      pad_x: 16
-      pad_y: 16
-    inference: 
-      key_frame_interval: 10
-      nms_iou: 0.5
-    roi_merge:
-      strategy: "greedy"
-      tau: 3100
-      adaptive_tau: False
-
-  - name: "static_pad_16_tau_3100"
+  - name: "static_pad_4_tau_1200"
     tracker_type: "static_padding"
     tracker_params:
-      pad_x: 16
-      pad_y: 16
+      pad_x: 4
+      pad_y: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 1200
+      adaptive_tau: False
+
+  - name: "sort_4_tau_3100"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 4
+      pad_y: 4
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
@@ -57,11 +56,36 @@ experiments:
       tau: 3100
       adaptive_tau: False
 
-  - name: "sort_16_tau_5000"
+  - name: "kalman_4_tau_3100"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_4_tau_3100"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 4
+      pad_y: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_4_tau_5000"
     tracker_type: "sort"
     tracker_params:
-      pad_x: 16
-      pad_y: 16
+      pad_x: 4
+      pad_y: 4
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
@@ -70,11 +94,23 @@ experiments:
       tau: 5000
       adaptive_tau: False
 
-  - name: "static_pad_16_tau_5000"
+  - name: "kalman_4_tau_5000"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 5000
+      adaptive_tau: False
+
+  - name: "static_pad_4_tau_5000"
     tracker_type: "static_padding"
     tracker_params:
-      pad_x: 16
-      pad_y: 16
+      pad_x: 4
+      pad_y: 4
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
