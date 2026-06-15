@@ -2,7 +2,7 @@ import torch
 from dataset.testtransform_dataset import TestTransformDataset
 import matplotlib.pyplot as plt
 
-from tools.helpers.roi_merger import area
+from tools.mergers.merger_helper import area
 
 if not torch.cuda.is_available():
     raise Exception('CUDA not available')

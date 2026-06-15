@@ -165,6 +165,34 @@ class AsyncVideoSequenceBenchmark(VideoSequenceBenchmark):
         cv2.rectangle(image, (x, y1), (x2, y2), bg_color, thickness=-1)
         cv2.putText(image, text, (x + padding, y), font, font_scale, text_color, thickness)
 
+    @staticmethod
+    def _extract_frame_bgr_from_target(tgt: Dict[str, Any]) -> Optional[np.ndarray]:
+        """Extract original frame from dataset target payload as BGR uint8 image."""
+        frame = tgt.get("orig_frame_rgb_u8", None)
+        if frame is None:
+            return None
+
+        # Default collate may wrap tensors in a list for batch_size=1.
+        if isinstance(frame, list):
+            if not frame:
+                return None
+            frame = frame[0]
+
+        if not isinstance(frame, torch.Tensor):
+            return None
+
+        if frame.dim() == 4:
+            # BCHW -> CHW for batch_size=1.
+            frame = frame[0]
+        if frame.dim() != 3:
+            return None
+
+        # RGB CHW uint8 -> BGR HWC uint8
+        frame_hwc = frame.permute(1, 2, 0).contiguous().cpu().numpy()
+        if frame_hwc.dtype != np.uint8:
+            frame_hwc = np.clip(frame_hwc, 0, 255).astype(np.uint8)
+        return cv2.cvtColor(frame_hwc, cv2.COLOR_RGB2BGR)
+
     def _worker_loop(
         self,
         *,
@@ -354,13 +382,12 @@ class AsyncVideoSequenceBenchmark(VideoSequenceBenchmark):
                         processed_frames_counter=processed_frames_counter,
                     )
 
-                    fpath = os.path.abspath(fname[0] if isinstance(fname, (list, tuple)) else fname)
-                    frame_bgr = cv2.imread(fpath)
+                    tgt = target[0] if isinstance(target, list) else target
+                    frame_bgr = self._extract_frame_bgr_from_target(tgt)
                     if frame_bgr is None:
                         continue
                     frame_h, frame_w = frame_bgr.shape[:2]
 
-                    tgt = target[0] if isinstance(target, list) else target
                     video_id, is_first_frame, frame_idx_in_video = _extract_sequence_meta(tgt, fname)
                     effective_frame_idx = frame_idx_in_video if frame_idx_in_video is not None else frame_idx
 

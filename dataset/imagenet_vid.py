@@ -323,6 +323,7 @@ class ImageNetVidDataset(Dataset):
     def __getitem__(self, index):
         im_info = self.images_info[index]
         im = read_image(im_info['filename'])
+        original_im = im.clone()
         
         # Prepare targets
         targets = {}
@@ -344,6 +345,8 @@ class ImageNetVidDataset(Dataset):
         targets['video_id'] = im_info['video_id']
         targets['frame_idx'] = im_info['frame_idx']
         targets['is_first_frame'] = im_info['is_first_frame']
+        targets['orig_frame_rgb_u8'] = original_im
+        targets['orig_frame_hw'] = (orig_h, orig_w)
         
         # Apply transforms
         im_tensor, targets = self.transforms[self.split](im, targets)

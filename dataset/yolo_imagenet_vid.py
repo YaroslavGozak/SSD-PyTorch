@@ -330,6 +330,7 @@ class YoloImageNetVidDataset(Dataset):
     def __getitem__(self, index: int):
         im_info = self.images_info[index]
         im = read_image(im_info["filename"])
+        original_im = im.clone()
 
         targets: Dict[str, Any] = {}
         targets["bboxes"] = tv_tensors.BoundingBoxes(
@@ -349,6 +350,8 @@ class YoloImageNetVidDataset(Dataset):
         targets["video_id"] = im_info["video_id"]
         targets["frame_idx"] = im_info["frame_idx"]
         targets["is_first_frame"] = im_info["is_first_frame"]
+        targets["orig_frame_rgb_u8"] = original_im
+        targets["orig_frame_hw"] = (orig_h, orig_w)
 
         im_tensor, targets = self.transforms[self.transform_split](im, targets)
 

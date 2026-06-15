@@ -104,8 +104,28 @@ class OnlineCostModel:
             self.valid = False
             return None
 
-        area = np.array([s[0] for s in self.samples], dtype=np.float64)
-        lat = np.array([s[1] for s in self.samples], dtype=np.float64)
+        # Mimic measurek.py fitting strategy:
+        # aggregate repeated measurements by area and fit on (area, mean_time_per_area).
+        area_to_times: Dict[float, List[float]] = {}
+        for area_i, time_i, _mode_i, _frame_i in self.samples:
+            area_to_times.setdefault(float(area_i), []).append(float(time_i))
+
+        if len(area_to_times) < 2:
+            self.valid = False
+            return None
+
+        grouped = sorted(
+            (area_i, float(np.mean(times_i)))
+            for area_i, times_i in area_to_times.items()
+            if len(times_i) > 0
+        )
+
+        if len(grouped) < 2:
+            self.valid = False
+            return None
+
+        area = np.array([g[0] for g in grouped], dtype=np.float64)
+        lat = np.array([g[1] for g in grouped], dtype=np.float64)
 
         p10, p90 = np.percentile(area, [10, 90])
         span = float(p90 / max(p10, 1.0))
@@ -113,16 +133,17 @@ class OnlineCostModel:
         if span < self.min_area_span_ratio:
             self.valid = False
             return None
+        
+        # print(f"[adaptive_tau] frame {frame_idx}: fitting cost model with {len(area)} unique areas: {area}, latencies: {lat}, span ratio: {span:.3f}")
 
-        area_mean = float(np.mean(area))
-        lat_mean = float(np.mean(lat))
-        denom = float(np.sum((area - area_mean) ** 2))
-        if denom <= 1e-9:
+        try:
+            c_t, K_t = np.polyfit(area, lat, 1)
+            c_t = float(c_t)
+            K_t = float(K_t)
+        except Exception:
             self.valid = False
             return None
 
-        c_t = float(np.sum((area - area_mean) * (lat - lat_mean)) / denom)
-        K_t = float(lat_mean - c_t * area_mean)
         if c_t <= 0.0 or K_t <= 0.0:
             self.valid = False
             return None
@@ -358,30 +379,6 @@ class VideoSequenceBenchmark:
             Path(runs_dir).mkdir(parents=True, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
             self.adaptive_tau_log_path = os.path.join(runs_dir, f'adaptive_tau_{ts}.csv')
-            with open(self.adaptive_tau_log_path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(
-                    f,
-                    fieldnames=[
-                        'timestamp_utc',
-                        'frame_idx',
-                        'old_tau',
-                        'tau_current',
-                        'tau_raw',
-                        'K_t',
-                        'c_t',
-                        'sample_count',
-                        'fullframe_count',
-                        'roi_count',
-                        'area_span_ratio',
-                        'model_valid',
-                        'update_count',
-                        'tau_min',
-                        'tau_max',
-                        'alpha_tau',
-                        'window_size',
-                    ],
-                )
-                writer.writeheader()
 
         # Build an args namespace that load_model_and_dataset expects
         self._train_config_path = self.cfg["train_config_path"]
@@ -389,29 +386,30 @@ class VideoSequenceBenchmark:
     def _append_adaptive_tau_log(self, event: Dict[str, Any]) -> None:
         if not self.adaptive_tau_log_path:
             return
+        fieldnames = [
+            'timestamp_utc',
+            'frame_idx',
+            'old_tau',
+            'tau_current',
+            'tau_raw',
+            'K_t',
+            'c_t',
+            'sample_count',
+            'fullframe_count',
+            'roi_count',
+            'area_span_ratio',
+            'model_valid',
+            'update_count',
+            'tau_min',
+            'tau_max',
+            'alpha_tau',
+            'window_size',
+        ]
+        need_header = (not os.path.exists(self.adaptive_tau_log_path)) or (os.path.getsize(self.adaptive_tau_log_path) == 0)
         with open(self.adaptive_tau_log_path, 'a', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=[
-                    'timestamp_utc',
-                    'frame_idx',
-                    'old_tau',
-                    'tau_current',
-                    'tau_raw',
-                    'K_t',
-                    'c_t',
-                    'sample_count',
-                    'fullframe_count',
-                    'roi_count',
-                    'area_span_ratio',
-                    'model_valid',
-                    'update_count',
-                    'tau_min',
-                    'tau_max',
-                    'alpha_tau',
-                    'window_size',
-                ],
-            )
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if need_header:
+                writer.writeheader()
             writer.writerow({
                 'timestamp_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
                 'frame_idx': event['frame_idx'],
@@ -461,7 +459,11 @@ class VideoSequenceBenchmark:
                 frame_idx += 1
                 if self.verbose and frame_idx % max(1, total_frames // 10) == 0:
                     pct = frame_idx / total_frames * 100
-                    print(f"  {frame_idx}/{total_frames} ({pct:.0f}%)")
+                    if self.adaptive_tau_enabled and self.cost_model is not None:
+                        print_tau = f'| tau: {self.cost_model.get_tau(default_tau=self.merge_tau)}'
+                    else:
+                        print_tau = ''
+                    print(f"  {frame_idx}/{total_frames} ({pct:.0f}%)  {print_tau}")
 
                 fpath = os.path.abspath(fname[0] if isinstance(fname, (list, tuple)) else fname)
                 frame_bgr = cv2.imread(fpath)
@@ -519,34 +521,22 @@ class VideoSequenceBenchmark:
                 rois_used = result.rois_used
 
                 if self.adaptive_tau_enabled and self.cost_model is not None:
-                    obs_time = float(max(result.latency_s - result.merge_latency_s, 0.0))
                     events = []
-                    if result.use_full_frame:
+                    # Use per-inference latency buckets grouped by processed ROI size.
+                    # For each (w, h) bucket we add one sample with mean latency and area=w*h.
+                    for (roi_w, roi_h), latencies in result.roi_latencies_s.items():
+                        if not latencies:
+                            continue
+                        area = float(max(1, int(roi_w)) * max(1, int(roi_h)))
+                        time_sec = float(np.mean(latencies))
                         event = self.cost_model.add_observation(
-                            area=float(frame_area),
-                            time_sec=obs_time,
-                            mode='full_frame',
+                            area=area,
+                            time_sec=time_sec,
+                            mode='full_frame' if result.use_full_frame else 'roi',
                             frame_idx=effective_frame_idx,
                         )
                         if event is not None:
                             events.append(event)
-                    else:
-                        roi_areas = [
-                            float(max(0, r[2] - r[0]) * max(0, r[3] - r[1]))
-                            for r in rois_used
-                            if (r[2] - r[0]) > 0 and (r[3] - r[1]) > 0
-                        ]
-                        if roi_areas:
-                            per_roi_time = obs_time / float(len(roi_areas))
-                            for roi_area in roi_areas:
-                                event = self.cost_model.add_observation(
-                                    area=roi_area,
-                                    time_sec=per_roi_time,
-                                    mode='roi',
-                                    frame_idx=effective_frame_idx,
-                                )
-                                if event is not None:
-                                    events.append(event)
 
                     for event in events:
                         print(

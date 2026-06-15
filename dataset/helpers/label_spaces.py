@@ -65,6 +65,23 @@ VOC_TO_IMAGENET_VID_NAME = {
     'train': 'train',
 }
 
+IMAGENET_VID_TO_VOC_NAME = {
+    'airplane': 'aeroplane',
+    'bicycle': 'bicycle',
+    'bird': 'bird',
+    'bus': 'bus',
+    'car': 'car',
+    'domestic_cat': 'cat',
+    'cattle': 'cow',
+    'dog': 'dog',
+    'horse': 'horse',
+    'motorcycle': 'motorbike',
+    'person': 'person',
+    'potted_plant': 'pottedplant',
+    'sheep': 'sheep',
+    'train': 'train',
+}
+
 COCO_TO_IMAGENET_VID_NAME = {
     'person': 'person',
     'bicycle': 'bicycle',
@@ -140,7 +157,7 @@ def get_label_space_classes(label_space: str) -> List[str]:
     label_space = str(label_space)
     if label_space == 'voc':
         return list(VOC_CLASSES)
-    if label_space == 'imagenet-vid':
+    if label_space in {'imagenet-vid', 'yolo-imagenet-vid'}:
         return list(IMAGENET_VID_CLASSES)
     if label_space == 'coco':
         return list(COCO_CLASSES)

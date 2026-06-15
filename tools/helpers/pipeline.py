@@ -33,7 +33,9 @@ from dataset.ytbb import YTBBDataset
 from model.roissd import RoiSSD
 from model.roissd_mobilenet import RoiSSDMobileNet
 from model.ssd import SSD
-from tools.helpers.roi_merger import greedy_roi_merge, simple_roi_merge, simple_roi_merge_v2
+from tools.mergers.greedy import greedy_roi_merge
+from tools.mergers.simple import simple_roi_merge
+from tools.mergers.simple2 import simple_roi_merge_v2
 from tools.trackers.kalman_roi_tracker import KalmanRoiTracker
 from tools.trackers.sort_tracker import SortTracker
 from tools.trackers.static_padding_tracker import StaticPaddingTracker
@@ -86,17 +88,17 @@ def _model_roi_grid(model) -> int:
     YOLO models have a stride of 32, so any crop fed to them must have H and W
     divisible by 32.  SSD / RoiSSD accept arbitrary sizes.
     """
-    model = unwrap_model(model)
-    if isinstance(model, YoloV8Adapter):
-        return 32
-    try:
-        from ultralytics import YOLO as _YOLO
-        if isinstance(model, _YOLO):
-            return 32
-    except ImportError:
-        pass
-    return 1
-
+    # model = unwrap_model(model)
+    # if isinstance(model, YoloV8Adapter):
+    #     return 32
+    # try:
+    #     from ultralytics import YOLO as _YOLO
+    #     if isinstance(model, _YOLO):
+    #         return 32
+    # except ImportError:
+    #     pass
+    # return 1
+    return 32 # Always return 32 to have more deterministic ROIs
 
 # ---------------------------------------------------------------------------
 # Tracker factory
@@ -215,7 +217,7 @@ def load_model(
     config,
     dataset=None,
     load_checkpoint: bool = True,
-    use_penalized_roissd: bool = True,
+    use_penalized_roissd: bool = False,
     model_device: Optional[torch.device] = None,
 ):
     """Load model from a parsed training config dict."""
@@ -621,6 +623,7 @@ class FrameResult:
     dropped_tracker_detections: List[Dict[str, Any]] = field(default_factory=list)
     rois_used:         List[List[int]]        = field(default_factory=list)
     next_frame_rois:   List[List[int]]        = field(default_factory=list)
+    roi_latencies_s:   Dict[Tuple[int, int], List[float]] = field(default_factory=dict)  # (w, h) -> inference latency list (seconds)
     use_full_frame:    bool                   = True
     latency_s:         float                  = 0.0  # total inference + NMS + tracker update
     merge_latency_s:   float                  = 0.0  # ROI merge step only (0.0 for full-frame)
@@ -671,8 +674,14 @@ def process_frame(
 
     t0 = time.perf_counter()
 
+    roi_latencies_s: Dict[Tuple[int, int], List[float]] = {}
     if use_full_frame:
-        _, model_batch_detections = run_model_inference(model, im_tensor.float().to(model_device))
+        td = time.perf_counter()
+        full_tensor = im_tensor.float().to(model_device)
+        _, model_batch_detections = run_model_inference(model, full_tensor)
+        full_latency_s = time.perf_counter() - td
+        full_h, full_w = int(full_tensor.shape[-2]), int(full_tensor.shape[-1])
+        roi_latencies_s.setdefault((full_w, full_h), []).append(full_latency_s)
         all_detections = tensor_to_detection_list(model_batch_detections[0], idx2label, frame_w, frame_h)
     else:
         # Merge ROIs, then run one inference pass per cluster
@@ -699,7 +708,12 @@ def process_frame(
             rois_used.append(snapped_roi)
 
             try:
-                _, model_batch_detections = run_model_inference(model, crop_tensor.unsqueeze(0).to(model_device))
+                td = time.perf_counter()
+                infer_tensor = crop_tensor.unsqueeze(0).to(model_device)
+                _, model_batch_detections = run_model_inference(model, infer_tensor)
+                infer_latency_s = time.perf_counter() - td
+                infer_h, infer_w = int(infer_tensor.shape[-2]), int(infer_tensor.shape[-1])
+                roi_latencies_s.setdefault((infer_w, infer_h), []).append(infer_latency_s)
             except Exception as e:
                 print("im_tensor:", im_tensor.shape)
                 print("original_image_size:", (frame_h, frame_w))
@@ -745,6 +759,7 @@ def process_frame(
         dropped_tracker_detections=dropped_tracker_detections,
         rois_used=rois_used,
         next_frame_rois=[r['roi'] for r in tracker_result['rois']],
+        roi_latencies_s=roi_latencies_s,
         use_full_frame=use_full_frame,
         latency_s=latency_s,
         merge_latency_s=merge_latency_s,

@@ -98,7 +98,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Measure inference cost model T = K + cA")
     parser.add_argument("--config", default="config/voc.yaml", help="Path to training config")
     parser.add_argument("--model", choices=["yolo", "roissd", "roissd-mobilenet", "fcos", "fasterrcnn"], default="yolo", help="Model to benchmark")
-    parser.add_argument("--yolo-weights", default="yolov8n.pt", help="Ultralytics YOLO weights path")
+    parser.add_argument("--yolo-weights", default="trained_models\\imagenet-vid-yolo-yolo-config\\best.pt", help="Ultralytics YOLO weights path")
     parser.add_argument("--iters", type=int, default=50, help="Timed iterations per image size")
     parser.add_argument("--cuda", action="store_true", help="Also benchmark on CUDA if available")
     args = parser.parse_args()

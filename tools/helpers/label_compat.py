@@ -1,8 +1,10 @@
 from dataset.helpers.label_spaces import (
     COCO_CLASSES,
     COCO_TO_IMAGENET_VID_NAME,
+    IMAGENET_VID_CLASSES,
     IMAGENET_VID_YOLO13_CLASSES,
     IMAGENET_VID_YOLO13_TO_IMAGENET_VID_NAME,
+    IMAGENET_VID_TO_VOC_NAME,
     VOC_CLASSES,
     VOC_TO_IMAGENET_VID_NAME,
     build_label_maps,
@@ -14,6 +16,7 @@ from model.model_adapters import DetectionLabelRemapAdapter
 
 VOC_LABEL2IDX, VOC_IDX2LABEL = build_label_maps(VOC_CLASSES)
 COCO_LABEL2IDX, COCO_IDX2LABEL = build_label_maps(COCO_CLASSES)
+IMAGENET_VID_LABEL2IDX, IMAGENET_VID_IDX2LABEL = build_label_maps(IMAGENET_VID_CLASSES)
 IMAGENET_VID_YOLO13_LABEL2IDX, IMAGENET_VID_YOLO13_IDX2LABEL = build_label_maps(IMAGENET_VID_YOLO13_CLASSES)
 
 
@@ -23,7 +26,9 @@ def get_model_label_space(train_config, dataset_name: str) -> str:
 
 def get_model_num_classes(train_config, dataset_config, dataset_name: str) -> int:
     if 'model_num_classes' in train_config:
+        print('Using model_num_classes from train_config:', train_config['model_num_classes'])
         return int(train_config['model_num_classes'])
+    print(train_config)
 
     model_label_space = get_model_label_space(train_config, dataset_name)
     dataset_label_space = infer_dataset_label_space(dataset_name)
@@ -83,6 +88,25 @@ def maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name: str
             source_idx2label=IMAGENET_VID_YOLO13_IDX2LABEL,
             target_label2idx=dataset.label2idx,
             class_name_mapping=IMAGENET_VID_YOLO13_TO_IMAGENET_VID_NAME,
+        )
+    if (model_label_space, dataset_label_space) == ('imagenet-vid', 'voc'):
+        print(f"Wrapping model with VID->VOC label remap adapter (model_label_space={model_label_space}, dataset_label_space={dataset_label_space})")
+        return DetectionLabelRemapAdapter(
+            base_model=model,
+            source_idx2label=IMAGENET_VID_IDX2LABEL,
+            target_label2idx=dataset.label2idx,
+            class_name_mapping=IMAGENET_VID_TO_VOC_NAME,
+        )
+    if (model_label_space, dataset_label_space) == ('yolo-imagenet-vid', 'voc'):
+        print(
+            "Wrapping model with YOLO-VID->VOC label remap adapter "
+            f"(model_label_space={model_label_space}, dataset_label_space={dataset_label_space})"
+        )
+        return DetectionLabelRemapAdapter(
+            base_model=model,
+            source_idx2label=IMAGENET_VID_IDX2LABEL,
+            target_label2idx=dataset.label2idx,
+            class_name_mapping=IMAGENET_VID_TO_VOC_NAME,
         )
 
     raise ValueError(

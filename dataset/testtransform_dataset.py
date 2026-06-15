@@ -1,11 +1,11 @@
 from dataset.transforms.letterbox_transform import LetterboxTransform
-from tools.helpers.roi_merger import greedy_roi_merge, simple_roi_merge, simple_roi_merge_v2
+from tools.mergers.greedy import greedy_roi_merge
+from tools.mergers.simple import simple_roi_merge
+from tools.mergers.simple2 import simple_roi_merge_v2
 from tools.utils import read_annotation_file
 import torch
 from torchvision import tv_tensors
 from torchvision.io import read_image
-
-from transformers.random_roi_crop import RandomROICrop
 
 def labels_getter(transform_input):
     return (transform_input[1]["labels"], transform_input[1]["difficult"])
