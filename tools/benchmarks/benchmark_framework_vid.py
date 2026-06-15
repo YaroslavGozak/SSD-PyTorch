@@ -533,7 +533,7 @@ class VideoSequenceBenchmark:
                             area=area,
                             time_sec=time_sec,
                             mode='full_frame' if result.use_full_frame else 'roi',
-                            frame_idx=effective_frame_idx,
+                            frame_idx=frame_idx,
                         )
                         if event is not None:
                             events.append(event)
