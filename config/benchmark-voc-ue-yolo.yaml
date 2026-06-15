@@ -1,0 +1,27 @@
+# Video Sequence Benchmark configuration — VOC-UE dataset + ImageNet-VID pretrained YOLO
+
+extends: "benchmark-vid-base.yaml"
+train_config_path: "config/voc-ue-yolo-imagenet.yaml"
+
+benchmark_vid_params:
+
+  tracker:
+
+    kalman:
+      model_input_size: [320, 320]
+
+    static_padding:
+      model_input_size: [320, 320]
+
+    relative_padding:
+      model_input_size: [320, 320]
+
+    oracle_gt:
+      model_input_size: [320, 320]
+
+    sort:
+      model_input_size: [320, 320]
+
+  output:
+    results_dir: "benchmark_results/vid/voc-ue"
+    results_filename: "comparison_voc_ue_yolo.csv"

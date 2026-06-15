@@ -1,0 +1,11 @@
+extends: "voc-ue.yaml"
+
+dataset_params:
+  im_size : 320
+
+train_params:
+  model: 'yolo'
+  model_label_space: 'yolo-imagenet-vid'
+  model_num_classes: 34
+  task_name: 'imagenet-vid-yolo-yolo-config'
+  yolo_weights: 'best.pt'

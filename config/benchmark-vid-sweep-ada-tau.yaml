@@ -21,44 +21,64 @@ experiments:
   #   adaptive_tau_min: 1200
   #   adaptive_tau_max: 20000
 
-  - name: "sort_64_ada_tau"
+  - name: "sort_16_ada_tau"
     tracker_type: "sort"
     tracker_params:
-      pad_x: 64
-      pad_y: 64
+      pad_x: 16
+      pad_y: 16
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
     roi_merge:
       strategy: "greedy"
-      tau: 1200
+      tau: 17000
       adaptive_tau: True
-      adaptive_tau_window_size: 500
-      adaptive_tau_min_samples: 50
-      adaptive_tau_min_fullframe_samples: 10
-      adaptive_tau_min_area_span_ratio: 4.0
+      adaptive_tau_window_size: 600
+      adaptive_tau_min_samples: 60
+      adaptive_tau_min_fullframe_samples: 30
+      adaptive_tau_min_area_span_ratio: 5.0
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 4000
+      adaptive_tau_max: 60000
 
-  - name: "static_pad_64_ada_tau"
+  # - name: "kalman_16_ada_tau"
+  #   tracker_type: "kalman"
+  #   tracker_params:
+  #     pmin: 16
+  #   inference: 
+  #     key_frame_interval: 10
+  #     nms_iou: 0.5
+  #   roi_merge:
+  #     strategy: "greedy"
+  #     tau: 17000
+  #     adaptive_tau: True
+  #     adaptive_tau_window_size: 300
+  #     adaptive_tau_min_samples: 60
+  #     adaptive_tau_min_fullframe_samples: 30
+  #     adaptive_tau_min_area_span_ratio: 10.0
+  #     adaptive_tau_alpha: 0.1
+  #     adaptive_tau_log_every_frames: 100
+  #     adaptive_tau_min: 1000
+  #     adaptive_tau_max: 25000
+
+  - name: "static_pad_16_ada_tau"
     tracker_type: "static_padding"
     tracker_params:
-      pad_x: 64
-      pad_y: 64
+      pad_x: 16
+      pad_y: 16
     inference: 
       key_frame_interval: 10
       nms_iou: 0.5
     roi_merge:
       strategy: "greedy"
-      tau: 1200
+      tau: 17000
       adaptive_tau: True
-      adaptive_tau_window_size: 500
-      adaptive_tau_min_samples: 50
-      adaptive_tau_min_fullframe_samples: 10
-      adaptive_tau_min_area_span_ratio: 4.0
+      adaptive_tau_window_size: 600
+      adaptive_tau_min_samples: 60
+      adaptive_tau_min_fullframe_samples: 30
+      adaptive_tau_min_area_span_ratio: 5.0
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 4000
+      adaptive_tau_max: 60000
