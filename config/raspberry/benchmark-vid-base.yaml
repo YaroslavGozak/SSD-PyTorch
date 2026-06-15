@@ -6,7 +6,7 @@ benchmark_vid_params:
   device: "cpu" # Options: "cpu" | "cuda"
 
   tracker:
-    type: "oracle_gt"   # Options: kalman | static_padding | relative_padding | oracle_gt | sort
+    type: "kalman"   # Options: kalman | static_padding | relative_padding | oracle_gt | sort
 
     kalman:
       conf_det_min: 0.5
@@ -76,5 +76,5 @@ benchmark_vid_params:
 
   output:
     results_dir: "benchmark_results/raspberry"
-    results_filename: "ada_tau_comparison.csv"
+    results_filename: "ada_tau_comparison_v2.csv"
     verbose: true
