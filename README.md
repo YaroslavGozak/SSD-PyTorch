@@ -26,7 +26,7 @@ The repo provides code to train on voc dataset. Specifically I trained on trainv
 | RoiSSD | D | Energy saving | CPU i5 H210 | \(3.85 \cdot 10^{-6}\) | 0.012567 | 3,268 |
 | RoiSSD | E | — | CPU Raspberry Pi 5 4GB | \(1.328 \cdot 10^{-5}\) | 0.030140 | 2,269 (≈1300–3500) |
 | YOLO26n | A | — | GPU RTX 3060 Ti 8GB | \(1.0 \cdot 10^{-8}\) | 0.0189 | 3,920,311 |
-| YOLO26n | A | — | CPU i7-11700K | \(1.66 \cdot 10^{-7}\) | 0.0150 | 90,006 |
+| YOLO26n | A | — | CPU i7-11700K | \(1.66 \cdot 10^{-7}\) | 0.0150 | 105,006 |
 
 
 ## SSD Explanation and Implementation Video
