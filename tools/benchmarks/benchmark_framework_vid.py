@@ -166,10 +166,8 @@ class OnlineCostModel:
         self.c_t = c_t
         self.valid = True
 
-        changed = (old_tau is None) or (abs(tau_new - old_tau) / max(abs(old_tau), 1e-9) > 0.03)  # log if tau changes by more than 3%
-        if changed:
-            self.update_count += 1
-            return {
+        self.update_count += 1
+        return {
                 'frame_idx': int(frame_idx),
                 'old_tau': float(old_tau) if old_tau is not None else float('nan'),
                 'new_tau': float(tau_new),
@@ -182,8 +180,7 @@ class OnlineCostModel:
                 'area_span_ratio': float(self.area_span_ratio),
                 'valid': bool(self.valid),
                 'update_count': int(self.update_count),
-            }
-        return None
+        }
 
 
 # --------------------------------------------------------------------------- #
