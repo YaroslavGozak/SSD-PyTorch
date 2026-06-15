@@ -21,67 +21,6 @@ experiments:
   #   adaptive_tau_min: 1200
   #   adaptive_tau_max: 20000
 
-  - name: "sort_64_ada_tau"
-    tracker_type: "sort"
-    tracker_params:
-      pad_x: 64
-      pad_y: 64
-    inference: 
-      key_frame_interval: 10
-      nms_iou: 0.5
-    roi_merge:
-      strategy: "greedy"
-      tau: 1200
-      adaptive_tau: True
-      adaptive_tau_window_size: 500
-      adaptive_tau_min_samples: 50
-      adaptive_tau_min_fullframe_samples: 10
-      adaptive_tau_min_area_span_ratio: 4.0
-      adaptive_tau_alpha: 0.1
-      adaptive_tau_log_every_frames: 100
-      adaptive_tau_min: 1000
-      adaptive_tau_max: 60000
-
-  - name: "kalman_64_ada_tau"
-    tracker_type: "kalman"
-    tracker_params:
-      pmin: 64
-    inference: 
-      key_frame_interval: 10
-      nms_iou: 0.5
-    roi_merge:
-      strategy: "greedy"
-      tau: 1200
-      adaptive_tau: True
-      adaptive_tau_window_size: 500
-      adaptive_tau_min_samples: 50
-      adaptive_tau_min_fullframe_samples: 10
-      adaptive_tau_min_area_span_ratio: 4.0
-      adaptive_tau_alpha: 0.1
-      adaptive_tau_log_every_frames: 100
-      adaptive_tau_min: 1000
-      adaptive_tau_max: 60000
-
-  - name: "static_pad_64_ada_tau"
-    tracker_type: "static_padding"
-    tracker_params:
-      pad_x: 64
-      pad_y: 64
-    inference: 
-      key_frame_interval: 10
-      nms_iou: 0.5
-    roi_merge:
-      strategy: "greedy"
-      tau: 1200
-      adaptive_tau: True
-      adaptive_tau_window_size: 500
-      adaptive_tau_min_samples: 50
-      adaptive_tau_min_fullframe_samples: 10
-      adaptive_tau_min_area_span_ratio: 4.0
-      adaptive_tau_alpha: 0.1
-      adaptive_tau_log_every_frames: 100
-      adaptive_tau_min: 1000
-      adaptive_tau_max: 60000
 
   - name: "sort_16_ada_tau"
     tracker_type: "sort"
@@ -102,7 +41,7 @@ experiments:
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 60000
+      adaptive_tau_max: 30000
 
   - name: "kalman_16_ada_tau"
     tracker_type: "kalman"
@@ -122,7 +61,7 @@ experiments:
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 60000
+      adaptive_tau_max: 30000
 
   - name: "static_pad_16_ada_tau"
     tracker_type: "static_padding"
@@ -143,17 +82,4 @@ experiments:
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 600000
-
-  - name: "fullframe"
-    tracker_type: "static_padding"
-    tracker_params:
-      pad_x: 16
-      pad_y: 16
-    inference: 
-      key_frame_interval: 1
-      nms_iou: 0.5
-    roi_merge:
-      strategy: "greedy"
-      tau: 1200
-      adaptive_tau: False
+      adaptive_tau_max: 30000
