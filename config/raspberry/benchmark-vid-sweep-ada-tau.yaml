@@ -40,7 +40,7 @@ experiments:
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 6000
+      adaptive_tau_max: 60000
 
   - name: "kalman_64_ada_tau"
     tracker_type: "kalman"
@@ -60,7 +60,7 @@ experiments:
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 6000
+      adaptive_tau_max: 60000
 
   - name: "static_pad_64_ada_tau"
     tracker_type: "static_padding"
@@ -81,7 +81,7 @@ experiments:
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 6000
+      adaptive_tau_max: 60000
 
   - name: "sort_16_ada_tau"
     tracker_type: "sort"
@@ -102,7 +102,7 @@ experiments:
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 6000
+      adaptive_tau_max: 60000
 
   - name: "kalman_16_ada_tau"
     tracker_type: "kalman"
@@ -122,7 +122,7 @@ experiments:
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 6000
+      adaptive_tau_max: 60000
 
   - name: "static_pad_16_ada_tau"
     tracker_type: "static_padding"
@@ -143,7 +143,7 @@ experiments:
       adaptive_tau_alpha: 0.1
       adaptive_tau_log_every_frames: 100
       adaptive_tau_min: 1000
-      adaptive_tau_max: 6000
+      adaptive_tau_max: 600000
 
   - name: "fullframe"
     tracker_type: "static_padding"
