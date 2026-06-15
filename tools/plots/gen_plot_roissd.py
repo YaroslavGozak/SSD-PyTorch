@@ -18,8 +18,9 @@ MODEL_LABELS = {
     # 'voc-yolo26s': 'YOLOv26s',
     # 'voc-yolo26m': 'YOLOv26m',
     # 'imagenet-vid-roissd' : 'RoI-SSD (ImageNet-VID)',
-    'imagenet-vid-yolo26n' : 'YOLO 26n (ImageNet-VID)',
-    'imagenet-vid-roissd-yolo-config' : 'ROI-SSD (Full ImageNet-VID)',
+    # 'imagenet-vid-yolo26n' : 'YOLO 26n (ImageNet-VID)',
+    # 'imagenet-vid-roissd-yolo-config' : 'ROI-SSD (Full ImageNet-VID)',
+    'imagenet-vid-roissd-yolo-config-v3' : 'ROI-SSD (Full ImageNet-VID, v3)',
 }
 
 def _load_voc_ssd_baseline():
@@ -50,11 +51,28 @@ def _load_padding_curve(csv_path):
     map_vals = []
     no_crop_map = None
 
+    def _extract_crop_px(row):
+        raw = row.get('crop_px', '')
+        if raw:
+            return raw.strip()
+
+        evaluated_dataset = row.get('evaluated_dataset', '')
+        if not evaluated_dataset:
+            return ''
+
+        evaluated_dataset = evaluated_dataset.strip()
+        if evaluated_dataset.startswith('fixed_padding_roi_crop'):
+            parts = evaluated_dataset.split('_')
+            if parts and parts[-1].isdigit():
+                return parts[-1]
+        return ''
+
     with open(csv_path, newline='') as f:
         reader = csv.DictReader(f)
         for row in reader:
-            raw = row['crop_px'].strip() if row.get('crop_px') else ''
+            raw = _extract_crop_px(row)
             val = row['mAP'].strip() if row.get('mAP') else ''
+            print(f"Parsing row for model {model_name}: crop_px='{raw}', mAP='{val}'")
             if not raw or val in ('nan', ''):
                 continue
             if raw == 'no_crop':
