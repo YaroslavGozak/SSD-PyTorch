@@ -5,45 +5,7 @@ sweep_name: "adaptive_tau"
 
 experiments:
 
-  - name: "sort_4_tau_1200"
-    tracker_type: "sort"
-    tracker_params:
-      pad_x: 4
-      pad_y: 4
-    inference: 
-      key_frame_interval: 10
-      nms_iou: 0.5
-    roi_merge:
-      strategy: "greedy"
-      tau: 1200
-      adaptive_tau: False
-
-  - name: "kalman_4_tau_1200"
-    tracker_type: "kalman"
-    tracker_params:
-      pmin: 4
-    inference: 
-      key_frame_interval: 10
-      nms_iou: 0.5
-    roi_merge:
-      strategy: "greedy"
-      tau: 1200
-      adaptive_tau: False
-
-  - name: "static_pad_4_tau_1200"
-    tracker_type: "static_padding"
-    tracker_params:
-      pad_x: 4
-      pad_y: 4
-    inference: 
-      key_frame_interval: 10
-      nms_iou: 0.5
-    roi_merge:
-      strategy: "greedy"
-      tau: 1200
-      adaptive_tau: False
-
-  - name: "sort_4_tau_3100"
+  - name: "sort_4_greedy_tau_3100"
     tracker_type: "sort"
     tracker_params:
       pad_x: 4
@@ -56,7 +18,7 @@ experiments:
       tau: 3100
       adaptive_tau: False
 
-  - name: "kalman_4_tau_3100"
+  - name: "kalman_4_greedy_tau_3100"
     tracker_type: "kalman"
     tracker_params:
       pmin: 4
@@ -68,7 +30,7 @@ experiments:
       tau: 3100
       adaptive_tau: False
 
-  - name: "static_pad_4_tau_3100"
+  - name: "static_pad_4_greedy_tau_3100"
     tracker_type: "static_padding"
     tracker_params:
       pad_x: 4
@@ -81,7 +43,127 @@ experiments:
       tau: 3100
       adaptive_tau: False
 
-  - name: "sort_4_tau_5000"
+  - name: "sort_16_greedy_tau_3100"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 16
+      pad_y: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_16_greedy_tau_3100"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_16_greedy_tau_3100"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 16
+      pad_y: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_32_greedy_tau_3100"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_32_greedy_tau_3100"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_32_greedy_tau_3100"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_64_greedy_tau_3100"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_64_greedy_tau_3100"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_64_greedy_tau_3100"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "greedy"
+      tau: 3100
+      adaptive_tau: False
+
+  
+
+
+
+
+
+  - name: "sort_4_simple"
     tracker_type: "sort"
     tracker_params:
       pad_x: 4
@@ -90,11 +172,11 @@ experiments:
       key_frame_interval: 10
       nms_iou: 0.5
     roi_merge:
-      strategy: "greedy"
-      tau: 5000
+      strategy: "simple"
+      tau: 3100
       adaptive_tau: False
 
-  - name: "kalman_4_tau_5000"
+  - name: "kalman_4_simple"
     tracker_type: "kalman"
     tracker_params:
       pmin: 4
@@ -102,11 +184,11 @@ experiments:
       key_frame_interval: 10
       nms_iou: 0.5
     roi_merge:
-      strategy: "greedy"
-      tau: 5000
+      strategy: "simple"
+      tau: 3100
       adaptive_tau: False
 
-  - name: "static_pad_4_tau_5000"
+  - name: "static_pad_4_simple"
     tracker_type: "static_padding"
     tracker_params:
       pad_x: 4
@@ -115,6 +197,443 @@ experiments:
       key_frame_interval: 10
       nms_iou: 0.5
     roi_merge:
-      strategy: "greedy"
-      tau: 5000
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_16_simple"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 16
+      pad_y: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_16_simple"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_16_simple"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 16
+      pad_y: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_32_simple"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_32_simple"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_32_simple"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_64_simple"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_64_simple"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_64_simple"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple"
+      tau: 3100
+      adaptive_tau: False
+
+
+
+
+  - name: "sort_4_simple_v2"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 4
+      pad_y: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_4_simple_v2"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_4_simple_v2"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 4
+      pad_y: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_16_simple_v2"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 16
+      pad_y: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_16_simple_v2"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_16_simple_v2"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 16
+      pad_y: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_32_simple_v2"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_32_simple_v2"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_32_simple_v2"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_64_simple_v2"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_64_simple_v2"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_64_simple_v2"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "simple_v2"
+      tau: 3100
+      adaptive_tau: False
+
+
+
+
+  - name: "sort_4_none"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 4
+      pad_y: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_4_none"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_4_none"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 4
+      pad_y: 4
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_16_none"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 16
+      pad_y: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_16_none"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_16_none"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 16
+      pad_y: 16
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_32_none"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_32_none"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_32_none"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "sort_64_none"
+    tracker_type: "sort"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "kalman_64_none"
+    tracker_type: "kalman"
+    tracker_params:
+      pmin: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "static_pad_64_none"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 64
+      pad_y: 64
+    inference: 
+      key_frame_interval: 10
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
+      adaptive_tau: False
+
+  - name: "fullframe"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 0
+      pad_y: 0
+    inference: 
+      key_frame_interval: 1
+      nms_iou: 0.5
+    roi_merge:
+      strategy: "none"
+      tau: 3100
       adaptive_tau: False

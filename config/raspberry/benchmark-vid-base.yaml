@@ -76,5 +76,5 @@ benchmark_vid_params:
 
   output:
     results_dir: "benchmark_results/raspberry"
-    results_filename: "ada_tau_comparison_v2.csv"
+    results_filename: "full_comparison.csv"
     verbose: true
