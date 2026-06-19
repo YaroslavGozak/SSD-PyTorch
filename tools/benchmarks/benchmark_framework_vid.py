@@ -536,18 +536,19 @@ class VideoSequenceBenchmark:
                             events.append(event)
 
                     for event in events:
-                        print(
-                            "[adaptive_tau] frame={} tau {:.2f} -> {:.2f} "
-                            "(raw={:.2f}, K={:.6f}, c={:.10f}, n={})".format(
-                                event['frame_idx'],
-                                event['old_tau'],
-                                event['new_tau'],
-                                event['tau_raw'],
-                                event['K_t'],
-                                event['c_t'],
-                                event['sample_count'],
+                        if self.verbose:
+                            print(
+                                "[adaptive_tau] frame={} tau {:.2f} -> {:.2f} "
+                                "(raw={:.2f}, K={:.6f}, c={:.10f}, n={})".format(
+                                    event['frame_idx'],
+                                    event['old_tau'],
+                                    event['new_tau'],
+                                    event['tau_raw'],
+                                    event['K_t'],
+                                    event['c_t'],
+                                    event['sample_count'],
+                                )
                             )
-                        )
                         self._append_adaptive_tau_log(event)
 
                 # Accumulate timing into separate buckets for reporting
