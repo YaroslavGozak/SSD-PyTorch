@@ -21,6 +21,11 @@ METRIC_LABELS_UA = {
     "static_padding": "Статичний відступ",
     "kalman": "Фільтр Калмана",
     "sort": "SORT",
+    "greedy": "Жадібне злиття",
+    "simple": "Злиття за просторовою близькістю",
+    "simple_v2": "Злиття за співвідношенням площ",
+    "none": "Без злиття",
+    "невідомо": "Невідомо",
 }
 
 MARKERS = ["o", "s", "^", "D", "P", "X", "v", "<", ">", "*", "h", "8"]
@@ -73,6 +78,11 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default=None,
         help="Optional tracker filter, for example sort, kalman, or static_padding.",
+    )
+    parser.add_argument(
+        "--non-dominated-points",
+        action="store_true",
+        help="If set, draw only non-dominated Pareto frontier points.",
     )
     return parser.parse_args()
 
@@ -213,8 +223,8 @@ def series_marker_label(row: pd.Series) -> str:
     if bool(row.get("is_fullframe", False)):
         return "Повний кадр"
     tracker = METRIC_LABELS_UA[str(row.get("tracker_type", "невідомо"))]
-    merger = str(row.get("merge_fn", "невідомо"))
-    return f"{tracker}"
+    merger = METRIC_LABELS_UA[str(row.get("merge_fn", "невідомо"))]
+    return f"{tracker} / {merger}"
 
 
 def build_marker_map(df: pd.DataFrame) -> dict[str, str]:
@@ -248,21 +258,22 @@ def main() -> None:
         x_goal=args.x_goal,
         y_goal=args.y_goal,
     )
+    plot_df = frontier.copy() if args.non_dominated_points else aggregated
 
     fig, ax = plt.subplots(figsize=(11, 7))
     cmap = plt.get_cmap("tab10")
     padding_groups = sorted(
-        aggregated["padding_group"].astype(str).unique(),
+        plot_df["padding_group"].astype(str).unique(),
         key=padding_sort_key,
     )
     color_map = {
         padding_group: cmap(index % cmap.N)
         for index, padding_group in enumerate(padding_groups)
     }
-    marker_map = build_marker_map(aggregated)
+    marker_map = build_marker_map(plot_df)
 
-    regular_points = aggregated[~aggregated["is_fullframe"]]
-    fullframe_points = aggregated[aggregated["is_fullframe"]]
+    regular_points = plot_df[~plot_df["is_fullframe"]]
+    fullframe_points = plot_df[plot_df["is_fullframe"]]
 
     for _, row in regular_points.iterrows():
         ax.scatter(
@@ -302,7 +313,7 @@ def main() -> None:
     )
 
     if args.annotate == "all":
-        annotate_points(ax, aggregated, args.x_metric, args.y_metric)
+        annotate_points(ax, plot_df, args.x_metric, args.y_metric)
     elif args.annotate == "frontier":
         annotate_points(ax, frontier, args.x_metric, args.y_metric)
 
