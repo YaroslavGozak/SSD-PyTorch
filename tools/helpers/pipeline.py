@@ -72,7 +72,7 @@ def _merge_none(rois: List, **_) -> List:
     return list(rois)
 
 MERGE_STRATEGIES: Dict[str, Callable] = {
-    "greedy":    lambda rois, tau=150000.0: greedy_roi_merge(rois, tau=tau),
+    "greedy":    lambda rois, image_size, tau=150000.0: greedy_roi_merge(rois, tau=tau, image_size=image_size),
     "simple":    lambda rois, **_: simple_roi_merge(rois),
     "simple_v2": lambda rois, **_: simple_roi_merge_v2(rois),
     "none":      _merge_none,
@@ -686,11 +686,12 @@ def process_frame(
     else:
         # Merge ROIs, then run one inference pass per cluster
         tm = time.perf_counter()
-        clusters = merge_fn(next_frame_rois, tau=merge_tau)
+        clusters = merge_fn(next_frame_rois, image_size=(frame_w, frame_h), tau=merge_tau)
         merge_latency_s = time.perf_counter() - tm
 
         for roi in clusters:
             roi_c = clip_bbox(roi, frame_w, frame_h)
+            print(roi, "->", roi_c)
             if roi_c is None:
                 continue
             rx1, ry1, rx2, ry2 = roi_c

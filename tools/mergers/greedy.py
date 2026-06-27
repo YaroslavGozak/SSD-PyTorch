@@ -1,5 +1,6 @@
 from itertools import combinations
 import math
+from typing import Tuple
 
 from tools.mergers.merger_helper import bbox_union, area
 
@@ -42,15 +43,35 @@ def __compute_cost_params(r):
     L_R = __compute_L(s_R)
     return A, L_R, beta[L_R]
 
-def greedy_roi_merge(rois, tau, area_ratio_max: float = 100):  # A_union / (A_i + A_j) <= 1.4 => merge ok)
+def greedy_roi_merge(rois, tau, image_size: Tuple[int, int], area_ratio_max: float = 100):  # A_union / (A_i + A_j) <= 1.4 => merge ok)
     """
     rois: list of ROIs [(x1,y1,x2,y2), ...]
     tau: threshold (K/c_full), additional launch costs
+    area_ratio_max: maximum allowed area inflation ratio
+    image_height: original image height (optional, for full-image ROI return)
+    image_width: original image width (optional, for full-image ROI return)
     Returns a list of optimal merged ROIs.
     """
 
     # Clusters represented as a list
     clusters = list(rois)
+
+    # If tau exceeds the canvas area, merge all regions into one ROI
+    if clusters:
+        min_x1 = min(r[0] for r in clusters)
+        min_y1 = min(r[1] for r in clusters)
+        max_x2 = max(r[2] for r in clusters)
+        max_y2 = max(r[3] for r in clusters)
+        canvas_bbox = (min_x1, min_y1, max_x2, max_y2)
+        canvas_area = area(canvas_bbox)
+        
+        image_width, image_height = image_size
+        image_area = image_width * image_height
+        if tau > image_area:
+            # If image dimensions provided, return full image ROI for consistent GPU inference
+            return [(0, 0, image_width, image_height)]
+        if tau > canvas_area:
+            return [canvas_bbox]
     
     # Precompute cost parameters
     params = {id(r): __compute_cost_params(r) for r in clusters}

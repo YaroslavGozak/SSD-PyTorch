@@ -27,7 +27,7 @@ if __name__ == '__main__':
             bboxes = [detection['bbox'] for detection in im_info['detections']]
             bboxes = [dataset.add_padding_to_bbox(bbox, 512, 512, dataset.alpha_w, dataset.alpha_h, dataset.delta_x, dataset.delta_y) for bbox in bboxes]
         
-            _ = merger_func(bboxes)
+            _ = merger_func(bboxes, tau=2500, image_size=(int(im_info["width"]), int(im_info["height"])))
         end_time = time.time()
         end_mem = process.memory_info().rss / (1024 ** 2)
         results[label] = (end_time - start_time, end_mem - start_mem)
