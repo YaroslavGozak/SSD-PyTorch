@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.2617  |  detector_recall = 0.3458
+AP for class antelope = 0.3882  |  detector_recall = 0.4907
+AP for class bear = 0.4907  |  detector_recall = 0.6947
+AP for class bicycle = 0.2465  |  detector_recall = 0.4136
+AP for class bird = 0.3180  |  detector_recall = 0.4630
+AP for class bus = 0.3503  |  detector_recall = 0.4910
+AP for class car = 0.3223  |  detector_recall = 0.5427
+AP for class cattle = 0.5302  |  detector_recall = 0.6385
+AP for class dog = 0.4757  |  detector_recall = 0.6343
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.5150  |  detector_recall = 0.6593
+AP for class fox = 0.5799  |  detector_recall = 0.6867
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.6086  |  detector_recall = 0.8438
+AP for class horse = 0.5612  |  detector_recall = 0.6591
+AP for class lion = 0.5294  |  detector_recall = 0.7600
+AP for class lizard = 0.3106  |  detector_recall = 0.4417
+AP for class monkey = 0.3906  |  detector_recall = 0.5053
+AP for class motorcycle = 0.5526  |  detector_recall = 0.7429
+AP for class rabbit = 0.4451  |  detector_recall = 0.6417
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.4192  |  detector_recall = 0.5882
+AP for class snake = 0.0844  |  detector_recall = 0.2381
+AP for class squirrel = 0.2382  |  detector_recall = 0.4158
+AP for class tiger = 0.4381  |  detector_recall = 0.6455
+AP for class train = 0.4275  |  detector_recall = 0.5136
+AP for class turtle = 0.4110  |  detector_recall = 0.5180
+AP for class watercraft = 0.1714  |  detector_recall = 0.2377
+AP for class whale = 0.0566  |  detector_recall = 0.1117
+AP for class zebra = 0.5779  |  detector_recall = 0.6043
+==================================================
+Mean Average Precision : 0.3963
+Mean Detector Recall   : 0.5381

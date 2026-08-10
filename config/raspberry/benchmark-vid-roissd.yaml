@@ -1,0 +1,31 @@
+# Video Sequence Benchmark configuration — YOLO (Lane B)
+# Uses 320x320 input (nearest multiple-of-32 above 300) and model_input_size: [320, 320]
+# so that tracker padding scales and ROI snap targets match the YOLO input resolution.
+
+extends: "benchmark-vid-base.yaml"
+train_config_path: "config/raspberry/imagenet-vid-roissd.yaml"
+
+benchmark_vid_params:
+
+  async_runtime:
+    target_fps: 30.0
+    latest_only: true
+    benchmark_reuse_policy: "hold_last"
+    window_name: "Async Lane B - RoiSSD"
+
+  tracker:
+
+    kalman:
+      model_input_size: [300, 300]  # SSD
+
+    static_padding:
+      model_input_size: [300, 300]  # SSD
+
+    relative_padding:
+      model_input_size: [300, 300]  # SSD
+
+    oracle_gt:
+      model_input_size: [300, 300]  # SSD
+
+    sort:
+      model_input_size: [300, 300]  # SSD

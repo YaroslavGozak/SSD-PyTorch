@@ -10,12 +10,20 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import cv2
 import numpy as np
+from dataset.imagenet_vid import ImageNetVidDataset
+from dataset.yolo_imagenet_vid import YoloImageNetVidDataset
 import torch
 import torch.nn.functional as F
 import torchvision
-import yaml
+from model.roissd_penalized import RoiSSDPenalized
+from tools.helpers.config_reader import load_config
+from tools.helpers.label_compat import (
+    get_model_num_classes,
+    maybe_wrap_model_for_dataset,
+    should_filter_imagenet_vid_to_voc_overlap,
+)
+from model.model_adapters import YoloV8Adapter, unwrap_model
 
 from dataset.visdrone import VisDroneDataset
 from dataset.voc import VOCDataset
@@ -23,9 +31,13 @@ from dataset.voc_vid import VOCVideoDataset
 from dataset.voc_small_objects import VOCSmallObjectsDataset
 from dataset.ytbb import YTBBDataset
 from model.roissd import RoiSSD
+from model.roissd_mobilenet import RoiSSDMobileNet
 from model.ssd import SSD
-from tools.helpers.roi_merger import greedy_roi_merge, simple_roi_merge, simple_roi_merge_v2
+from tools.mergers.greedy import greedy_roi_merge
+from tools.mergers.simple import simple_roi_merge
+from tools.mergers.simple2 import simple_roi_merge_v2
 from tools.trackers.kalman_roi_tracker import KalmanRoiTracker
+from tools.trackers.sort_tracker import SortTracker
 from tools.trackers.static_padding_tracker import StaticPaddingTracker
 from tools.trackers.relative_object_size_padding_tracker import RelativeObjectSizePaddingTracker
 from tools.trackers.oracle_gt_tracker import OracleGtTracker
@@ -35,120 +47,6 @@ from torch.utils.data.dataloader import DataLoader
 
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3, 1, 1)
 IMAGENET_STD  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3, 1, 1)
-
-
-class YoloV8Adapter:
-    """YOLO wrapper that returns normalized detections in project format."""
-
-    def __init__(self, weights_path: str, device: torch.device, use_predict_api: bool = True):
-        try:
-            from ultralytics import YOLO
-        except ImportError as e:
-            raise ImportError(
-                "YOLO inference requires ultralytics. Install with: pip install ultralytics"
-            ) from e
-        self._yolo = YOLO(weights_path)
-        self.device = device
-        self.use_predict_api = use_predict_api
-        print(f"[YOLO] Using {'predict API' if use_predict_api else 'raw model output'} mode for inference")
-
-    def to(self, device: torch.device = None, **_kwargs):
-        if device is not None:
-            self.device = device
-        return self
-
-    def eval(self):
-        return self
-    
-    def parameters(self):
-        """Delegate to the underlying PyTorch module so callers can do next(model.parameters()).device."""
-        return self._yolo.model.parameters()
-
-    def __call__(self, images: torch.Tensor, _targets=None):
-        # Reverse ImageNet normalization so YOLO receives images in [0, 1] float range.
-        # The SSD dataset transform applies mean/std normalization; YOLO does its own
-        # preprocessing and expects un-normalized [0, 1] float tensors.
-        mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
-        std  = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
-        images_01 = (images.float() * std + mean).clamp(0.0, 1.0)
-
-        # Use Ultralytics high-level predict API, which returns Results objects
-        # (with .boxes) instead of raw model head tensors.
-        device_arg = str(self.device) if self.device is not None else None
-
-        if self.use_predict_api:
-            results = self._yolo.predict(source=images_01, verbose=False, device=device_arg)
-
-            _, _, h, w = images.shape
-            out = []
-            for res in results:
-                if res.boxes is None or len(res.boxes) == 0:
-                    out.append({
-                        'boxes': torch.empty((0, 4), dtype=torch.float32, device=images.device),
-                        'labels': torch.empty((0,), dtype=torch.int64, device=images.device),
-                        'scores': torch.empty((0,), dtype=torch.float32, device=images.device),
-                    })
-                    continue
-
-                xyxy = res.boxes.xyxy.to(images.device).float()
-                boxes = xyxy.clone()
-                boxes[:, [0, 2]] /= float(w)
-                boxes[:, [1, 3]] /= float(h)
-
-                out.append({
-                    'boxes': boxes,
-                    'labels': (res.boxes.cls.to(images.device).long() + 1),
-                    'scores': res.boxes.conf.to(images.device).float(),
-                })
-            return None, out
-        else:
-            pred = self._yolo.model(images_01)
-            if isinstance(pred, (list, tuple)):
-                pred = pred[0]
-
-            # Case A: already postprocessed [B, N, 6]
-            if isinstance(pred, torch.Tensor) and pred.ndim == 3 and pred.shape[-1] == 6:
-                batch = pred
-            else:
-                # Case B: raw head output, run NMS once yourself
-                from ultralytics.utils.ops import non_max_suppression
-                nms_list = non_max_suppression(pred, conf_thres=0.25, iou_thres=0.45, max_det=300)
-                batch = []
-                for det in nms_list:
-                    if det is None or det.numel() == 0:
-                        batch.append(torch.empty((0, 6), device=images.device))
-                    else:
-                        batch.append(det[:, :6])
-                batch = torch.stack([
-                    b if b.ndim == 2 else b.view(0, 6) for b in batch
-                ], dim=0)
-
-            _, _, h, w = images.shape
-            out = []
-            for det in batch:
-                if det.numel() == 0:
-                    out.append({
-                        "boxes": torch.empty((0, 4), dtype=torch.float32, device=images.device),
-                        "labels": torch.empty((0,), dtype=torch.int64, device=images.device),
-                        "scores": torch.empty((0,), dtype=torch.float32, device=images.device),
-                    })
-                    continue
-
-                xyxy = det[:, :4].to(images.device).float()
-                conf = det[:, 4].to(images.device).float()
-                cls  = det[:, 5].to(images.device).long()
-
-                boxes = xyxy.clone()
-                boxes[:, [0, 2]] /= float(w)
-                boxes[:, [1, 3]] /= float(h)
-
-                out.append({
-                    "boxes": boxes,
-                    "labels": cls + 1,   # keep your project class indexing
-                    "scores": conf,
-                })
-
-            return None, out
 
 
 def run_model_inference(model, images: torch.Tensor):
@@ -190,16 +88,17 @@ def _model_roi_grid(model) -> int:
     YOLO models have a stride of 32, so any crop fed to them must have H and W
     divisible by 32.  SSD / RoiSSD accept arbitrary sizes.
     """
-    if isinstance(model, YoloV8Adapter):
-        return 32
-    try:
-        from ultralytics import YOLO as _YOLO
-        if isinstance(model, _YOLO):
-            return 32
-    except ImportError:
-        pass
-    return 1
-
+    # model = unwrap_model(model)
+    # if isinstance(model, YoloV8Adapter):
+    #     return 32
+    # try:
+    #     from ultralytics import YOLO as _YOLO
+    #     if isinstance(model, _YOLO):
+    #         return 32
+    # except ImportError:
+    #     pass
+    # return 1
+    return 32 # Always return 32 to have more deterministic ROIs
 
 # ---------------------------------------------------------------------------
 # Tracker factory
@@ -219,6 +118,9 @@ def build_tracker(tracker_cfg: Dict[str, Any]):
     elif kind == "oracle_gt":
         p = tracker_cfg.get("oracle_gt", {})
         return OracleGtTracker(**p)
+    elif kind == "sort":
+        p = tracker_cfg.get("sort", {})
+        return SortTracker(**p)
     else:
         raise ValueError(f"Unknown tracker type: {kind!r}")
 
@@ -226,64 +128,114 @@ def build_tracker(tracker_cfg: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 # Model + dataset loading
 # ---------------------------------------------------------------------------
-def load_model_and_dataset(device, args):
-    """Load model and dataset from a training config path (args.config_path)."""
-    with open(args.config_path, 'r') as f:
-        try:
-            config = yaml.safe_load(f)
-        except yaml.YAMLError as exc:
-            print(exc)
-            raise
+def resolve_device(requested_device=None):
+    """Resolve a torch.device with safe CUDA/MPS fallbacks."""
+    if requested_device is None:
+        if torch.cuda.is_available():
+            return torch.device('cuda')
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return torch.device('mps')
+        return torch.device('cpu')
 
+    requested = str(requested_device)
+    if requested.startswith('cuda') and not torch.cuda.is_available():
+        print(f'Requested device {requested!r} is unavailable; falling back to CPU')
+        return torch.device('cpu')
+    if requested == 'mps' and not (hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()):
+        print('Requested device \'mps\' is unavailable; falling back to CPU')
+        return torch.device('cpu')
+    return torch.device(requested)
+
+
+def load_dataset(config, split: str = 'test', transform_name: Optional[str] = None):
+    """Load dataset from a parsed training config dict."""
     dataset_config = config['dataset_params']
     train_config   = config['train_params']
     dataset_name   = str(train_config['dataset'])
+    split = str(split)
+    transform_name = transform_name or dataset_config.get('transform_name')
 
     if dataset_name == 'vis-drone':
         dataset = VisDroneDataset(
-            'test',
-            im_sets=dataset_config['test_im_sets'],
+            split,
+            im_sets=dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets'],
             im_size=dataset_config['im_size'],
         )
     elif dataset_name == 'ytbb':
         dataset = YTBBDataset(
-            'test',
+            split,
             root_dir=dataset_config['root_dir'],
             im_size=dataset_config['im_size'],
         )
     elif dataset_name == 'voc':
         dataset = VOCDataset(
-            'test',
-            im_sets=dataset_config['test_im_sets'],
+            split,
+            im_sets=dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets'],
             im_size=dataset_config['im_size'],
-            transform_name=dataset_config['transform_name'],
+            transform_name=transform_name,
         )
     elif dataset_name in ('voc-vid', 'voc-video'):
         dataset = VOCVideoDataset(
-            'test',
-            im_sets=dataset_config['test_im_sets'],
+            split,
+            im_sets=dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets'],
             im_size=dataset_config['im_size'],
-            transform_name=dataset_config['transform_name'],
+            transform_name=transform_name,
         )
     elif dataset_name == 'voc-small-objects':
         dataset = VOCSmallObjectsDataset(
-            'test',
-            im_sets=dataset_config['test_im_sets'],
+            split,
+            im_sets=dataset_config['train_im_sets'] if split == 'train' else dataset_config['test_im_sets'],
             im_size=dataset_config['im_size'],
-            transform_name=dataset_config['transform_name'],
+            transform_name=transform_name,
+        )
+    elif dataset_name == 'imagenet-vid':
+        dataset = ImageNetVidDataset(
+            split=split,
+            train_data_root=dataset_config['train_data_root'],
+            train_ann_root=dataset_config['train_ann_root'],
+            test_data_root=dataset_config['test_data_root'],
+            test_ann_root=dataset_config['test_ann_root'],
+            im_size=dataset_config['im_size'],
+            transform_name=transform_name,
+            # task='demo',
+            filter_voc_overlap=should_filter_imagenet_vid_to_voc_overlap(train_config, dataset_config, dataset_name),
+        )
+    elif dataset_name == 'yolo-imagenet-vid':
+        dataset = YoloImageNetVidDataset(
+            split=split,
+            yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
+            im_size=dataset_config['im_size'],
+            transform_name=transform_name,
         )
     else:
         raise Exception(f'Unknown dataset name {dataset_name!r}')
 
-    data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    return dataset
+
+
+def load_model(
+    config,
+    dataset=None,
+    load_checkpoint: bool = True,
+    use_penalized_roissd: bool = False,
+    model_device: Optional[torch.device] = None,
+):
+    """Load model from a parsed training config dict."""
+    dataset_config = config['dataset_params']
+    train_config   = config['train_params']
+    dataset_name   = str(train_config['dataset'])
+    model_num_classes = get_model_num_classes(train_config, dataset_config, dataset_name)
 
     model_name = str(train_config['model'])
     if model_name == 'ssd':
-        model = SSD(config=config['model_params'], num_classes=dataset_config['num_classes'])
+        model = SSD(config=config['model_params'], num_classes=model_num_classes)
     elif model_name == 'ssd-original':
         model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     elif model_name == 'roissd':
-        model = RoiSSD(config=config['model_params'], num_classes=dataset_config['num_classes'])
+        base_model = RoiSSD(config=config['model_params'], num_classes=model_num_classes)
+        model = RoiSSDPenalized(base_model, penalty=0.05) if use_penalized_roissd else base_model
+    elif model_name == 'roissd-mobilenet':
+        model = RoiSSDMobileNet(config=config['model_params'], num_classes=model_num_classes)
     elif model_name == 'yolo':
         # yolo_weights = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
         # model = YoloV8Adapter(weights_path=yolo_weights, device=device)
@@ -293,39 +245,65 @@ def load_model_and_dataset(device, args):
             raise ImportError(
                 'YOLO inference requires ultralytics. Install with: pip install ultralytics'
             ) from e
-        weights_path = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
+        weights_path = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov26n.pt'))
         print('yolo weights path from config: {}'.format(weights_path))
         if not os.path.exists(weights_path):
             task_name = train_config.get('task_name', '')
             candidate = os.path.join('trained_models', task_name, weights_path)
             if os.path.exists(candidate):
                 weights_path = candidate
-        model = YoloV8Adapter(weights_path=weights_path, device=device, use_predict_api=True)
+        if model_device is not None:
+            yolo_device = resolve_device(model_device)
+        else:
+            yolo_device = resolve_device(train_config.get('device', 'cpu'))
+        model = YoloV8Adapter(weights_path=weights_path, device=yolo_device, use_predict_api=True)
+        print(f'Loaded YOLO model with weights: {weights_path}')
     else:
         raise Exception(f'Unknown model name {model_name!r}')
 
-    model.to(device=device)
-    model.eval()
-
     if model_name == 'ssd-original':
         print('Loaded SSD300_VGG16 pretrained weights from torchvision...')
-        return model, dataset, data_loader, config
+        return model
     if model_name == 'yolo':
-        print(f"Loaded YOLO weights: {train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))}")
-        return model, dataset, data_loader, config
+        if dataset is not None:
+            model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
+        return model
+
+    if not load_checkpoint:
+        return model
 
     model_task_path = os.path.join('trained_models', train_config['task_name'])
     ckpt_path = os.path.join(model_task_path, train_config['ckpt_name'])
     assert os.path.exists(ckpt_path), f'No checkpoint exists at {ckpt_path}'
     
-    print('Loading checkpoint...')
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    print(f'Loading checkpoint for model {model.__class__.__name__}...')
+    checkpoint = torch.load(ckpt_path, map_location='cpu')
     if isinstance(checkpoint, dict) and 'model' in checkpoint:
         model.load_state_dict(checkpoint['model'])
         print('Loaded model from full checkpoint format')
     else:
         model.load_state_dict(checkpoint)
         print('Loaded model only (old checkpoint format)')
+
+    if dataset is not None:
+        model = maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name)
+
+    return model
+
+
+def load_model_and_dataset(device, args, transform_name: Optional[str] = None):
+    """Load model and dataset from a training config path (args.config_path)."""
+    config = load_config(args.config_path)
+    if device is None:
+        cfg_device = config.get('benchmark_vid_params', {}).get('device')
+        device = resolve_device(cfg_device)
+    else:
+        device = resolve_device(device)
+    dataset = load_dataset(config, split='test', transform_name=transform_name)
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    model = load_model(config=config, dataset=dataset, load_checkpoint=True, model_device=device)
+    model.to(device=device)
+    model.eval()
 
     return model, dataset, data_loader, config
 
@@ -645,6 +623,7 @@ class FrameResult:
     dropped_tracker_detections: List[Dict[str, Any]] = field(default_factory=list)
     rois_used:         List[List[int]]        = field(default_factory=list)
     next_frame_rois:   List[List[int]]        = field(default_factory=list)
+    roi_latencies_s:   Dict[Tuple[int, int], List[float]] = field(default_factory=dict)  # (w, h) -> inference latency list (seconds)
     use_full_frame:    bool                   = True
     latency_s:         float                  = 0.0  # total inference + NMS + tracker update
     merge_latency_s:   float                  = 0.0  # ROI merge step only (0.0 for full-frame)
@@ -681,7 +660,7 @@ def process_frame(
     Returns a FrameResult with detections, ROI metadata, and timing.
     """
     if merge_fn is None:
-        merge_fn = MERGE_STRATEGIES["greedy"]
+        merge_fn = MERGE_STRATEGIES["none"]
     if roi_grid is None:
         roi_grid = _model_roi_grid(model)
 
@@ -695,8 +674,14 @@ def process_frame(
 
     t0 = time.perf_counter()
 
+    roi_latencies_s: Dict[Tuple[int, int], List[float]] = {}
     if use_full_frame:
-        _, model_batch_detections = run_model_inference(model, im_tensor.float().to(model_device))
+        td = time.perf_counter()
+        full_tensor = im_tensor.float().to(model_device)
+        _, model_batch_detections = run_model_inference(model, full_tensor)
+        full_latency_s = time.perf_counter() - td
+        full_h, full_w = int(full_tensor.shape[-2]), int(full_tensor.shape[-1])
+        roi_latencies_s.setdefault((full_w, full_h), []).append(full_latency_s)
         all_detections = tensor_to_detection_list(model_batch_detections[0], idx2label, frame_w, frame_h)
     else:
         # Merge ROIs, then run one inference pass per cluster
@@ -722,7 +707,18 @@ def process_frame(
             sx1, sy1, sx2, sy2 = snapped_roi
             rois_used.append(snapped_roi)
 
-            _, model_batch_detections = run_model_inference(model, crop_tensor.unsqueeze(0).to(model_device))
+            try:
+                td = time.perf_counter()
+                infer_tensor = crop_tensor.unsqueeze(0).to(model_device)
+                _, model_batch_detections = run_model_inference(model, infer_tensor)
+                infer_latency_s = time.perf_counter() - td
+                infer_h, infer_w = int(infer_tensor.shape[-2]), int(infer_tensor.shape[-1])
+                roi_latencies_s.setdefault((infer_w, infer_h), []).append(infer_latency_s)
+            except Exception as e:
+                print("im_tensor:", im_tensor.shape)
+                print("original_image_size:", (frame_h, frame_w))
+                print("roi_c:", roi_c)
+                raise RuntimeError("Error in model inference") from e
             all_detections.extend(
                 tensor_to_detection_list(
                     model_batch_detections[0], idx2label, sx2 - sx1, sy2 - sy1,
@@ -763,6 +759,7 @@ def process_frame(
         dropped_tracker_detections=dropped_tracker_detections,
         rois_used=rois_used,
         next_frame_rois=[r['roi'] for r in tracker_result['rois']],
+        roi_latencies_s=roi_latencies_s,
         use_full_frame=use_full_frame,
         latency_s=latency_s,
         merge_latency_s=merge_latency_s,

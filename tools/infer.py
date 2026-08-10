@@ -1,26 +1,22 @@
-from dataset.visdrone import VisDroneDataset
-from tools.voc.adapters.coco_to_voc_adapter import CocoToVocAdapter
 import torch
 import argparse
 import os
+import time
 import yaml
 import random
 import csv
+from typing import Any, Dict, List
 from tqdm import tqdm
-import torchvision
-from dataset.ytbb import YTBBDataset
-from model.roissd import RoiSSD
-from model.ssd import SSD
 import numpy as np
 import cv2
-from dataset.voc import VOCDataset
-from dataset.voc_small_objects import VOCSmallObjectsDataset
-from torch.utils.data.dataloader import DataLoader
+from model.model_adapters import DetectionLabelRemapAdapter, YoloV8Adapter
+from tools.helpers.pipeline import (
+    load_model_and_dataset as pipeline_load_model_and_dataset,
+    resolve_device,
+)
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-if torch.backends.mps.is_available():
-    device = torch.device('mps')
-    print('Using mps')
+device = resolve_device(None)
+print('Using device {}'.format(device))
 
 
 def get_iou(det, gt):
@@ -179,167 +175,22 @@ def compute_map(det_boxes, gt_boxes, iou_threshold=0.5, method='area', difficult
     return mean_ap, all_aps, mean_recall, all_recalls
 
 
-def resolve_optional_weights_path(train_config, key_name):
-    weights_path = str(train_config.get(key_name, '')).strip()
-    if not weights_path:
-        return None
-    if os.path.exists(weights_path):
-        return weights_path
-
-    task_name = str(train_config.get('task_name', '')).strip()
-    if task_name:
-        candidate = os.path.join('trained_models', task_name, weights_path)
-        if os.path.exists(candidate):
-            return candidate
-    return weights_path
-
-
-def build_fcos_model(num_classes):
-    return torchvision.models.detection.fcos_resnet50_fpn(
-        weights=None,
-        weights_backbone=torchvision.models.ResNet50_Weights.DEFAULT,
-        num_classes=num_classes,
-    )
-
-
-def build_fasterrcnn_model(num_classes):
-    return torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
-        weights=None,
-        weights_backbone=torchvision.models.MobileNet_V3_Large_Weights.DEFAULT,
-        num_classes=num_classes,
-        box_score_thresh=0.9,
-    )
-
-
 def load_model_and_dataset(args, transform_name=None):
-    # Read the config file #
-    with open(args.config_path, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-    ########################
-
-    dataset_config = config['dataset_params']
-    train_config = config['train_params']
-
-    if str(train_config['dataset']) == 'vis-drone':
-        dataset = VisDroneDataset('test',
-                     im_sets=dataset_config['test_im_sets'],
-                     im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'ytbb':
-        dataset = YTBBDataset('test',
-                     root_dir=dataset_config['root_dir'],
-                     im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'voc':
-        dataset = VOCDataset('test',
-                     im_sets=dataset_config['test_im_sets'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=transform_name)
-    elif str(train_config['dataset']) == 'voc-small-objects':
-        dataset = VOCSmallObjectsDataset('test',
-                     im_sets=dataset_config['test_im_sets'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
-    else:
-        raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
-    test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
-
-    model_name = str(train_config['model'])
-    if model_name == 'ssd':
-        model = SSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    elif model_name == 'roissd':
-        model = RoiSSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    elif model_name == 'fcos':
-        model = build_fcos_model(num_classes=dataset_config['num_classes'])
-    elif model_name == 'fasterrcnn':
-        base_model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
-            weights=torchvision.models.detection.FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT,
-            box_score_thresh=0.9,
-        )
-        model = CocoToVocAdapter(
-            base_model=base_model,
-            voc_label2idx=dataset.label2idx,
-            conf_threshold=train_config.get('infer_conf_threshold', 0.05),
-            normalize_boxes=True,
-        )
-    elif model_name == 'yolo':
-        try:
-            from ultralytics import YOLO
-        except ImportError as e:
-            raise ImportError(
-                'YOLO inference requires ultralytics. Install with: pip install ultralytics'
-            ) from e
-        weights_path = train_config.get('yolo_weights', train_config.get('ckpt_name', 'yolov8n.pt'))
-        print('yolo weights path from config: {}'.format(weights_path))
-        if not os.path.exists(weights_path):
-            task_name = train_config.get('task_name', '')
-            candidate = os.path.join('trained_models', task_name, weights_path)
-            if os.path.exists(candidate):
-                weights_path = candidate
-        model = YOLO(weights_path)
-    else:
-        raise Exception('Unknown model name {}'.format(train_config['model']))
-   
-    model.to(device=torch.device(device))
-    model.eval()
-
-    if model_name == 'yolo':
-        return model, dataset, test_dataset_loader, config
-    
-    if model_name == 'fcos' and hasattr(model, 'score_thresh'):
-        model.score_thresh = float(train_config.get('infer_conf_threshold', 0.05))
-
-    model_task_path = os.path.join('trained_models', train_config['task_name'])
-    model_checkpoint_path = os.path.join(model_task_path, train_config['ckpt_name'])
-    if model_name in ('fcos', 'fasterrcnn') and not os.path.exists(model_checkpoint_path):
-        custom_weights_path = resolve_optional_weights_path(train_config, 'ckpt_name')
-        print('custom_weights_path', custom_weights_path)
-        if custom_weights_path and os.path.exists(custom_weights_path):
-            model_checkpoint_path = custom_weights_path
-    # assert os.path.exists(model_checkpoint_path), \
-    #     "No checkpoint exists at {}".format(model_checkpoint_path)
-    print('Model checkpoint path resolved to {}'.format(model_checkpoint_path))
-    # Load checkpoint if it exists (after creating optimizer and scheduler)
-    if os.path.exists(model_checkpoint_path):
-        print('Loading checkpoint as one exists')
-        checkpoint = torch.load(
-            model_checkpoint_path,
-            map_location=device)
-
-        state_dict = checkpoint['model'] if isinstance(checkpoint, dict) and 'model' in checkpoint else checkpoint
-        
-        # Handle both old format (state_dict only) and new format (full checkpoint)
-        if model_name == 'fasterrcnn' and hasattr(model, 'base_model'):
-            try:
-                model.load_state_dict(state_dict)
-                print('Loaded adapter checkpoint format')
-            except RuntimeError:
-                if isinstance(state_dict, dict) and any(k.startswith('base_model.') for k in state_dict.keys()):
-                    stripped_state_dict = {
-                        k[len('base_model.'):]: v
-                        for k, v in state_dict.items()
-                        if k.startswith('base_model.')
-                    }
-                    model.base_model.load_state_dict(stripped_state_dict)
-                else:
-                    model.base_model.load_state_dict(state_dict)
-                print('Loaded base Faster R-CNN checkpoint into adapter')
-        elif isinstance(checkpoint, dict) and 'model' in checkpoint:
-            model.load_state_dict(state_dict)
-            print('Restored optimizer and scheduler state')
-        else:
-            # Old format - just model state_dict
-            model.load_state_dict(state_dict)
-            print('Loaded model only (old checkpoint format)')
-
+    model, dataset, test_dataset_loader, config = pipeline_load_model_and_dataset(
+        device=device,
+        args=args,
+        transform_name=transform_name,
+    )
+    if hasattr(model, 'low_score_threshold'):
+        model.low_score_threshold = float(config['train_params'].get('infer_conf_threshold', 0.05))
     return model, dataset, test_dataset_loader, config
 
 
 def run_detector(model, im_tensor, target, model_name='ssd', conf_threshold=None):
     if model_name == 'yolo':
+        if isinstance(model, (YoloV8Adapter, DetectionLabelRemapAdapter)):
+            _, detections = model(im_tensor)
+            return detections
         predict_kwargs = {'source': im_tensor, 'verbose': False}
         if conf_threshold is not None:
             predict_kwargs['conf'] = float(conf_threshold)
@@ -366,26 +217,6 @@ def run_detector(model, im_tensor, target, model_name='ssd', conf_threshold=None
             })
         return detections
 
-    if model_name == 'fcos':
-        detections = model([im_tensor.squeeze(0)])
-        _, _, h, w = im_tensor.shape
-        normalized_detections = []
-        for detection in detections:
-            boxes_xyxy = detection['boxes'].to(im_tensor.device).float()
-            boxes_norm = boxes_xyxy.clone()
-            if len(boxes_norm) > 0:
-                boxes_norm[:, [0, 2]] /= float(w)
-                boxes_norm[:, [1, 3]] /= float(h)
-            normalized_detections.append({
-                'boxes': boxes_norm,
-                'labels': detection['labels'].to(im_tensor.device).long(),
-                'scores': detection['scores'].to(im_tensor.device).float(),
-            })
-        return normalized_detections
-
-    if model_name == 'fasterrcnn':
-        return model([im_tensor.squeeze(0)])
-
     try:
         _, detections = model(im_tensor, [target])
     except Exception:
@@ -394,6 +225,54 @@ def run_detector(model, im_tensor, target, model_name='ssd', conf_threshold=None
         except Exception:
             _, detections = model(im_tensor)
     return detections
+
+
+def append_model_results_csv(
+    model_task_path,
+    config,
+    evaluated_dataset,
+    mean_ap,
+    mean_recall,
+    mean_latency_ms,
+    mean_fps,
+    output_csv_name='results.csv',
+):
+    """Append one validation summary row to a model-level summary CSV file."""
+    if not os.path.exists(model_task_path):
+        os.makedirs(model_task_path, exist_ok=True)
+
+    results_csv_path = os.path.join(model_task_path, output_csv_name)
+    file_exists = os.path.exists(results_csv_path)
+
+    train_cfg = config.get('train_params', {})
+    row = {
+        'task_name': str(train_cfg.get('task_name', '')),
+        'model': str(train_cfg.get('model', '')),
+        'dataset': str(train_cfg.get('dataset', '')),
+        'ckpt_name': str(train_cfg.get('ckpt_name', '')),
+        'evaluated_dataset': str(evaluated_dataset),
+        'mAP': float(mean_ap),
+        'mean_detector_recall': float(mean_recall),
+        'mean_latency_ms': float(mean_latency_ms),
+        'mean_fps': float(mean_fps),
+    }
+    fieldnames = [
+        'task_name',
+        'model',
+        'dataset',
+        'ckpt_name',
+        'evaluated_dataset',
+        'mAP',
+        'mean_detector_recall',
+        'mean_latency_ms',
+        'mean_fps',
+    ]
+
+    with open(results_csv_path, 'a', newline='', encoding='utf-8') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def infer(args):
@@ -405,8 +284,6 @@ def infer(args):
         cfg_preview = yaml.safe_load(file)
     model_name = str(cfg_preview['train_params']['model'])
     transform_name = cfg_preview['dataset_params'].get('transform_name', 'ssd')
-    if model_name == 'yolo':
-        transform_name = 'fixed_padding_roi_crop_yolo_0'
 
     model, dataset_dataset, test_dataset_loader, config = load_model_and_dataset(args, transform_name)
     conf_threshold = config['train_params'].get('infer_conf_threshold', None)
@@ -489,142 +366,217 @@ def infer(args):
     print('Done Detecting...')
 
 
-def evaluate_map(args):
+def _evaluate_single_transform(
+    args,
+    *,
+    transform_name: str,
+    evaluated_dataset: str,
+    model_name: str,
+    yolo_debug_suffix: str = '',
+    summary_csv_name: str = 'results.csv',
+) -> Dict[str, Any]:
+    is_yolo = model_name == 'yolo'
+
+    # Only fixed-padding YOLO transform emits debug artifacts.
+    debug_enabled = is_yolo and transform_name.startswith('fixed_padding_roi_crop_yolo_')
+    if debug_enabled:
+        with open(args.config_path, 'r') as file:
+            cfg_preview = yaml.safe_load(file)
+        task_name = str(cfg_preview.get('train_params', {}).get('task_name', ''))
+        if args.results_path:
+            preview_run_results_path = os.path.join(args.results_path, evaluated_dataset + '_results')
+        else:
+            preview_run_results_path = os.path.join('trained_models', task_name, evaluated_dataset + '_results')
+
+        debug_root = os.path.join(preview_run_results_path, 'samples', 'yolo_transform_debug')
+        pad_debug_dir = os.path.join(debug_root, yolo_debug_suffix or evaluated_dataset)
+        os.environ['YOLO_ROI_DEBUG_DIR'] = pad_debug_dir
+        os.environ.setdefault('YOLO_ROI_DEBUG_MAX', '3')
+    else:
+        os.environ.pop('YOLO_ROI_DEBUG_DIR', None)
+
+    model, voc, test_dataset, config = load_model_and_dataset(args, transform_name=transform_name)
+    model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
+
+    print('Results will be appended to {}'.format(summary_csv_name))
+
+    gts = []
+    preds = []
+    difficults = []
+    latencies_s: List[float] = []
+    for im_tensor, target, fname in tqdm(test_dataset):
+        im_tensor = im_tensor.float().to(device)
+        target_bboxes = target['bboxes'].float()[0].to(device)
+        target_labels = target['labels'].long()[0].to(device)
+        difficult = target['difficult'].long()[0].to(device)
+        conf_threshold = config['train_params'].get('infer_conf_threshold', None)
+        t0 = time.perf_counter()
+        ssd_detections = run_detector(
+            model,
+            im_tensor,
+            target,
+            model_name=model_name,
+            conf_threshold=conf_threshold,
+        )
+        latencies_s.append(time.perf_counter() - t0)
+
+        boxes = ssd_detections[0]['boxes']
+        labels = ssd_detections[0]['labels']
+        scores = ssd_detections[0]['scores']
+
+        pred_boxes = {}
+        gt_boxes = {}
+        difficult_boxes = {}
+
+        for label_name in voc.label2idx:
+            pred_boxes[label_name] = []
+            gt_boxes[label_name] = []
+            difficult_boxes[label_name] = []
+
+        for idx, box in enumerate(boxes):
+            x1, y1, x2, y2 = box.detach().cpu().numpy()
+            label = labels[idx].detach().cpu().item()
+            score = scores[idx].detach().cpu().item()
+            label_name = voc.idx2label[label]
+            pred_boxes[label_name].append([x1, y1, x2, y2, score])
+        for idx, box in enumerate(target_bboxes):
+            x1, y1, x2, y2 = box.detach().cpu().numpy()
+            label = target_labels[idx].detach().cpu().item()
+            label_name = voc.idx2label[label]
+            gt_boxes[label_name].append([x1, y1, x2, y2])
+            difficult_boxes[label_name].append(difficult[idx].detach().cpu().item())
+
+        gts.append(gt_boxes)
+        preds.append(pred_boxes)
+        difficults.append(difficult_boxes)
+
+    mean_ap, all_aps, mean_recall, all_recalls = compute_map(preds, gts, method='area', difficult=difficults)
+    mean_latency_s = float(np.mean(latencies_s)) if latencies_s else float('nan')
+    mean_latency_ms = mean_latency_s * 1000.0 if not np.isnan(mean_latency_s) else float('nan')
+    mean_fps = (1.0 / mean_latency_s) if (latencies_s and mean_latency_s > 0.0) else float('nan')
+
+    print('Class Wise Average Precisions and Detector Recall')
+    for idx in range(len(voc.idx2label)):
+        lbl = voc.idx2label[idx]
+        print('AP for class {} = {:.4f}  |  detector_recall = {:.4f}'.format(
+            lbl, all_aps[lbl], all_recalls[lbl]))
+    print('Mean Average Precision : {:.4f}'.format(mean_ap))
+    print('Mean Detector Recall   : {:.4f}'.format(mean_recall))
+    print('Mean Latency (ms)      : {:.4f}'.format(mean_latency_ms))
+    print('Mean FPS               : {:.4f}'.format(mean_fps))
+
+    append_model_results_csv(
+        model_task_path=model_task_path,
+        config=config,
+        evaluated_dataset=evaluated_dataset,
+        mean_ap=mean_ap,
+        mean_recall=mean_recall,
+        mean_latency_ms=mean_latency_ms,
+        mean_fps=mean_fps,
+        output_csv_name=summary_csv_name,
+    )
+    print('Appended summary to {}'.format(os.path.join(model_task_path, summary_csv_name)))
+
+    if debug_enabled:
+        os.environ.pop('YOLO_ROI_DEBUG_DIR', None)
+
+    return {
+        'evaluated_dataset': evaluated_dataset,
+        'transform_name': transform_name,
+        'mAP': float(mean_ap),
+        'mean_detector_recall': float(mean_recall),
+        'mean_latency_ms': float(mean_latency_ms),
+        'mean_fps': float(mean_fps),
+        'results_path': summary_csv_name,
+    }
+
+
+def evaluate_map_default(args) -> Dict[str, Any]:
+    with open(args.config_path, 'r') as file:
+        cfg_preview = yaml.safe_load(file)
+    model_name = str(cfg_preview['train_params']['model'])
+    transform_name = str(cfg_preview['dataset_params'].get('transform_name', 'ssd'))
+    run = _evaluate_single_transform(
+        args,
+        transform_name=transform_name,
+        evaluated_dataset=transform_name,
+        model_name=model_name,
+    )
+    return {'mode': 'default', 'runs': [run]}
+
+
+def evaluate_map_pad_loop(args) -> Dict[str, Any]:
     with open(args.config_path, 'r') as file:
         cfg_preview = yaml.safe_load(file)
     model_name = str(cfg_preview['train_params']['model'])
     is_yolo = model_name == 'yolo'
 
+    runs: List[Dict[str, Any]] = []
     for pad in range(0, 201, 10):
         print('Evaluating mAP with padding {}...'.format(pad))
         if is_yolo:
             transform_name = 'fixed_padding_roi_crop_yolo_{}'.format(pad)
         else:
             transform_name = 'fixed_padding_roi_crop_{}'.format(pad)
+        runs.append(_evaluate_single_transform(
+            args,
+            transform_name=transform_name,
+            evaluated_dataset=transform_name,
+            model_name=model_name,
+            yolo_debug_suffix='pad_{}'.format(pad),
+        ))
+    return {'mode': 'pad-loop', 'runs': runs}
 
-        model, voc, test_dataset, config = load_model_and_dataset(args, transform_name=transform_name)
-        model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
-        args.results_path = os.path.join(model_task_path, transform_name + '_results')
 
-        if is_yolo:
-            debug_root = os.path.join(args.results_path, 'samples', 'yolo_transform_debug')
-            pad_debug_dir = os.path.join(debug_root, 'pad_{}'.format(pad))
-            os.makedirs(pad_debug_dir, exist_ok=True)
-            os.environ['YOLO_ROI_DEBUG_DIR'] = pad_debug_dir
-            os.environ.setdefault('YOLO_ROI_DEBUG_MAX', '3')
+def evaluate_map_fixed_size_loop(args) -> Dict[str, Any]:
+    with open(args.config_path, 'r') as file:
+        cfg_preview = yaml.safe_load(file)
+    model_name = str(cfg_preview['train_params']['model'])
+    is_yolo = model_name == 'yolo'
 
-        print('Results will be saved to {}'.format(args.results_path))
-
-        gts = []
-        preds = []
-        difficults = []
-        for im_tensor, target, fname in tqdm(test_dataset):
-            im_tensor = im_tensor.float().to(device)
-            target_bboxes = target['bboxes'].float()[0].to(device)
-            target_labels = target['labels'].long()[0].to(device)
-            difficult = target['difficult'].long()[0].to(device)
-            conf_threshold = config['train_params'].get('infer_conf_threshold', None)
-            ssd_detections = run_detector(
-                model,
-                im_tensor,
-                target,
+    runs: List[Dict[str, Any]] = []
+    for h in range(32, 321, 32):
+        for w in range(32, 321, 32):
+            print('Evaluating mAP with fixed size {}x{}...'.format(h, w))
+            if is_yolo:
+                transform_name = 'fixed_size_yolo_{}x{}'.format(h, w)
+            else:
+                transform_name = 'fixed_size_{}x{}'.format(h, w)
+            runs.append(_evaluate_single_transform(
+                args,
+                transform_name=transform_name,
+                evaluated_dataset=transform_name,
                 model_name=model_name,
-                conf_threshold=conf_threshold,
-            )
+                yolo_debug_suffix='size_{}x{}'.format(h, w),
+                summary_csv_name='fixed_size_results.csv',
+            ))
+    return {'mode': 'fixed-size-loop', 'runs': runs}
 
-            boxes = ssd_detections[0]['boxes']
-            labels = ssd_detections[0]['labels']
-            scores = ssd_detections[0]['scores']
 
-            pred_boxes = {}
-            gt_boxes = {}
-            difficult_boxes = {}
-
-            for label_name in voc.label2idx:
-                pred_boxes[label_name] = []
-                gt_boxes[label_name] = []
-                difficult_boxes[label_name] = []
-
-            for idx, box in enumerate(boxes):
-                x1, y1, x2, y2 = box.detach().cpu().numpy()
-                label = labels[idx].detach().cpu().item()
-                score = scores[idx].detach().cpu().item()
-                label_name = voc.idx2label[label]
-                pred_boxes[label_name].append([x1, y1, x2, y2, score])
-            for idx, box in enumerate(target_bboxes):
-                x1, y1, x2, y2 = box.detach().cpu().numpy()
-                label = target_labels[idx].detach().cpu().item()
-                label_name = voc.idx2label[label]
-                gt_boxes[label_name].append([x1, y1, x2, y2])
-                difficult_boxes[label_name].append(difficult[idx].detach().cpu().item())
-
-            gts.append(gt_boxes)
-            preds.append(pred_boxes)
-            difficults.append(difficult_boxes)
-        mean_ap, all_aps, mean_recall, all_recalls = compute_map(preds, gts, method='area', difficult=difficults)
-        print('Class Wise Average Precisions and Detector Recall')
-        for idx in range(len(voc.idx2label)):
-            lbl = voc.idx2label[idx]
-            print('AP for class {} = {:.4f}  |  detector_recall = {:.4f}'.format(
-                lbl, all_aps[lbl], all_recalls[lbl]))
-        print('Mean Average Precision : {:.4f}'.format(mean_ap))
-        print('Mean Detector Recall   : {:.4f}'.format(mean_recall))
-
-        model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
-        # Write results to map.txt
-        
-        if args.results_path:
-            map_file_path = os.path.join(args.results_path, 'mAp.txt')
-            if not os.path.exists(args.results_path):
-                os.makedirs(args.results_path, exist_ok=True)
-            with open(map_file_path, 'w') as f:
-                f.write('Class Wise Average Precisions and Detector Recall\n')
-                f.write('=' * 50 + '\n')
-                for idx in range(len(voc.idx2label)):
-                    lbl = voc.idx2label[idx]
-                    f.write('AP for class {} = {:.4f}  |  detector_recall = {:.4f}\n'.format(
-                        lbl, all_aps[lbl], all_recalls[lbl]))
-                f.write('=' * 50 + '\n')
-                f.write('Mean Average Precision : {:.4f}\n'.format(mean_ap))
-                f.write('Mean Detector Recall   : {:.4f}\n'.format(mean_recall))
-            
-            print(f'Results saved to {map_file_path}')
-            
-            # Save results to CSV file
-            csv_file_path = os.path.join(args.results_path, 'mAp.csv')
-            with open(csv_file_path, 'w', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                
-                # Header row: class names + mAP + detector_recall columns
-                header = ([voc.idx2label[idx] for idx in range(len(voc.idx2label))] + ['mAP']
-                        + ['detector_recall_' + voc.idx2label[idx] for idx in range(len(voc.idx2label))]
-                        + ['mean_detector_recall'])
-                writer.writerow(header)
-                
-                # Data row: AP values + mean AP + recall values + mean recall
-                data = ([all_aps[voc.idx2label[idx]] for idx in range(len(voc.idx2label))] + [mean_ap]
-                        + [all_recalls[voc.idx2label[idx]] for idx in range(len(voc.idx2label))]
-                        + [mean_recall])
-                writer.writerow(data)
-            
-            print(f'Results saved to {csv_file_path}')
-        else:
-            print('No results path provided, skipping saving mAP results to file.')
-
-        if is_yolo:
-            os.environ.pop('YOLO_ROI_DEBUG_DIR', None)
+def evaluate_map(args) -> Dict[str, Any]:
+    eval_mode = str(getattr(args, 'eval_mode', 'default')).strip().lower()
+    if eval_mode == 'default':
+        return evaluate_map_default(args)
+    if eval_mode == 'pad-loop':
+        return evaluate_map_pad_loop(args)
+    if eval_mode == 'fixed-size-loop':
+        return evaluate_map_fixed_size_loop(args)
+    raise ValueError('Unknown eval mode: {}. Expected default|pad-loop|fixed-size-loop'.format(eval_mode))
 
 def infer_and_evaluate(args):
+    output: Dict[str, Any] = {'inference_ran': False, 'evaluation': None}
     with torch.no_grad():
         if args.infer_samples:
             infer(args)
+            output['inference_ran'] = True
         else:
             print('Not Inferring for samples as `infer_samples` argument is False')
 
         if args.evaluate:
-            evaluate_map(args)
+            output['evaluation'] = evaluate_map(args)
         else:
             print('Not Evaluating as `evaluate` argument is False')
+    return output
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Arguments for ssd inference')
@@ -632,10 +584,12 @@ if __name__ == '__main__':
                         default='config/voc.yaml', type=str)
     parser.add_argument('--evaluate', dest='evaluate',
                         default=True, type=bool)
-    parser.add_argument('--infer_samples', dest='infer_samples',
+    parser.add_argument('--infer-samples', dest='infer_samples',
                         default=True, type=bool)
     parser.add_argument('--results-path', dest='results_path',
                         default=None, type=str)
+    parser.add_argument('--eval-mode', dest='eval_mode', choices=['default', 'pad-loop', 'fixed-size-loop'],
+                        default='default', type=str)
     args = parser.parse_args()
 
     infer_and_evaluate(args)

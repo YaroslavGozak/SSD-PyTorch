@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.5747  |  detector_recall = 0.5787
+AP for class antelope = 0.6997  |  detector_recall = 0.6997
+AP for class bear = 0.7343  |  detector_recall = 0.7364
+AP for class bicycle = 0.4272  |  detector_recall = 0.4470
+AP for class bird = 0.4234  |  detector_recall = 0.4347
+AP for class bus = 0.5624  |  detector_recall = 0.5905
+AP for class car = 0.5050  |  detector_recall = 0.5123
+AP for class cattle = 0.7725  |  detector_recall = 0.7725
+AP for class dog = 0.6832  |  detector_recall = 0.6911
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.6309  |  detector_recall = 0.6395
+AP for class fox = 0.7765  |  detector_recall = 0.7765
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.8187  |  detector_recall = 0.8187
+AP for class horse = 0.6434  |  detector_recall = 0.6438
+AP for class lion = 0.6291  |  detector_recall = 0.6556
+AP for class lizard = 0.3608  |  detector_recall = 0.4000
+AP for class monkey = 0.3464  |  detector_recall = 0.3480
+AP for class motorcycle = 0.8156  |  detector_recall = 0.8160
+AP for class rabbit = 0.5806  |  detector_recall = 0.5923
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.6228  |  detector_recall = 0.6250
+AP for class snake = 0.7408  |  detector_recall = 0.8302
+AP for class squirrel = 0.4718  |  detector_recall = 0.4947
+AP for class tiger = 0.7751  |  detector_recall = 0.8000
+AP for class train = 0.7115  |  detector_recall = 0.7130
+AP for class turtle = 0.6571  |  detector_recall = 0.6600
+AP for class watercraft = 0.6992  |  detector_recall = 0.7000
+AP for class whale = 0.2978  |  detector_recall = 0.3185
+AP for class zebra = 0.8283  |  detector_recall = 0.8286
+==================================================
+Mean Average Precision : 0.6218
+Mean Detector Recall   : 0.6342

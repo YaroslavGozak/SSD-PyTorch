@@ -1,0 +1,25 @@
+# Video Sequence Benchmark configuration — YOLO (Lane B)
+# Uses 320x320 input (nearest multiple-of-32 above 300) and model_input_size: [320, 320]
+# so that tracker padding scales and ROI snap targets match the YOLO input resolution.
+
+extends: "benchmark-vid-base.yaml"
+train_config_path: "config/raspberry/imagenet-vid-yolo.yaml"
+
+benchmark_vid_params:
+
+  tracker:
+
+    kalman:
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input
+
+    static_padding:
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input
+
+    relative_padding:
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input
+
+    oracle_gt:
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input
+
+    sort:
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input

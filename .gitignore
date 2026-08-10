@@ -15,6 +15,13 @@ __pycache__
 
 # Ignore checkpoints
 *.pth
+*.pt
 
 # Ignore pickle files
 *.pkl
+
+# Ignore PDF files
+*.pdf
+
+# Venv
+.venv/

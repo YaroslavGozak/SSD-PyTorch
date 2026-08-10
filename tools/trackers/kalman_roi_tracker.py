@@ -166,6 +166,13 @@ class KalmanRoiTracker:
 
         self.tracks = [t for t in self.tracks if t.misses <= self.max_misses]
 
+        # Drop tracks whose predicted boxes are completely outside the frame.
+        # Such tracks often create degenerate border ROIs after clipping.
+        self.tracks = [
+            t for t in self.tracks
+            if not self._is_bbox_outside_frame(self._state_to_bbox(t.x), frame_w, frame_h)
+        ]
+
         rois = []
         for track in self.tracks:
             roi = self._build_roi(track, frame_w, frame_h)
@@ -237,7 +244,8 @@ class KalmanRoiTracker:
 
         if conf < self.conf_low:
             track.age += 1
-            track.misses += 1
+            track.misses += 0.5  # Penalize low-confidence matches, but not as harshly as a complete miss
+            track.last_confidence = conf
             return
 
         R = self._get_adaptive_R(conf)
@@ -245,11 +253,20 @@ class KalmanRoiTracker:
 
         y = z - self.H @ track.x
         S = self.H @ track.P @ self.H.T + R
+        # Kalman gain
         K = track.P @ self.H.T @ np.linalg.inv(S)
+        # numerically stable version of K = track.P @ self.H.T @ np.linalg.inv(S)
+        K = np.linalg.solve(S.T, (track.P @ self.H.T).T).T
 
         track.x = track.x + K @ y
         I = np.eye(track.P.shape[0])
-        track.P = (I - K @ self.H) @ track.P
+        # Standart update of P
+        # track.P = (I - K @ self.H) @ track.P
+
+        # Numerically more stable update of P, ensuring symmetry
+        I = np.eye(track.P.shape[0])
+        track.P = (I - K @ self.H) @ track.P @ (I - K @ self.H).T + K @ R @ K.T
+        track.P = 0.5 * (track.P + track.P.T)
 
         track.cls = det["class"]
         track.age += 1
@@ -285,70 +302,20 @@ class KalmanRoiTracker:
         self.tracks.append(track)
         self.next_track_id += 1
 
-    def _match_tracks_and_detections(
-        self,
-        tracks: List[Track],
-        detections: List[Dict[str, Any]],
-    ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
-        """
-        Classic greedy matching based on IoU cost, with class consistency and IoU thresholding.
-         - More efficient than Hungarian for typical small numbers of tracks/detections.
-        """
-
-        if not tracks or not detections:
-            return [], list(range(len(tracks))), list(range(len(detections)))
-
-        candidate_pairs = []
-
-        for ti, track in enumerate(tracks):
-            track_bbox = self._state_to_bbox(track.x)
-
-            for di, det in enumerate(detections):
-                if track.cls != det["class"]:
-                    continue
-
-                iou = self._iou(track_bbox, det["bbox"])
-                if iou < self.iou_match_threshold:
-                    continue
-
-                cost = 1.0 - iou
-                candidate_pairs.append((cost, ti, di))
-
-        candidate_pairs.sort(key=lambda x: x[0])
-
-        matched_tracks = set()
-        matched_detections = set()
-        matches = []
-
-        for cost, ti, di in candidate_pairs:
-            if ti in matched_tracks or di in matched_detections:
-                continue
-            matches.append((ti, di))
-            matched_tracks.add(ti)
-            matched_detections.add(di)
-
-        unmatched_tracks = [i for i in range(len(tracks)) if i not in matched_tracks]
-        unmatched_detections = [i for i in range(len(detections)) if i not in matched_detections]
-
-        return matches, unmatched_tracks, unmatched_detections
-
     # def _match_tracks_and_detections(
     #     self,
     #     tracks: List[Track],
     #     detections: List[Dict[str, Any]],
     # ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
     #     """
-    #     Uses Hungarian algorithm for optimal assignment based on IoU cost.
-    #      - Only considers pairs with matching class and IoU above threshold.
+    #     Classic greedy matching based on IoU cost, with class consistency and IoU thresholding.
+    #      - More efficient than Hungarian for typical small numbers of tracks/detections.
     #     """
 
     #     if not tracks or not detections:
     #         return [], list(range(len(tracks))), list(range(len(detections)))
 
-    #     num_tracks = len(tracks)
-    #     num_dets = len(detections)
-
-    #     cost_matrix = np.full((num_tracks, num_dets), self.invalid_match_cost, dtype=float)
+    #     candidate_pairs = []
 
     #     for ti, track in enumerate(tracks):
     #         track_bbox = self._state_to_bbox(track.x)
@@ -361,26 +328,76 @@ class KalmanRoiTracker:
     #             if iou < self.iou_match_threshold:
     #                 continue
 
-    #             cost_matrix[ti, di] = 1.0 - iou
+    #             cost = 1.0 - iou
+    #             candidate_pairs.append((cost, ti, di))
 
-    #     row_ind, col_ind = linear_sum_assignment(cost_matrix)
+    #     candidate_pairs.sort(key=lambda x: x[0])
 
-    #     matches = []
     #     matched_tracks = set()
     #     matched_detections = set()
+    #     matches = []
 
-    #     for ti, di in zip(row_ind, col_ind):
-    #         if cost_matrix[ti, di] >= self.invalid_match_cost:
+    #     for cost, ti, di in candidate_pairs:
+    #         if ti in matched_tracks or di in matched_detections:
     #             continue
-
     #         matches.append((ti, di))
     #         matched_tracks.add(ti)
     #         matched_detections.add(di)
 
-    #     unmatched_tracks = [i for i in range(num_tracks) if i not in matched_tracks]
-    #     unmatched_detections = [i for i in range(num_dets) if i not in matched_detections]
+    #     unmatched_tracks = [i for i in range(len(tracks)) if i not in matched_tracks]
+    #     unmatched_detections = [i for i in range(len(detections)) if i not in matched_detections]
 
     #     return matches, unmatched_tracks, unmatched_detections
+
+    def _match_tracks_and_detections(
+        self,
+        tracks: List[Track],
+        detections: List[Dict[str, Any]],
+    ) -> Tuple[List[Tuple[int, int]], List[int], List[int]]:
+        """
+        Uses Hungarian algorithm for optimal assignment based on IoU cost.
+         - Only considers pairs with matching class and IoU above threshold.
+        """
+
+        if not tracks or not detections:
+            return [], list(range(len(tracks))), list(range(len(detections)))
+
+        num_tracks = len(tracks)
+        num_dets = len(detections)
+
+        cost_matrix = np.full((num_tracks, num_dets), self.invalid_match_cost, dtype=float)
+
+        for ti, track in enumerate(tracks):
+            track_bbox = self._state_to_bbox(track.x)
+
+            for di, det in enumerate(detections):
+                if track.cls != det["class"]:
+                    continue
+
+                iou = self._iou(track_bbox, det["bbox"])
+                if iou < self.iou_match_threshold:
+                    continue
+
+                cost_matrix[ti, di] = 1.0 - iou
+
+        row_ind, col_ind = linear_sum_assignment(cost_matrix)
+
+        matches = []
+        matched_tracks = set()
+        matched_detections = set()
+
+        for ti, di in zip(row_ind, col_ind):
+            if cost_matrix[ti, di] >= self.invalid_match_cost:
+                continue
+
+            matches.append((ti, di))
+            matched_tracks.add(ti)
+            matched_detections.add(di)
+
+        unmatched_tracks = [i for i in range(num_tracks) if i not in matched_tracks]
+        unmatched_detections = [i for i in range(num_dets) if i not in matched_detections]
+
+        return matches, unmatched_tracks, unmatched_detections
 
     # def _match_tracks_and_detections(
     #     self,
@@ -456,6 +473,21 @@ class KalmanRoiTracker:
         d2 = float(y.T @ S_inv @ y)
         return d2
 
+    @staticmethod
+    def _is_bbox_outside_frame(
+        bbox: List[float],
+        frame_w: int,
+        frame_h: int,
+        margin: float = 8.0,
+    ) -> bool:
+        x1, y1, x2, y2 = bbox
+        return (
+            x2 < -margin
+            or y2 < -margin
+            or x1 > (frame_w - 1 + margin)
+            or y1 > (frame_h - 1 + margin)
+        )
+
     def _build_roi(self, track: Track, frame_w: int, frame_h: int) -> List[int]:
         cx, cy, w, h = track.x[0], track.x[1], track.x[2], track.x[3]
 
@@ -483,10 +515,10 @@ class KalmanRoiTracker:
             self.uncertainty_scale_pos * sigma_cy + self.uncertainty_scale_size * sigma_h + conf_term_y
         )
 
-        x1 = cx - w / 2.0 - pad_x
-        y1 = cy - h / 2.0 - pad_y
-        x2 = cx + w / 2.0 + pad_x
-        y2 = cy + h / 2.0 + pad_y
+        x1 = cx - (w / 2.0) - pad_x
+        y1 = cy - (h / 2.0) - pad_y
+        x2 = cx + (w / 2.0) + pad_x
+        y2 = cy + (h / 2.0) + pad_y
 
         x1 = int(max(0, math.floor(x1)))
         y1 = int(max(0, math.floor(y1)))
@@ -494,9 +526,39 @@ class KalmanRoiTracker:
         y2 = int(min(frame_h - 1, math.ceil(y2)))
 
         if x2 <= x1:
+            print(
+                "[KalmanRoiTracker::_build_roi] invalid X1 X2 \n"
+                f"x1={x1} x2={x2} frame_shape=({frame_h}, {frame_w}) \n")
             x2 = min(frame_w - 1, x1 + 1)
         if y2 <= y1:
             y2 = min(frame_h - 1, y1 + 1)
+
+        # Keep ROI at least 2 px wide/high when frame dimensions allow it.
+        min_roi_w = 2
+        min_roi_h = 2
+        if frame_w >= min_roi_w and (x2 - x1) < min_roi_w:
+            cx_i = int(round((x1 + x2) / 2.0))
+            x1 = max(0, min(frame_w - min_roi_w, cx_i - min_roi_w // 2))
+            x2 = x1 + min_roi_w
+        if frame_h >= min_roi_h and (y2 - y1) < min_roi_h:
+            cy_i = int(round((y1 + y2) / 2.0))
+            y1 = max(0, min(frame_h - min_roi_h, cy_i - min_roi_h // 2))
+            y2 = y1 + min_roi_h
+
+        roi_w = x2 - x1
+        roi_h = y2 - y1
+        if roi_w < 2 or roi_h < 2:
+            print(
+                "[KalmanRoiTracker::_build_roi] thin ROI \n"
+                f"track_id={track.track_id} frame_shape=({frame_h}, {frame_w}) \n"
+                f"model_input_size={self.model_input_size} \n"
+                f"pmin={self.pmin:.3f} pmin_xy=({pmin_x:.3f}, {pmin_y:.3f}) \n"
+                f"cx=({cx:.3f}, cy={cy:.3f}) \n"
+                f"w=({w:.3f}, h={h:.3f}) \n"
+                f"pad_xy=({pad_x:.3f}, {pad_y:.3f}) \n"
+                f"state_wh=({w:.3f}, {h:.3f}) roi=({x1}, {y1}, {x2}, {y2}) \n"
+                f"roi_wh=({roi_w}, {roi_h})\n"
+            )
 
         return [x1, y1, x2, y2]
 

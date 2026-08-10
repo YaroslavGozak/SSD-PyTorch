@@ -2,8 +2,8 @@ dataset_params:
   train_im_sets: ['D:\VOC\VOC2007_trainval\VOCdevkit\VOC2007', 'D:\VOC\VOC2012_train_val\VOC2012_train_val']
   test_im_sets: ['D:\VOC\VOC2007_test\VOC2007']
   num_classes : 21
-  im_size : 300
-  transform_name : 'resize_longer_edge'
+  im_size : 320
+  transform_name : 'ssd'
   # resize_longer_edge
   # roi_crop_test_transform
   # letterbox
@@ -21,6 +21,7 @@ model_params:
     [ 1., 2., 0.5 ],
     [ 1., 2., 0.5 ]
   ]
+  # scales : [0.2, 0.35, 0.5, 0.65, 0.8, 0.95]
   scales : [0.1, 0.2, 0.375, 0.55, 0.725, 0.9]
   iou_threshold : 0.5
   low_score_threshold : 0.01
@@ -32,14 +33,17 @@ model_params:
 train_params:
   model: 'roissd'
   dataset: 'voc'
-  task_name: 'voc-roissd-sc-tr-roi-decrease'
-  roi_mixed_stage: 3
+  roi_mixed_stage: 2
   seed: 1111
-  acc_steps: 1
+  acc_steps: 3
   num_epochs: 100
-  batch_size: 8
+  batch_size: 32
   lr_steps: [ 40, 50, 60, 70, 80, 90 ]
   lr: 0.001
+  freeze_backbone_bn: false
+  freeze_extra_bn: false
+  train_bn_affine: true
   log_steps : 100
   infer_conf_threshold : 0.5
-  ckpt_name: 'ssd_voc2007.pth'
+  task_name: 'voc-roissd-0-pad'
+  ckpt_name: 'voc200712v2stage3.pth'

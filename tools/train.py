@@ -1,50 +1,61 @@
-from dataset.voc_small_objects import VOCSmallObjectsDataset
+from tools.helpers.config_reader import load_config
+from tools.helpers.pipeline import load_dataset, load_model, resolve_device
 from tools.infer import infer_and_evaluate
 from tools.multiscale_collate import EpochAwareCollateFn
 import torch
 import argparse
 import os
 import numpy as np
-import yaml
 import random
 import csv
 import torchvision
 from tqdm import tqdm
-from dataset.visdrone import VisDroneDataset
-from dataset.voc import VOCDataset
-from dataset.ytbb import YTBBDataset
-from model.roissd import RoiSSD
-from model.roissd_mobilenet import RoiSSDMobileNet
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
-from model.ssd import SSD
-
-if not torch.cuda.is_available():
-    raise Exception('CUDA not available')
-else:
-    print('Running on CUDA')
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-
-if torch.backends.mps.is_available():
-    device = torch.device('mps')
-    print('Using mps')
+device = resolve_device(None)
+print('Using device {}'.format(device))
 
 
 def collate_function(data):
     return tuple(zip(*data))
 
 
+def append_epoch_metrics_csv(
+    csv_file_path,
+    *,
+    epoch,
+    classification_loss,
+    detection_loss,
+    learning_rate,
+    mean_ap,
+    mean_detector_recall,
+):
+    file_exists = os.path.exists(csv_file_path)
+    with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
+        writer = csv.writer(csvfile)
+        if not file_exists:
+            writer.writerow([
+                'epoch',
+                'classification_loss',
+                'detection_loss',
+                'learning_rate',
+                'mAP',
+                'mean_detector_recall',
+            ])
+        writer.writerow([
+            int(epoch),
+            float(classification_loss),
+            float(detection_loss),
+            float(learning_rate),
+            float(mean_ap),
+            float(mean_detector_recall),
+        ])
+
+
 def train(args):
     # Read the config file #
-    with open(args.config_path, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-    print(config)
-    #########################
+    config = load_config(args.config_path)
 
     dataset_config = config['dataset_params']
     train_config = config['train_params']
@@ -53,29 +64,11 @@ def train(args):
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
-    if device == 'cuda':
+    if device.type == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
-    if str(train_config['dataset']) == 'vis-drone':
-        dataset = VisDroneDataset('train',
-                     im_sets=dataset_config['train_im_sets'],
-                     im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'ytbb':
-        dataset = YTBBDataset('train',
-                     root_dir=dataset_config['root_dir'],
-                     im_size=dataset_config['im_size'])
-    elif str(train_config['dataset']) == 'voc':
-        dataset = VOCDataset('train',
-                     im_sets=dataset_config['train_im_sets'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
-    elif str(train_config['dataset']) == 'voc-small-objects':
-        dataset = VOCSmallObjectsDataset('train',
-                     im_sets=dataset_config['train_im_sets'],
-                     im_size=dataset_config['im_size'],
-                     transform_name=dataset_config['transform_name'])
-    else:
-        raise Exception('Unknown dataset name {}'.format(train_config['dataset']))
+    print(f'train config', train_config)
+    dataset = load_dataset(config, split='train')
     
     _fill = tuple(a + b for a, b in zip([123.0, 117.0, 104.0], (20, 20, 15)))  # correct colour
     if dataset_config['transform_name'] == 'no_resize_transform':
@@ -96,24 +89,27 @@ def train(args):
                                prefetch_factor=2  # Prefetch 2 batches per worker
                                ) 
 
-    # Instantiate model and load checkpoint if present
-    if str(train_config['model']) == 'ssd':
-        model = SSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    elif str(train_config['model']) == 'roissd':
-        model = RoiSSD(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    elif str(train_config['model']) == 'roissd-mobilenet':
-        model = RoiSSDMobileNet(config=config['model_params'],
-                num_classes=dataset_config['num_classes'])
-    else:
-        raise Exception('Unknown model name {}'.format(train_config['model']))
+    model = load_model(
+        config=config,
+        dataset=None,
+        load_checkpoint=False,
+        use_penalized_roissd=False,
+        model_device=device,
+    )
     
     pretrained_detector = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     pretrained_detector.to(device)
     pretrained_detector.eval()
     
     model.to(device)
+    model.train()
+
+    if str(train_config['model']) == 'roissd-mobilenet' and hasattr(model, 'set_batch_norm_frozen'):
+        model.set_batch_norm_frozen(
+            freeze_backbone=train_config.get('freeze_backbone_bn', True),
+            freeze_extra=train_config.get('freeze_extra_bn', False),
+            train_affine=train_config.get('train_bn_affine', True),
+        )
 
     # Check model weights for NaN at start of each epoch
     for name, param in model.named_parameters():
@@ -124,8 +120,6 @@ def train(args):
             print(f"  Inf count: {torch.isinf(param).sum().item()}")
             raise RuntimeError("Model weights contain NaN/Inf - cannot continue training")
             
-    model.train()
-    
     model_task_path = os.path.join('trained_models', train_config['task_name'])
     model_checkpoint_path = os.path.join(model_task_path, train_config['ckpt_name'])
     if not os.path.exists(model_task_path):
@@ -151,6 +145,14 @@ def train(args):
             # Old format - just model state_dict
             model.load_state_dict(checkpoint)
             print('Loaded model only (old checkpoint format)')
+        
+        # Re-apply BN freeze after checkpoint loading to ensure frozen state persists
+        if str(train_config['model']) == 'roissd-mobilenet' and hasattr(model, 'set_batch_norm_frozen'):
+            model.set_batch_norm_frozen(
+                freeze_backbone=train_config.get('freeze_backbone_bn', True),
+                freeze_extra=train_config.get('freeze_extra_bn', False),
+                train_affine=train_config.get('train_bn_affine', True),
+            )
 
     else:
         print('No checkpoint found, starting training from scratch')
@@ -283,30 +285,53 @@ def train(args):
         torch.save(checkpoint, model_checkpoint_path)
         torch.save(i, os.path.join(model_task_path, 'epoch.pth'))
         
-        # Save losses to CSV file
-        csv_file_path = os.path.join(model_task_path, 'training_losses.csv')
-        file_exists = os.path.exists(csv_file_path)
-        
-        with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
-            writer = csv.writer(csvfile)
-            
-            # Write header if file doesn't exist
-            if not file_exists:
-                writer.writerow(['epoch', 'classification_loss', 'detection_loss'])
-            
-            # Write current epoch data
-            writer.writerow([i+1, np.mean(ssd_classification_losses), np.mean(ssd_localization_losses)])
+        # Per-epoch intermediate mAP on dataset with config transform.
+        epoch_eval_results_path = os.path.join(model_task_path, 'epoch_{:04d}_default_eval_results'.format(i + 1))
+        epoch_eval_args = argparse.Namespace(**vars(args))
+        epoch_eval_args.infer_samples = False
+        epoch_eval_args.evaluate = True
+        epoch_eval_args.eval_mode = 'default'
+        epoch_eval_args.results_path = epoch_eval_results_path
+        epoch_eval_result = infer_and_evaluate(epoch_eval_args)
+
+        epoch_map = float('nan')
+        epoch_recall = float('nan')
+        if isinstance(epoch_eval_result, dict):
+            evaluation = epoch_eval_result.get('evaluation', {})
+            if isinstance(evaluation, dict):
+                runs = evaluation.get('runs', [])
+                if runs:
+                    epoch_map = float(runs[0].get('mAP', float('nan')))
+                    epoch_recall = float(runs[0].get('mean_detector_recall', float('nan')))
+                else:
+                    epoch_map = float(evaluation.get('mAP', float('nan')))
+                    epoch_recall = float(evaluation.get('mean_detector_recall', float('nan')))
+
+        metrics_csv_path = os.path.join(model_task_path, 'training_metrics.csv')
+        append_epoch_metrics_csv(
+            metrics_csv_path,
+            epoch=i + 1,
+            classification_loss=np.mean(ssd_classification_losses),
+            detection_loss=np.mean(ssd_localization_losses),
+            learning_rate=lr_scheduler.get_last_lr()[0],
+            mean_ap=epoch_map,
+            mean_detector_recall=epoch_recall,
+        )
     print('Done Training...')
     print('Evaluating...')
-    args.infer_samples = True
-    args.evaluate = True
-    args.results_path = os.path.join(model_task_path, dataset_config['transform_name'] + '_results')
-    infer_and_evaluate(args)
+    final_eval_args = argparse.Namespace(**vars(args))
+    final_eval_args.infer_samples = True
+    final_eval_args.evaluate = True
+    final_eval_args.eval_mode = args.final_eval_mode
+    final_eval_args.results_path = os.path.join(model_task_path, 'final_{}_results'.format(args.final_eval_mode))
+    infer_and_evaluate(final_eval_args)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Arguments for ssd training')
     parser.add_argument('--config', dest='config_path',
                         default='config/voc.yaml', type=str)
+    parser.add_argument('--final-eval-mode', dest='final_eval_mode',
+                        choices=['default', 'pad-loop'], default='pad-loop', type=str)
     args = parser.parse_args()
     train(args)

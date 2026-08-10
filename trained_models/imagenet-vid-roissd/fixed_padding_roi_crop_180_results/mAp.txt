@@ -1,0 +1,39 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.6089  |  detector_recall = 0.7775
+AP for class antelope = nan  |  detector_recall = nan
+AP for class bear = nan  |  detector_recall = nan
+AP for class bicycle = 0.6847  |  detector_recall = 0.7893
+AP for class bird = 0.8317  |  detector_recall = 0.8762
+AP for class bus = 0.8680  |  detector_recall = 0.9221
+AP for class car = 0.7118  |  detector_recall = 0.8183
+AP for class cattle = 0.9152  |  detector_recall = 0.9455
+AP for class dog = 0.8360  |  detector_recall = 0.8913
+AP for class domestic cat = 0.9604  |  detector_recall = 0.9730
+AP for class elephant = nan  |  detector_recall = nan
+AP for class fox = nan  |  detector_recall = nan
+AP for class giant panda = nan  |  detector_recall = nan
+AP for class giraffe = nan  |  detector_recall = nan
+AP for class horse = 0.9337  |  detector_recall = 0.9650
+AP for class lion = nan  |  detector_recall = nan
+AP for class lizard = nan  |  detector_recall = nan
+AP for class monkey = nan  |  detector_recall = nan
+AP for class motorcycle = 0.7375  |  detector_recall = 0.8678
+AP for class otter = nan  |  detector_recall = nan
+AP for class panda = nan  |  detector_recall = nan
+AP for class person = nan  |  detector_recall = nan
+AP for class potted plant = nan  |  detector_recall = nan
+AP for class rabbit = nan  |  detector_recall = nan
+AP for class red panda = nan  |  detector_recall = nan
+AP for class sheep = 0.7067  |  detector_recall = 0.8087
+AP for class snake = nan  |  detector_recall = nan
+AP for class squirrel = nan  |  detector_recall = nan
+AP for class tiger = nan  |  detector_recall = nan
+AP for class train = 0.8448  |  detector_recall = 0.8628
+AP for class turtle = nan  |  detector_recall = nan
+AP for class whale = nan  |  detector_recall = nan
+AP for class zebra = nan  |  detector_recall = nan
+==================================================
+Mean Average Precision : 0.8033
+Mean Detector Recall   : 0.8748

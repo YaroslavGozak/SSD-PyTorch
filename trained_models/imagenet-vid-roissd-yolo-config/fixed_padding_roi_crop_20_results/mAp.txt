@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.2377  |  detector_recall = 0.4376
+AP for class antelope = 0.5463  |  detector_recall = 0.7448
+AP for class bear = 0.5810  |  detector_recall = 0.8105
+AP for class bicycle = 0.2399  |  detector_recall = 0.4000
+AP for class bird = 0.3303  |  detector_recall = 0.6217
+AP for class bus = 0.5507  |  detector_recall = 0.6944
+AP for class car = 0.4056  |  detector_recall = 0.6255
+AP for class cattle = 0.6951  |  detector_recall = 0.8286
+AP for class dog = 0.5760  |  detector_recall = 0.7453
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.5360  |  detector_recall = 0.7148
+AP for class fox = 0.8735  |  detector_recall = 0.9400
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.9136  |  detector_recall = 0.9375
+AP for class horse = 0.7174  |  detector_recall = 0.8000
+AP for class lion = 0.9020  |  detector_recall = 0.9800
+AP for class lizard = 0.6782  |  detector_recall = 0.8000
+AP for class monkey = 0.4665  |  detector_recall = 0.5918
+AP for class motorcycle = 0.7678  |  detector_recall = 0.9619
+AP for class rabbit = 0.5570  |  detector_recall = 0.7000
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.3010  |  detector_recall = 0.6125
+AP for class snake = 0.5332  |  detector_recall = 0.7642
+AP for class squirrel = 0.3494  |  detector_recall = 0.6474
+AP for class tiger = 0.8187  |  detector_recall = 0.9091
+AP for class train = 0.4635  |  detector_recall = 0.5591
+AP for class turtle = 0.4630  |  detector_recall = 0.6143
+AP for class watercraft = 0.4203  |  detector_recall = 0.6360
+AP for class whale = 0.0864  |  detector_recall = 0.3039
+AP for class zebra = 0.5556  |  detector_recall = 0.5870
+==================================================
+Mean Average Precision : 0.5395
+Mean Detector Recall   : 0.7025

@@ -1,0 +1,10 @@
+extends: "voc-ue.yaml"
+
+dataset_params:
+  im_size : 320
+
+train_params:
+  model: 'yolo'
+  model_label_space: 'imagenet-vid'  # 'yolo-imagenet-vid', 'coco', 'image-net', 'imagenet-vid-yolo13' or 'voc' - determines how labels are remapped during training and inference
+  task_name: 'imagenet-vid-yolo-yolo-config'
+  yolo_weights: 'best.pt'

@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.3119  |  detector_recall = 0.6247
+AP for class antelope = 0.7560  |  detector_recall = 0.8307
+AP for class bear = 0.8142  |  detector_recall = 0.9403
+AP for class bicycle = 0.4801  |  detector_recall = 0.6793
+AP for class bird = 0.5843  |  detector_recall = 0.6657
+AP for class bus = 0.7355  |  detector_recall = 0.8100
+AP for class car = 0.5481  |  detector_recall = 0.7288
+AP for class cattle = 0.6989  |  detector_recall = 0.7333
+AP for class dog = 0.7389  |  detector_recall = 0.8429
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.7322  |  detector_recall = 0.8314
+AP for class fox = 0.8416  |  detector_recall = 0.8882
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.9888  |  detector_recall = 1.0000
+AP for class horse = 0.7407  |  detector_recall = 0.8356
+AP for class lion = 0.7591  |  detector_recall = 0.8429
+AP for class lizard = 0.5631  |  detector_recall = 0.7333
+AP for class monkey = 0.6198  |  detector_recall = 0.6614
+AP for class motorcycle = 0.7836  |  detector_recall = 0.8826
+AP for class rabbit = 0.6719  |  detector_recall = 0.7417
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.7851  |  detector_recall = 0.9250
+AP for class snake = 0.5761  |  detector_recall = 0.7642
+AP for class squirrel = 0.3765  |  detector_recall = 0.5947
+AP for class tiger = 0.7663  |  detector_recall = 0.8727
+AP for class train = 0.6852  |  detector_recall = 0.8478
+AP for class turtle = 0.5472  |  detector_recall = 0.7067
+AP for class watercraft = 0.7136  |  detector_recall = 0.7920
+AP for class whale = 0.3207  |  detector_recall = 0.6436
+AP for class zebra = 0.8968  |  detector_recall = 0.9320
+==================================================
+Mean Average Precision : 0.6680
+Mean Detector Recall   : 0.7908

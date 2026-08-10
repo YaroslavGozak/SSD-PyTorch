@@ -14,16 +14,17 @@ Usage:
         --benchmark-config config/benchmark_vid.yaml
 """
 import argparse
+from collections import deque
 import csv
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import torch
-import yaml
 
 from tools.helpers.pipeline import (
     MERGE_STRATEGIES,
@@ -36,6 +37,150 @@ from tools.helpers.pipeline import (
     extract_gt_for_tracker
 )
 from tools.infer import compute_map
+from tools.helpers.config_reader import load_config
+
+
+class OnlineCostModel:
+    """Online estimator for T(A) = K + cA and adaptive tau = K/c."""
+
+    def __init__(
+        self,
+        *,
+        window_size: int,
+        min_samples: int,
+        min_fullframe_samples: int,
+        min_area_span_ratio: float,
+        alpha_tau: float,
+        tau_init: Optional[float],
+        tau_min: Optional[float],
+        tau_max: Optional[float],
+    ):
+        self.window_size = max(1, int(window_size))
+        self.min_samples = max(2, int(min_samples))
+        self.min_fullframe_samples = max(1, int(min_fullframe_samples))
+        self.min_area_span_ratio = max(1.0, float(min_area_span_ratio))
+        self.alpha_tau = min(max(float(alpha_tau), 0.0), 1.0)
+        self.tau_min = float(tau_min) if tau_min is not None else None
+        self.tau_max = float(tau_max) if tau_max is not None else None
+
+        self.samples: Deque[Tuple[float, float, str, int]] = deque(maxlen=self.window_size)
+        self.tau_current: Optional[float] = float(tau_init) if tau_init is not None else None
+        self.tau_raw: Optional[float] = None
+        self.K_t: Optional[float] = None
+        self.c_t: Optional[float] = None
+        self.valid: bool = False
+        self.update_count: int = 0
+        self.area_span_ratio: float = float('nan')
+
+    def _counts(self) -> Tuple[int, int]:
+        full = sum(1 for _, _, mode, _ in self.samples if mode == 'full_frame')
+        roi = sum(1 for _, _, mode, _ in self.samples if mode == 'roi')
+        return full, roi
+
+    def get_tau(self, default_tau: float) -> float:
+        return float(self.tau_current) if self.tau_current is not None else float(default_tau)
+
+    def add_observation(
+        self,
+        *,
+        area: float,
+        time_sec: float,
+        mode: str,
+        frame_idx: int,
+    ) -> Optional[Dict[str, Any]]:
+        if area <= 0.0 or time_sec <= 0.0:
+            return None
+        mode_name = 'full_frame' if mode == 'full_frame' else 'roi'
+        self.samples.append((float(area), float(time_sec), mode_name, int(frame_idx)))
+        return self._try_update(frame_idx=int(frame_idx))
+
+    def _try_update(self, *, frame_idx: int) -> Optional[Dict[str, Any]]:
+        if len(self.samples) < self.min_samples:
+            self.valid = False
+            return None
+
+        full_count, roi_count = self._counts()
+        if full_count < self.min_fullframe_samples:
+            self.valid = False
+            return None
+
+        # Mimic measurek.py fitting strategy:
+        # aggregate repeated measurements by area and fit on (area, mean_time_per_area).
+        area_to_times: Dict[float, List[float]] = {}
+        for area_i, time_i, _mode_i, _frame_i in self.samples:
+            area_to_times.setdefault(float(area_i), []).append(float(time_i))
+
+        if len(area_to_times) < 2:
+            self.valid = False
+            return None
+
+        grouped = sorted(
+            (area_i, float(np.mean(times_i)))
+            for area_i, times_i in area_to_times.items()
+            if len(times_i) > 0
+        )
+
+        if len(grouped) < 2:
+            self.valid = False
+            return None
+
+        area = np.array([g[0] for g in grouped], dtype=np.float64)
+        lat = np.array([g[1] for g in grouped], dtype=np.float64)
+
+        p10, p90 = np.percentile(area, [10, 90])
+        span = float(p90 / max(p10, 1.0))
+        self.area_span_ratio = span
+        if span < self.min_area_span_ratio:
+            self.valid = False
+            return None
+        
+        # print(f"[adaptive_tau] frame {frame_idx}: fitting cost model with {len(area)} unique areas: {area}, latencies: {lat}, span ratio: {span:.3f}")
+
+        try:
+            c_t, K_t = np.polyfit(area, lat, 1)
+            c_t = float(c_t)
+            K_t = float(K_t)
+        except Exception:
+            self.valid = False
+            return None
+
+        if c_t <= 0.0 or K_t <= 0.0:
+            self.valid = False
+            return None
+
+        tau_raw = float(K_t / c_t)
+        if self.tau_min is not None:
+            tau_raw = max(tau_raw, self.tau_min)
+        if self.tau_max is not None:
+            tau_raw = min(tau_raw, self.tau_max)
+
+        old_tau = self.tau_current
+        if old_tau is None:
+            tau_new = tau_raw
+        else:
+            tau_new = (1.0 - self.alpha_tau) * float(old_tau) + self.alpha_tau * tau_raw
+
+        self.tau_raw = tau_raw
+        self.tau_current = tau_new
+        self.K_t = K_t
+        self.c_t = c_t
+        self.valid = True
+
+        self.update_count += 1
+        return {
+                'frame_idx': int(frame_idx),
+                'old_tau': float(old_tau) if old_tau is not None else float('nan'),
+                'new_tau': float(tau_new),
+                'tau_raw': float(tau_raw),
+                'K_t': float(K_t),
+                'c_t': float(c_t),
+                'sample_count': int(len(self.samples)),
+                'fullframe_count': int(full_count),
+                'roi_count': int(roi_count),
+                'area_span_ratio': float(self.area_span_ratio),
+                'valid': bool(self.valid),
+                'update_count': int(self.update_count),
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -117,9 +262,26 @@ class VideoSequenceBenchmark:
     Config is the benchmark_vid YAML.
     """
 
-    def __init__(self, benchmark_config_path: str):
-        with open(benchmark_config_path) as f:
-            self.cfg = yaml.safe_load(f)
+    def __init__(self, benchmark_config_path: str, extra_run_metadata: Optional[Dict[str, Any]] = None):
+        self.cfg = load_config(benchmark_config_path)
+        self._extra_run_metadata = dict(extra_run_metadata or {})
+        self._init_from_cfg()
+
+    @classmethod
+    def from_config_dict(
+        cls,
+        cfg: Dict[str, Any],
+        extra_run_metadata: Optional[Dict[str, Any]] = None,
+    ) -> "VideoSequenceBenchmark":
+        """Construct benchmark from an already-loaded config dict."""
+        obj = cls.__new__(cls)
+        obj.cfg = cfg
+        obj._extra_run_metadata = dict(extra_run_metadata or {})
+        obj._init_from_cfg()
+        return obj
+
+    def _init_from_cfg(self) -> None:
+        """Initialize benchmark state from self.cfg."""
 
         p = self.cfg["benchmark_vid_params"]
         self.tracker = build_tracker(p["tracker"])
@@ -129,6 +291,17 @@ class VideoSequenceBenchmark:
         roi_m = p["roi_merge"]
         self.merge_fn = MERGE_STRATEGIES[roi_m["strategy"]]
         self.merge_tau = float(roi_m.get("tau", 150000.0))
+        self.adaptive_tau_enabled = bool(roi_m.get('adaptive_tau', False))
+        self.adaptive_tau_window_size = int(roi_m.get('adaptive_tau_window_size', 100))
+        self.adaptive_tau_min_samples = int(roi_m.get('adaptive_tau_min_samples', 30))
+        self.adaptive_tau_min_fullframe_samples = int(roi_m.get('adaptive_tau_min_fullframe_samples', 3))
+        self.adaptive_tau_min_area_span_ratio = float(roi_m.get('adaptive_tau_min_area_span_ratio', 3.0))
+        self.adaptive_tau_alpha = float(roi_m.get('adaptive_tau_alpha', 0.1))
+        self.adaptive_tau_log_every_frames = max(1, int(roi_m.get('adaptive_tau_log_every_frames', 100)))
+        tau_min_cfg = roi_m.get('adaptive_tau_min', None)
+        tau_max_cfg = roi_m.get('adaptive_tau_max', None)
+        self.adaptive_tau_min = float(tau_min_cfg) if tau_min_cfg is not None else None
+        self.adaptive_tau_max = float(tau_max_cfg) if tau_max_cfg is not None else None
         self.tracker_input_dropout_cfg = p.get("tracker_input_dropout", None)
         self.coverage_threshold = float(p["metrics"]["roi_coverage_threshold"])
         out = p["output"]
@@ -137,28 +310,125 @@ class VideoSequenceBenchmark:
         self.verbose = bool(out.get("verbose", True))
 
         tracker_cfg = p.get("tracker", {})
+        kalman_cfg = tracker_cfg.get("kalman", {})
         static_padding_cfg = tracker_cfg.get("static_padding", {})
+        relative_padding_cfg = tracker_cfg.get("relative_padding", {})
+        oracle_gt_cfg = tracker_cfg.get("oracle_gt", {})
         dropout_cfg = p.get("tracker_input_dropout", {})
 
         self.run_metadata = {
             "benchmark_device": str(p.get("device", "cpu")),
-            "benchmark_tracker_type": str(tracker_cfg.get("type", "unknown")),
+            "key_frame_interval": self.key_frame_interval,
+            "benchmark_tracker_type": "none" if self.key_frame_interval == 1 else str(tracker_cfg.get("type", "unknown")),
+            "merge_fn": str(roi_m.get("strategy", "unknown")),
+            "merge_tau": self.merge_tau,
+            "adaptive_tau_enabled": self.adaptive_tau_enabled,
+            "adaptive_tau_window_size": self.adaptive_tau_window_size,
+            "adaptive_tau_min_samples": self.adaptive_tau_min_samples,
+            "adaptive_tau_min_fullframe_samples": self.adaptive_tau_min_fullframe_samples,
+            "adaptive_tau_min_area_span_ratio": self.adaptive_tau_min_area_span_ratio,
+            "adaptive_tau_alpha": self.adaptive_tau_alpha,
+            "adaptive_tau_log_every_frames": self.adaptive_tau_log_every_frames,
+            "adaptive_tau_min": self.adaptive_tau_min if self.adaptive_tau_min is not None else "",
+            "adaptive_tau_max": self.adaptive_tau_max if self.adaptive_tau_max is not None else "",
+            "kalman_pmin": int(kalman_cfg.get("pmin", 0)),
             "static_pad_x": int(static_padding_cfg.get("pad_x", 0)),
             "static_pad_y": int(static_padding_cfg.get("pad_y", 0)),
+            "relative_pad_ratio_x": float(relative_padding_cfg.get("pad_ratio_x", 0.0)),
+            "relative_pad_ratio_y": float(relative_padding_cfg.get("pad_ratio_y", 0.0)),
+            "relative_min_pad_x": int(relative_padding_cfg.get("min_pad_x", 0)),
+            "relative_min_pad_y": int(relative_padding_cfg.get("min_pad_y", 0)),
+            "oracle_gt_pad_x": int(oracle_gt_cfg.get("pad_x", 0)),
+            "oracle_gt_pad_y": int(oracle_gt_cfg.get("pad_y", 0)),
             "static_hold_last_for_frames": int(static_padding_cfg.get("hold_last_for_frames", 0)),
             "tracker_dropout_enabled": bool(dropout_cfg.get("enabled", False)),
             "tracker_dropout_mode": str(dropout_cfg.get("mode", "none")),
             "tracker_dropout_prob": float(dropout_cfg.get("prob", 0.0)),
             "tracker_dropout_warmup_frames": int(dropout_cfg.get("warmup_frames", 0)),
             "tracker_dropout_seed": dropout_cfg.get("seed", ""),
+            **self._extra_run_metadata,
         }
 
         Path(self.output_dir).mkdir(parents=True, exist_ok=True)
 
+        if self.adaptive_tau_enabled and str(roi_m.get('strategy', '')).strip().lower() != 'greedy':
+            print(
+                "[adaptive_tau] Disabled because roi_merge.strategy is not 'greedy'. "
+                "Adaptive tau currently applies to greedy merge only."
+            )
+            self.adaptive_tau_enabled = False
+            self.run_metadata['adaptive_tau_enabled'] = False
+
+        self.cost_model: Optional[OnlineCostModel] = None
+        self.adaptive_tau_log_path: Optional[str] = None
+        if self.adaptive_tau_enabled:
+            self.cost_model = OnlineCostModel(
+                window_size=self.adaptive_tau_window_size,
+                min_samples=self.adaptive_tau_min_samples,
+                min_fullframe_samples=self.adaptive_tau_min_fullframe_samples,
+                min_area_span_ratio=self.adaptive_tau_min_area_span_ratio,
+                alpha_tau=self.adaptive_tau_alpha,
+                tau_init=self.merge_tau,
+                tau_min=self.adaptive_tau_min,
+                tau_max=self.adaptive_tau_max,
+            )
+            runs_dir = os.path.join(self.output_dir, 'runs')
+            Path(runs_dir).mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+            self.adaptive_tau_log_path = os.path.join(runs_dir, f'adaptive_tau_{ts}.csv')
+
         # Build an args namespace that load_model_and_dataset expects
         self._train_config_path = self.cfg["train_config_path"]
 
+    def _append_adaptive_tau_log(self, event: Dict[str, Any]) -> None:
+        if not self.adaptive_tau_log_path:
+            return
+        fieldnames = [
+            'timestamp_utc',
+            'frame_idx',
+            'old_tau',
+            'tau_current',
+            'tau_raw',
+            'K_t',
+            'c_t',
+            'sample_count',
+            'fullframe_count',
+            'roi_count',
+            'area_span_ratio',
+            'model_valid',
+            'update_count',
+            'tau_min',
+            'tau_max',
+            'alpha_tau',
+            'window_size',
+        ]
+        need_header = (not os.path.exists(self.adaptive_tau_log_path)) or (os.path.getsize(self.adaptive_tau_log_path) == 0)
+        with open(self.adaptive_tau_log_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if need_header:
+                writer.writeheader()
+            writer.writerow({
+                'timestamp_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                'frame_idx': event['frame_idx'],
+                'old_tau': event['old_tau'],
+                'tau_current': event['new_tau'],
+                'tau_raw': event['tau_raw'],
+                'K_t': event['K_t'],
+                'c_t': event['c_t'],
+                'sample_count': event['sample_count'],
+                'fullframe_count': event['fullframe_count'],
+                'roi_count': event['roi_count'],
+                'area_span_ratio': event['area_span_ratio'],
+                'model_valid': event['valid'],
+                'update_count': event['update_count'],
+                'tau_min': self.adaptive_tau_min if self.adaptive_tau_min is not None else '',
+                'tau_max': self.adaptive_tau_max if self.adaptive_tau_max is not None else '',
+                'alpha_tau': self.adaptive_tau_alpha,
+                'window_size': self.adaptive_tau_window_size,
+            })
+
     def run(self) -> Dict[str, Any]:
+        run_start_time = time.perf_counter()
         args = argparse.Namespace(config_path=self._train_config_path)
         model, dataset, data_loader, train_cfg = load_model_and_dataset(self.cfg["benchmark_vid_params"]["device"], args)
 
@@ -186,7 +456,11 @@ class VideoSequenceBenchmark:
                 frame_idx += 1
                 if self.verbose and frame_idx % max(1, total_frames // 10) == 0:
                     pct = frame_idx / total_frames * 100
-                    print(f"  {frame_idx}/{total_frames} ({pct:.0f}%)")
+                    if self.adaptive_tau_enabled and self.cost_model is not None:
+                        print_tau = f'| tau: {self.cost_model.get_tau(default_tau=self.merge_tau)}'
+                    else:
+                        print_tau = ''
+                    print(f"  {frame_idx}/{total_frames} ({pct:.0f}%)  {print_tau}")
 
                 fpath = os.path.abspath(fname[0] if isinstance(fname, (list, tuple)) else fname)
                 frame_bgr = cv2.imread(fpath)
@@ -217,6 +491,10 @@ class VideoSequenceBenchmark:
 
                 effective_frame_idx = frame_idx_in_video if frame_idx_in_video is not None else frame_idx
 
+                effective_merge_tau = self.merge_tau
+                if self.adaptive_tau_enabled and self.cost_model is not None:
+                    effective_merge_tau = self.cost_model.get_tau(default_tau=self.merge_tau)
+
                 result: FrameResult = process_frame(
                     model=model,
                     idx2label=dataset.idx2label,
@@ -230,13 +508,48 @@ class VideoSequenceBenchmark:
                     conf_threshold=conf_threshold,
                     nms_iou=self.nms_iou,
                     merge_fn=self.merge_fn,
-                    merge_tau=self.merge_tau,
+                    merge_tau=effective_merge_tau,
                     model_device=model_device,
                     tracker_input_dropout_cfg=self.tracker_input_dropout_cfg,
                 )
+
                 next_frame_rois = result.next_frame_rois
                 final_dets = result.final_detections
                 rois_used = result.rois_used
+
+                if self.adaptive_tau_enabled and self.cost_model is not None:
+                    events = []
+                    # Use per-inference latency buckets grouped by processed ROI size.
+                    # For each (w, h) bucket we add one sample with mean latency and area=w*h.
+                    for (roi_w, roi_h), latencies in result.roi_latencies_s.items():
+                        if not latencies:
+                            continue
+                        area = float(max(1, int(roi_w)) * max(1, int(roi_h)))
+                        time_sec = float(np.mean(latencies))
+                        event = self.cost_model.add_observation(
+                            area=area,
+                            time_sec=time_sec,
+                            mode='full_frame' if result.use_full_frame else 'roi',
+                            frame_idx=frame_idx,
+                        )
+                        if event is not None:
+                            events.append(event)
+
+                    for event in events:
+                        if self.verbose:
+                            print(
+                                "[adaptive_tau] frame={} tau {:.2f} -> {:.2f} "
+                                "(raw={:.2f}, K={:.6f}, c={:.10f}, n={})".format(
+                                    event['frame_idx'],
+                                    event['old_tau'],
+                                    event['new_tau'],
+                                    event['tau_raw'],
+                                    event['K_t'],
+                                    event['c_t'],
+                                    event['sample_count'],
+                                )
+                            )
+                        self._append_adaptive_tau_log(event)
 
                 # Accumulate timing into separate buckets for reporting
                 if result.use_full_frame:
@@ -269,9 +582,9 @@ class VideoSequenceBenchmark:
             predictions, ground_truths, difficulties,
             lat_full, lat_roi, lat_merge,
             area_ratios, roi_counts_pre, roi_counts_post, gt_coverages,
-            frame_idx, train_cfg,
+            frame_idx, train_cfg
         )
-        self._print(metrics)
+        self._print(metrics, elapsed_s=time.perf_counter() - run_start_time)
         self._save(metrics)
         return metrics
 
@@ -287,6 +600,15 @@ class VideoSequenceBenchmark:
         if self.verbose:
             print("\nComputing metrics...")
 
+        train_params = cfg["train_params"]
+        model_family = str(train_params["model"])
+        task_name = str(train_params.get("task_name", ""))
+        checkpoint_name = str(train_params.get("ckpt_name", ""))
+        yolo_weights = str(train_params.get("yolo_weights", ""))
+        model_label = model_family
+        if model_family == "yolo" and task_name:
+            model_label = task_name
+
         mAP50, aps50, detector_recall50, class_recalls50 = compute_map(predictions, ground_truths, iou_threshold=0.5,  difficult=difficulties)
         mAP95, aps95, detector_recall95, class_recalls95 = compute_map(predictions, ground_truths, iou_threshold=0.95, difficult=difficulties)
 
@@ -295,12 +617,50 @@ class VideoSequenceBenchmark:
         def sperc(a, p): return float(np.nanpercentile(a, p)) if len(a) else float("nan")
 
         all_lat_ms = ms(lat_full + lat_roi)
+        adaptive_tau_stats: Dict[str, Any] = {}
+        if self.adaptive_tau_enabled and self.cost_model is not None:
+            full_count, roi_count = self.cost_model._counts()
+            adaptive_tau_stats = {
+                'adaptive_tau_current': float(self.cost_model.get_tau(default_tau=self.merge_tau)),
+                'adaptive_tau_raw': float(self.cost_model.tau_raw) if self.cost_model.tau_raw is not None else float('nan'),
+                'adaptive_tau_K_t_current': float(self.cost_model.K_t) if self.cost_model.K_t is not None else float('nan'),
+                'adaptive_tau_c_t_current': float(self.cost_model.c_t) if self.cost_model.c_t is not None else float('nan'),
+                'cost_model_sample_count': int(len(self.cost_model.samples)),
+                'cost_model_fullframe_count': int(full_count),
+                'cost_model_roi_count': int(roi_count),
+                'cost_model_area_span_ratio': float(self.cost_model.area_span_ratio),
+                'cost_model_valid': bool(self.cost_model.valid),
+                'tau_update_count': int(self.cost_model.update_count),
+            }
+        else:
+            adaptive_tau_stats = {
+                'adaptive_tau_current': float(self.merge_tau),
+                'adaptive_tau_raw': float('nan'),
+                'adaptive_tau_K_t_current': float('nan'),
+                'adaptive_tau_c_t_current': float('nan'),
+                'cost_model_sample_count': 0,
+                'cost_model_fullframe_count': 0,
+                'cost_model_roi_count': 0,
+                'cost_model_area_span_ratio': float('nan'),
+                'cost_model_valid': False,
+                'tau_update_count': 0,
+            }
+
         return {
             "dataset":   cfg["train_params"]["dataset"],
-            "model":     cfg["train_params"]["model"],
+            "model":     model_label,
+            "model_family": model_family,
+            "model_task_name": task_name,
+            "model_checkpoint": checkpoint_name,
+            "model_yolo_weights": yolo_weights,
             "num_frames": n_frames,
             "key_frame_interval": self.key_frame_interval,
             "tracker_type": self.cfg["benchmark_vid_params"]["tracker"]["type"],
+            "adaptive_tau_enabled": self.adaptive_tau_enabled,
+            "adaptive_tau_alpha": self.adaptive_tau_alpha,
+            "adaptive_tau_window_size": self.adaptive_tau_window_size,
+            "adaptive_tau_min": self.adaptive_tau_min if self.adaptive_tau_min is not None else float('nan'),
+            "adaptive_tau_max": self.adaptive_tau_max if self.adaptive_tau_max is not None else float('nan'),
             # Detection quality
             "mAP50": float(mAP50),
             "mAP95": float(mAP95),
@@ -327,14 +687,24 @@ class VideoSequenceBenchmark:
             # Coverage
             "gt_roi_coverage_mean": smean(np.array(gt_coverages)),
             "gt_roi_coverage_p5":   sperc(np.array(gt_coverages), 5),
+            **adaptive_tau_stats,
         }
 
-    def _print(self, m: Dict[str, Any]) -> None:
+    def _print(self, m: Dict[str, Any], elapsed_s: float) -> None:
         print("\n" + "=" * 70)
         print("VIDEO BENCHMARK RESULTS")
         print("=" * 70)
         print(f"Dataset: {m['dataset']}  Model: {m['model']}  Tracker: {m['tracker_type']}")
+        if m.get("model_checkpoint"):
+            print(f"Checkpoint: {m['model_checkpoint']}")
+        if m.get("model_yolo_weights"):
+            print(f"YOLO weights: {m['model_yolo_weights']}")
         print(f"Frames: {m['num_frames']}  Key-frame interval: {m['key_frame_interval']}")
+        print(
+            f"Adaptive tau: {m.get('adaptive_tau_enabled', False)} "
+            f"(current={m.get('adaptive_tau_current', float('nan')):.2f}, updates={m.get('tau_update_count', 0)})"
+        )
+        print(f"Elapsed total time: {elapsed_s:.1f} s")
         print(f"\n{'Detection Quality':─<35}")
         print(f"  mAP@0.50          : {m['mAP50']:.4f}")
         print(f"  mAP@0.95          : {m['mAP95']:.4f}")
@@ -370,10 +740,14 @@ class VideoSequenceBenchmark:
             **self.run_metadata,
             **flat,
         }
-        fieldnames = sorted(row.keys())
+        fieldnames = self._order_csv_fieldnames(row)
 
         output_path, output_fieldnames, migrated = self._resolve_output_path(path, fieldnames)
         need_header = not os.path.exists(output_path) or os.path.getsize(output_path) == 0
+
+        if not need_header and self._file_missing_trailing_newline(output_path):
+            with open(output_path, "a", encoding="utf-8") as f:
+                f.write("\n")
 
         with open(output_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=output_fieldnames)
@@ -385,6 +759,26 @@ class VideoSequenceBenchmark:
             print(f"\nSchema changed. Appending to migrated CSV: {output_path}")
         else:
             print(f"\nResults appended to: {output_path}")
+
+    @staticmethod
+    def _order_csv_fieldnames(row: Dict[str, Any]) -> List[str]:
+        """Keep class-wise metric columns grouped at the end of the CSV."""
+        classwise_prefixes = (
+            "per_class_ap50_",
+            "per_class_ap95_",
+            "per_class_detector_recall50_",
+            "per_class_detector_recall95_",
+        )
+
+        non_class_fields = sorted(
+            key for key in row.keys()
+            if not any(key.startswith(prefix) for prefix in classwise_prefixes)
+        )
+        class_fields = sorted(
+            key for key in row.keys()
+            if any(key.startswith(prefix) for prefix in classwise_prefixes)
+        )
+        return non_class_fields + class_fields
 
     def _resolve_output_path(self, preferred_path: str, new_fieldnames: List[str]) -> Tuple[str, List[str], bool]:
         """Find a CSV target path that matches schema, auto-migrating to _vN on mismatch."""
@@ -414,6 +808,16 @@ class VideoSequenceBenchmark:
             reader = csv.reader(f)
             header = next(reader, None)
         return header or []
+
+    @staticmethod
+    def _file_missing_trailing_newline(path: str) -> bool:
+        if not os.path.exists(path) or os.path.getsize(path) == 0:
+            return False
+
+        with open(path, "rb") as f:
+            f.seek(-1, os.SEEK_END)
+            last_byte = f.read(1)
+        return last_byte not in (b"\n", b"\r")
 
 
 # --------------------------------------------------------------------------- #

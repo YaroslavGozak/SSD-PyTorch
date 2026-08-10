@@ -2,66 +2,24 @@
 # Uses 320x320 input (nearest multiple-of-32 above 300) and model_input_size: [320, 320]
 # so that tracker padding scales and ROI snap targets match the YOLO input resolution.
 
-train_config_path: "config/voc-ue-yolo320.yaml"
+extends: "benchmark-vid-base.yaml"
+train_config_path: "config/imagenet-vid-yolo.yaml"
 
 benchmark_vid_params:
-  device: "cpu" # Options: "cpu" | "cuda"
 
   tracker:
-    type: "oracle_gt"   # Options: kalman | static_padding | relative_padding | oracle_gt
 
     kalman:
-      conf_det_min: 0.2
-      conf_low: 0.4
-      conf_high: 0.7
-      pmin: 5
-      iou_match_threshold: 0.01
-      max_misses: 3
-      uncertainty_scale_pos: 2.5
-      uncertainty_scale_size: 1.0
-      confidence_roi_scale: 0.10
       model_input_size: [320, 320]  # updated from 300 to match YOLO input
 
     static_padding:
-      pad_x: 32
-      pad_y: 32
-      conf_det_min: 0.0
       model_input_size: [320, 320]  # updated from 300 to match YOLO input
-      hold_last_for_frames: 3  # Keep previous detections for up to N missed frames
 
     relative_padding:
-      pad_ratio_x: 0.5
-      pad_ratio_y: 0.5
-      min_pad_x: 10
-      min_pad_y: 10
-      conf_det_min: 0.0
       model_input_size: [320, 320]  # updated from 300 to match YOLO input
 
     oracle_gt:
-      pad_x: 0
-      pad_y: 0
-      conf_det_min: 0.0
       model_input_size: [320, 320]  # updated from 300 to match YOLO input
 
-  inference:
-    key_frame_interval: 10   # 1 = always full-frame (B0 mode)
-    nms_iou: 0.5
-
-  tracker_input_dropout:
-    enabled: true
-    mode: "frame"   # Options: frame | detection
-    prob: 0.7       # 0.0 - 1.0 probability of dropping the input (frame or detections) to simulate occlusion/missed detections
-    warmup_frames: 3
-    seed: null
-
-  roi_merge:
-    strategy: "simple"   # Options: greedy | simple | simple_v2 | none
-    tau: 150000.0
-
-  metrics:
-    roi_coverage_threshold: 0.5   # Min GT box area fraction inside ROI to count as covered
-
-  output:
-    results_dir: "benchmark_results/vid/yolo/kalman_lin_mov"
-    results_filename: "benchmark_vid_metrics_yolo_kalman_32_mid_int10_dets07_cpu.csv"
-    verbose: true
+    sort:
+      model_input_size: [320, 320]  # updated from 300 to match YOLO input

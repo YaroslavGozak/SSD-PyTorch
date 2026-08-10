@@ -328,35 +328,54 @@ def generate_default_boxes(features, aspect_ratios, scales, image_size):
     return dboxes
 
 
+class SSDLiteHead(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.depthwise = nn.Conv2d(
+            in_channels,
+            in_channels,
+            kernel_size=3,
+            padding=1,
+            groups=in_channels,
+            bias=False,
+        )
+        self.bn = nn.BatchNorm2d(in_channels)
+        self.act = nn.ReLU6(inplace=True)
+        self.pointwise = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        x = self.depthwise(x)
+        x = self.bn(x)
+        x = self.act(x)
+        return self.pointwise(x)
+
+
 class RoiSSDMobileNet(nn.Module):
     r"""
-    Main Class for SSD. Does the following steps
-    to generate detections/losses.
-    During initialization
-    1. Load VGG Imagenet pretrained model
-    2. Extract Backbone from VGG and add extra conv layers
-    3. Add class prediction and bbox transformation prediction layers
-    4. Initialize all conv2d layers
-
-    During Forward Pass
-    1. Get conv4_3 output
-    2. Normalize and scale conv4_3 output (feat_output_1)
-    3. Pass the unscaled conv4_3 to conv5_3 layers and conv layers
-        replacing fc6 and fc7 of vgg (feat_output_2)
-    4. Pass the conv_fc7 output to extra conv layers (feat_output_3-6)
-    5. Get the classification and regression predictions for all 6 feature maps
-    6. Generate default_boxes for all these feature maps(8732 x 4)
-    7a. If in training assign targets for these default_boxes and
-        compute localization and classification losses
-    7b. If in inference mode, then do all pre-nms filtering, nms
-        and then post nms filtering and return the detected boxes,
-        their labels and their scores
+    SSD architecture based on MobileNetV3-Large backbone.
+    
+    During initialization:
+    1. Load MobileNetV3-Large ImageNet pretrained model
+    2. Extract backbone stages (layer 0-12 for 672ch, layer 13 for 480ch)
+    3. Add additional conv layers for feature pyramid
+    4. Add class prediction and bbox transformation prediction layers
+    5. Initialize all conv2d layers
+    
+    During forward pass:
+    1. Extract stage1 features (layer 0-12) -> 112ch
+    2. Convert to 672ch via conv layer
+    3. Extract stage2 features (layer 13) -> 480ch
+    4. Pass through additional conv layers (conv8_2, conv9_2, conv10_2, conv11_2)
+    5. Generate predictions for all 6 feature maps
+    6. Generate default_boxes for all feature maps
+    7a. If training: compute localization and classification losses
+    7b. If inference: perform NMS filtering and return detections
     """
     def __init__(self, config, num_classes=21):
         super().__init__()
         self.aspect_ratios = config['aspect_ratios']
 
-        self.scales = config['scales']
+        self.scales = list(config['scales'])
         self.scales.append(1.0)
 
         self.num_classes = num_classes
@@ -366,85 +385,97 @@ class RoiSSDMobileNet(nn.Module):
         self.pre_nms_topK = config['pre_nms_topK']
         self.nms_threshold = config['nms_threshold']
         self.detections_per_img = config['detections_per_img']
+        self.freeze_backbone_bn = False
+        self.freeze_extra_bn = False
+        self.train_bn_affine = True
 
         # Load imagenet pretrained mobilenet network
         backbone = torchvision.models.mobilenet_v3_large(
             weights=torchvision.models.MobileNet_V3_Large_Weights.IMAGENET1K_V2
         )
 
-        # Get all max pool indexes to determine different stages
-        max_pool_pos = [idx for idx, layer in enumerate(list(backbone.features))
-                        if isinstance(layer, nn.MaxPool2d)]
-        max_pool_stage_3_pos = max_pool_pos[-3]  # for vgg16 this would be 16
-        max_pool_stage_4_pos = max_pool_pos[-2]  # for vgg16 this would be 23
-
-        backbone.features[max_pool_stage_3_pos].ceil_mode = True
-        # otherwise vgg conv4_3 output will be 37x37
-        self.features = nn.Sequential(*backbone.features[:max_pool_stage_4_pos])
+        # MobileNetV3 features extraction for SSD pyramid
+        # Layer 13 outputs 112 channels, then we add final conv to 672
+        # Backbone section 0: layers 0-13 (up to layer 13's internal processing)
+        self.features_stage1 = nn.Sequential(*backbone.features[:13])
         
-        # Learnable scale parameter for conv4_3 feature map
-        self.scale_weight = nn.Parameter(torch.ones(512) * 20)
+        # Layer 13 produces stride-2, outputs 160 channels (after internal processing)
+        # We process this separately to add stride and final conv
+        self.features_stage2 = nn.Sequential(
+            backbone.features[13],  # layer 13: outputs 160 channels, stride 2
+            # Add final conv to standardize output
+            nn.Conv2d(160, 480, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(480),
+            nn.ReLU6(inplace=True),
+        )
+        
+        # Add conv before stage2 to get 672 channels from stage1 output (112 -> 672)
+        self.conv_to_672 = nn.Sequential(
+            nn.Conv2d(112, 672, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(672),
+            nn.ReLU6(inplace=True),
+        )
 
-        ###################################
-        # Conv5_3 + Conv for fc6 and fc 7 #
-        ###################################
-        # Conv modules replacing fc6 and fc7
-        # Ideally we would copy the weights
-        # but here we are just adding new layers
-        # and not copying fc6 and fc7 weights by
-        # subsampling
-        fcs = nn.Sequential(
-            nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
-            nn.Conv2d(in_channels=512, out_channels=1024, kernel_size=3,
-                      padding=6, dilation=6),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels=1024, out_channels=1024, kernel_size=1),
-            nn.ReLU(inplace=True),
-        )
-        self.conv5_3_fc = nn.Sequential(
-            *backbone.features[max_pool_stage_4_pos:-1],
-            fcs,
-        )
+        # No additional conv5_3_fc needed for MobileNet - already extracted in features_stage2
 
         ##########################
         # Additional Conv Layers #
         ##########################
-        # Modules to take from 19x19 to 10x10
+        # Extra pyramid layers following SSD-MobileNet reference
+        # Input 480 -> output 512 (stride 2)
         self.conv8_2 = nn.Sequential(
-            nn.Conv2d(1024, 256, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 512, kernel_size=3, padding=1,
-                      stride=2),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(480, 256, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(256, 256, kernel_size=3, stride=2, padding=1, groups=256, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(256, 512, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU6(inplace=True),
         )
 
-        # Modules to take from 10x10 to 5x5
+        # Input 512 -> output 256 (stride 2)
         self.conv9_2 = nn.Sequential(
-            nn.Conv2d(512, 128, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3, padding=1,
-                      stride=2),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(512, 128, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1, groups=128, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(128, 256, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU6(inplace=True),
         )
 
-        # Modules to take from 5x5 to 3x3
+        # Input 256 -> output 256 (stride 2)
         self.conv10_2 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(256, 128, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(128, 128, kernel_size=3, stride=2, padding=1, groups=128, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(128, 256, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU6(inplace=True),
         )
 
-        # Modules to take from 3x3 to 1x1
+        # Input 256 -> output 128 (stride 2)
         self.conv11_2 = nn.Sequential(
-            nn.Conv2d(256, 128, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, kernel_size=3),
-            nn.ReLU(inplace=True)
+            nn.Conv2d(256, 64, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(64, 64, kernel_size=3, stride=2, padding=1, groups=64, bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU6(inplace=True),
+            nn.Conv2d(64, 128, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU6(inplace=True),
         )
 
-        # Must match conv4_3, fcs, conv8_2, conv9_2, conv10_2, conv11_2
-        out_channels = [512, 1024, 512, 256, 256, 256]
+        # Output channels: 672 (from stage1), 480 (from stage2), then extra layers
+        out_channels = [672, 480, 512, 256, 256, 128]
 
         #####################
         # Prediction Layers #
@@ -452,22 +483,33 @@ class RoiSSDMobileNet(nn.Module):
         self.cls_heads = nn.ModuleList()
         for channels, aspect_ratio in zip(out_channels, self.aspect_ratios):
             # extra 1 is added for scale of sqrt(sk*sk+1)
-            self.cls_heads.append(nn.Conv2d(channels,
-                                            self.num_classes * (len(aspect_ratio)+1),
-                                            kernel_size=3,
-                                            padding=1))
+            self.cls_heads.append(
+                SSDLiteHead(
+                    channels,
+                    self.num_classes * (len(aspect_ratio) + 1),
+                )
+            )
 
         self.bbox_reg_heads = nn.ModuleList()
         for channels, aspect_ratio in zip(out_channels, self.aspect_ratios):
             # extra 1 is added for scale of sqrt(sk*sk+1)
-            self.bbox_reg_heads.append(nn.Conv2d(channels, 4 * (len(aspect_ratio) + 1),
-                                                 kernel_size=3,
-                                                 padding=1))
+            self.bbox_reg_heads.append(
+                SSDLiteHead(
+                    channels,
+                    4 * (len(aspect_ratio) + 1),
+                )
+            )
 
         #############################
         # Conv Layer Initialization #
         #############################
-        for layer in fcs.modules():
+        for layer in self.conv_to_672.modules():
+            if isinstance(layer, nn.Conv2d):
+                torch.nn.init.xavier_uniform_(layer.weight)
+                if layer.bias is not None:
+                    torch.nn.init.constant_(layer.bias, 0.0)
+
+        for layer in self.features_stage2.modules():
             if isinstance(layer, nn.Conv2d):
                 torch.nn.init.xavier_uniform_(layer.weight)
                 if layer.bias is not None:
@@ -480,14 +522,51 @@ class RoiSSDMobileNet(nn.Module):
                     if layer.bias is not None:
                         torch.nn.init.constant_(layer.bias, 0.0)
 
-        for module in self.cls_heads:
-            torch.nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                torch.nn.init.constant_(module.bias, 0.0)
-        for module in self.bbox_reg_heads:
-            torch.nn.init.xavier_uniform_(module.weight)
-            if module.bias is not None:
-                torch.nn.init.constant_(module.bias, 0.0)
+        for module_list in [self.cls_heads, self.bbox_reg_heads]:
+            for module in module_list:
+                for layer in module.modules():
+                    if isinstance(layer, nn.Conv2d):
+                        torch.nn.init.xavier_uniform_(layer.weight)
+                        if layer.bias is not None:
+                            torch.nn.init.constant_(layer.bias, 0.0)
+
+    def _freeze_batch_norms_in_module(self, module):
+        for layer in module.modules():
+            if isinstance(layer, nn.BatchNorm2d):
+                layer.eval()
+                if layer.weight is not None:
+                    layer.weight.requires_grad = self.train_bn_affine
+                if layer.bias is not None:
+                    layer.bias.requires_grad = self.train_bn_affine
+
+    def _apply_frozen_batch_norms(self):
+        if self.freeze_backbone_bn:
+            for module in [self.features_stage1]:
+                self._freeze_batch_norms_in_module(module)
+        if self.freeze_extra_bn:
+            for module in [
+                self.features_stage2,
+                self.conv_to_672,
+                self.conv8_2,
+                self.conv9_2,
+                self.conv10_2,
+                self.conv11_2,
+                self.cls_heads,
+                self.bbox_reg_heads,
+            ]:
+                self._freeze_batch_norms_in_module(module)
+
+    def set_batch_norm_frozen(self, freeze_backbone=True, freeze_extra=False, train_affine=True):
+        self.freeze_backbone_bn = bool(freeze_backbone)
+        self.freeze_extra_bn = bool(freeze_extra)
+        self.train_bn_affine = bool(train_affine)
+        self._apply_frozen_batch_norms()
+
+    def train(self, mode=True):
+        super().train(mode)
+        if mode:
+            self._apply_frozen_batch_norms()
+        return self
 
     def compute_loss(
             self,
@@ -551,7 +630,7 @@ class RoiSSDMobileNet(nn.Module):
         # Aggregated bbox loss and classification targets
         # for all batch images
         bbox_loss = torch.stack(bbox_loss)
-        cls_targets = torch.stack(cls_targets)  # (B, 8732)
+        cls_targets = torch.stack(cls_targets)
 
         # Calculate classification loss for ALL default_boxes
         num_classes = cls_logits.size(-1)
@@ -583,12 +662,12 @@ class RoiSSDMobileNet(nn.Module):
         cls_loss_final = (cls_loss[foreground_idxs].sum() + cls_loss[background_idxs].sum()) / N
         
         # Check for NaN and replace with zero if found
-        if torch.isnan(bbox_loss_final):
-            print("Warning: NaN detected in bbox loss, setting to 0")
-            bbox_loss_final = torch.tensor(0.0, device=bbox_loss.device)
-        if torch.isnan(cls_loss_final):
-            print("Warning: NaN detected in classification loss, setting to 0") 
-            cls_loss_final = torch.tensor(0.0, device=cls_loss.device)
+        # if torch.isnan(bbox_loss_final):
+        #     print("Warning: NaN detected in bbox loss, setting to 0")
+        #     bbox_loss_final = torch.tensor(0.0, device=bbox_loss.device)
+        # if torch.isnan(cls_loss_final):
+        #     print("Warning: NaN detected in classification loss, setting to 0") 
+        #     cls_loss_final = torch.tensor(0.0, device=cls_loss.device)
             
         return {
             "bbox_regression": bbox_loss_final,
@@ -622,42 +701,30 @@ class RoiSSDMobileNet(nn.Module):
         w_r, h_r = x.shape[3], x.shape[2]
         min_r = min(w_r, h_r)
         max_depth = self.get_max_feature_layer_by_roi_size(min_r)
-        # Call everything till conv4_3 layers first
-        conv_4_3_out = self.features(x)
-
-        # Check conv4_3 output before normalization
-        if torch.isnan(conv_4_3_out).any() or torch.isinf(conv_4_3_out).any():
-            print("NaN/Inf in conv_4_3_out BEFORE normalization!")
-            print(f"  Range: [{conv_4_3_out.min().item():.6f}, {conv_4_3_out.max().item():.6f}]")
+        
+        # Extract features from MobileNetV3 backbone
+        # Stage 1: layers 0-12, outputs 112 channels
+        features_stage1 = self.features_stage1(x)
+        
+        # Convert stage1 output (112 channels) to 672 channels
+        feat_672 = self.conv_to_672(features_stage1)
+        
+        # Check for NaN/Inf
+        if torch.isnan(feat_672).any() or torch.isinf(feat_672).any():
+            print("NaN/Inf in feat_672!")
+            print(f"  Range: [{feat_672.min().item():.6f}, {feat_672.max().item():.6f}]")
             visualize_image_with_boxes(x, targets, save_path='debug_backbone_nan.png')
             raise RuntimeError("NaN in backbone features")
-
-        # Scale conv4_3 output using learnt norm scale
-        # Add epsilon and clamping to prevent NaN
-        conv_4_3_out_norm = torch.nn.functional.normalize(conv_4_3_out, p=2, dim=1, eps=1e-12)
         
-        # Check for NaN/Inf after normalization
-        if torch.isnan(conv_4_3_out_norm).any() or torch.isinf(conv_4_3_out_norm).any():
-            print("NaN/Inf detected after normalization!")
-            print(f"  conv_4_3_out range: [{conv_4_3_out.min().item():.6f}, {conv_4_3_out.max().item():.6f}]")
-            print(f"  conv_4_3_out contains NaN: {torch.isnan(conv_4_3_out).any()}")
-            print(f"  conv_4_3_out contains Inf: {torch.isinf(conv_4_3_out).any()}")
-            # Replace NaN/Inf with zeros
-            conv_4_3_out_norm = torch.where(
-                torch.isnan(conv_4_3_out_norm) | torch.isinf(conv_4_3_out_norm),
-                torch.zeros_like(conv_4_3_out_norm),
-                conv_4_3_out_norm
-            )
-        
-        conv_4_3_out_scaled = self.scale_weight.view(1, -1, 1, 1) * conv_4_3_out_norm
-
-        outputs = [conv_4_3_out_scaled]
+        outputs = [feat_672]
 
         if max_depth >= 2:
-            conv_5_3_fc_out = self.conv5_3_fc(conv_4_3_out)
-            outputs.append(conv_5_3_fc_out)
+            # Stage 2: layer 13 (with stride 2), outputs 480 channels
+            feat_480 = self.features_stage2(features_stage1)
+            outputs.append(feat_480)
+            
         if max_depth >= 3:
-            conv8_2_out = self.conv8_2(conv_5_3_fc_out)
+            conv8_2_out = self.conv8_2(feat_480)
             outputs.append(conv8_2_out)
         if max_depth >= 4:
             conv9_2_out = self.conv9_2(conv8_2_out)

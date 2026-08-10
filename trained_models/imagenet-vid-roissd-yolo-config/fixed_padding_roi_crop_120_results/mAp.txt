@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.3924  |  detector_recall = 0.7108
+AP for class antelope = 0.7557  |  detector_recall = 0.8419
+AP for class bear = 0.7775  |  detector_recall = 0.9095
+AP for class bicycle = 0.4849  |  detector_recall = 0.6523
+AP for class bird = 0.5668  |  detector_recall = 0.6607
+AP for class bus = 0.6647  |  detector_recall = 0.7500
+AP for class car = 0.5340  |  detector_recall = 0.7276
+AP for class cattle = 0.7726  |  detector_recall = 0.8051
+AP for class dog = 0.7472  |  detector_recall = 0.8599
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.7434  |  detector_recall = 0.8517
+AP for class fox = 0.8738  |  detector_recall = 0.8824
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.9884  |  detector_recall = 1.0000
+AP for class horse = 0.7323  |  detector_recall = 0.8151
+AP for class lion = 0.7579  |  detector_recall = 0.8286
+AP for class lizard = 0.6230  |  detector_recall = 0.7583
+AP for class monkey = 0.6109  |  detector_recall = 0.6418
+AP for class motorcycle = 0.8677  |  detector_recall = 0.9560
+AP for class rabbit = 0.6729  |  detector_recall = 0.7500
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.8092  |  detector_recall = 0.9750
+AP for class snake = 0.5322  |  detector_recall = 0.7264
+AP for class squirrel = 0.3853  |  detector_recall = 0.6053
+AP for class tiger = 0.7490  |  detector_recall = 0.8455
+AP for class train = 0.6761  |  detector_recall = 0.8348
+AP for class turtle = 0.6211  |  detector_recall = 0.7600
+AP for class watercraft = 0.6856  |  detector_recall = 0.8600
+AP for class whale = 0.3345  |  detector_recall = 0.6228
+AP for class zebra = 0.8559  |  detector_recall = 0.9077
+==================================================
+Mean Average Precision : 0.6746
+Mean Detector Recall   : 0.7977

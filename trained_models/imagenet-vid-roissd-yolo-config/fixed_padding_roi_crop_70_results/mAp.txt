@@ -1,0 +1,36 @@
+Class Wise Average Precisions and Detector Recall
+==================================================
+AP for class background = nan  |  detector_recall = nan
+AP for class airplane = 0.2603  |  detector_recall = 0.5020
+AP for class antelope = 0.7128  |  detector_recall = 0.8169
+AP for class bear = 0.7615  |  detector_recall = 0.9250
+AP for class bicycle = 0.4180  |  detector_recall = 0.6018
+AP for class bird = 0.5889  |  detector_recall = 0.6813
+AP for class bus = 0.7518  |  detector_recall = 0.8150
+AP for class car = 0.5243  |  detector_recall = 0.7253
+AP for class cattle = 0.6229  |  detector_recall = 0.6703
+AP for class dog = 0.7364  |  detector_recall = 0.8473
+AP for class domestic_cat = nan  |  detector_recall = nan
+AP for class elephant = 0.6690  |  detector_recall = 0.7180
+AP for class fox = 0.7620  |  detector_recall = 0.7824
+AP for class giant_panda = nan  |  detector_recall = nan
+AP for class hamster = 0.9902  |  detector_recall = 1.0000
+AP for class horse = 0.7935  |  detector_recall = 0.8630
+AP for class lion = 0.6758  |  detector_recall = 0.8000
+AP for class lizard = 0.6549  |  detector_recall = 0.8250
+AP for class monkey = 0.6138  |  detector_recall = 0.6565
+AP for class motorcycle = 0.7919  |  detector_recall = 0.8809
+AP for class rabbit = 0.6825  |  detector_recall = 0.7500
+AP for class red_panda = nan  |  detector_recall = nan
+AP for class sheep = 0.7902  |  detector_recall = 1.0000
+AP for class snake = 0.4562  |  detector_recall = 0.6415
+AP for class squirrel = 0.4909  |  detector_recall = 0.6684
+AP for class tiger = 0.8481  |  detector_recall = 0.9182
+AP for class train = 0.7614  |  detector_recall = 0.8565
+AP for class turtle = 0.5590  |  detector_recall = 0.7867
+AP for class watercraft = 0.7275  |  detector_recall = 0.7951
+AP for class whale = 0.3173  |  detector_recall = 0.6806
+AP for class zebra = 0.8392  |  detector_recall = 0.9125
+==================================================
+Mean Average Precision : 0.6593
+Mean Detector Recall   : 0.7822

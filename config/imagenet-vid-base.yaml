@@ -1,0 +1,20 @@
+dataset_params:
+  # ImageNet-VID dataset configuration (actual ILSVRC2015 structure)
+  # Separate Data and Annotations root directories per split
+  # No split files needed - loader walks directory tree to find all frames
+  train_data_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Data\VID\train'
+  train_ann_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Annotations\VID\train'
+  test_data_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Data\VID\val'
+  test_ann_root: 'D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\VocAnnotations\VID\val'
+  filter_voc_overlap: false
+  transform_name : 'ssd'
+  # resize_longer_edge
+  # roi_crop_test_transform
+  # letterbox
+  # ssd
+  # no_resize_transform
+  # fixed_padding_roi_crop_X
+
+train_params:
+  dataset: 'imagenet-vid'
+  infer_conf_threshold : 0.5

@@ -6,6 +6,30 @@ Most of the code is just parts of pytorch ssd implementation and all I have done
 
 The repo provides code to train on voc dataset. Specifically I trained on trainval images of VOC 2007 dataset and for testing, I use VOC2007 test set.
 
+| model | c(t) sec/pixel | K(t) sec | τ pixels |
+| --- | --- | --- | --- |
+| roissd | 0.00000155 | 0.02155055 | 13883.8 |
+| yolo | 0.00000013 | 0.00858294 | 66691.3 |
+|  |  |  |  |
+
+**Таблиця 2. Параметри лінійної моделі вартості та поріг злиття \( \tau = K_t / c_t \) на різних пристроях для ROI-SSD та YOLO**
+
+| Модель | Система | Режим | Пристрій | \(c_t\) (sec/pixel) | \(K_t\) (sec) | \(\tau\) (pixels) |
+|:---:|:---:|:---:|---|---:|---:|---:|
+| RoiSSD | A | — | GPU RTX 3060 Ti 8GB | \(8.0 \cdot 10^{-8}\) | 0.018254 | 225,677 |
+| RoiSSD | A | — | CPU i7-11700K | \(1.48 \cdot 10^{-6}\) | 0.0256 | 17,295 |
+| RoiSSD | B | — | GPU RTX 3060 12GB | \(7.0 \cdot 10^{-8}\) | 0.013174 | 185,870 |
+| RoiSSD | B | — | CPU i9-9900KF | \(1.70 \cdot 10^{-6}\) | 0.011117 | 6,549–7,679 |
+| RoiSSD | C | Plugged | GPU RTX 4050 Laptop | \(8.0 \cdot 10^{-8}\) | 0.008102 | 96,216 |
+| RoiSSD | C | Plugged | CPU Core 5 210H | \(2.16 \cdot 10^{-6}\) | 0.010341 | 4,778 |
+| RoiSSD | D | Energy saving | GPU RTX 4050 Laptop | \(5.0 \cdot 10^{-8}\) | 0.018075 | 400,144 |
+| RoiSSD | D | Energy saving | CPU i5 H210 | \(3.85 \cdot 10^{-6}\) | 0.012567 | 3,268 |
+| RoiSSD | E | — | CPU Raspberry Pi 5 4GB | \(1.328 \cdot 10^{-5}\) | 0.030140 | 2,269 (≈1300–3500) |
+| YOLO26n | A | — | GPU RTX 3060 Ti 8GB | \(1.0 \cdot 10^{-8}\) | 0.0189 | 3,920,311 |
+| YOLO26n | A | — | CPU i7-11700K | \(1.66 \cdot 10^{-7}\) | 0.0150 | 105,006 |
+| YOLO26n | E | — |  CPU Raspberry Pi 5 4GB | \(0.81 \cdot 10^{-6}\) | 0.0186 | 22,935 |
+
+
 ## SSD Explanation and Implementation Video
 <a href="https://youtu.be/c_nEue9itwg">
    <img alt="SSD Explanation and Implementation" src="https://github.com/user-attachments/assets/663754cf-93a7-4b7a-9a0f-ff094f73e90a" width="400">
@@ -81,6 +105,60 @@ For setting up the VOC 2007 dataset:
               -> voc.py
       ```
 
+## ImageNet-VID VOC-Compatible Subset
+If you want to benchmark VOC-trained models on ImageNet-VID without retraining, the repo now includes a standalone subset builder that creates a neighboring `VOC10KAnnotations` tree containing only selected clips and only VOC-overlap objects.
+
+The script does not copy images. It copies and prunes XML files only, preserving the original train or val annotation structure so the existing ImageNet-VID dataset loader can discover selected frames by annotation presence.
+
+Run the subset builder with:
+
+```powershell
+python -m tools.build_imagenet_vid_voc_subset \
+    --data-root "D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Data\VID" \
+    --ann-root "D:\ImageNet-VID\ImageNet\data\ImageNet2015\object_detection_from_video\ILSVRC2015\Annotations\VID" \
+    --split val \
+    --target-clips 200 \
+    --clip-length 100 \
+    --clip-stride 100 \
+    --max-clips-per-video 3 \
+    --overwrite
+```
+
+Key behavior:
+* Only frames with at least one VOC-compatible ImageNet-VID object are eligible.
+* Selected clips are contiguous in original frame indices.
+* Written XMLs are pruned to VOC-overlap objects only.
+* The output folder contains `manifest.json` and `selected_clips.csv` so the subset can be inspected and regenerated reproducibly.
+
+The generated annotation layout looks like:
+
+```
+...\Annotations\VID
+        -> train
+        -> val
+        -> VOC10KAnnotations
+                -> train
+                        -> a\video_name\frame.xml
+                        -> b\video_name\frame.xml
+                -> val
+                        -> video_name\frame.xml
+                -> manifest.json
+                -> selected_clips.csv
+```
+
+To use the generated subset with the existing ImageNet-VID loader, point the annotation root in your config at the generated split directory. For example:
+
+```yaml
+dataset_params:
+    train_data_root: 'D:\ImageNet-VID\...\Data\VID\train'
+    train_ann_root: 'D:\ImageNet-VID\...\Annotations\VID\VOC10KAnnotations\train'
+    test_data_root: 'D:\ImageNet-VID\...\Data\VID\val'
+    test_ann_root: 'D:\ImageNet-VID\...\Annotations\VID\VOC10KAnnotations\val'
+    filter_voc_overlap: true
+```
+
+This works because `dataset/imagenet_vid.py` already walks the image tree and only keeps frames whose XML exists under the configured annotation root.
+
 ## For training on your own dataset
 
 * Update the path for `train_im_sets`, `test_im_sets` in config
@@ -115,6 +193,18 @@ For setting up the VOC 2007 dataset:
 * ```python -m tools.train``` for training SSD on VOC dataset
 * ```python -m tools.infer --evaluate False --infer_samples True``` for generating inference predictions
 * ```python -m tools.infer --evaluate True --infer_samples False``` for evaluating on test dataset
+* ```python -m tools.infer --evaluate True --infer_samples False --eval-mode default``` to evaluate once on the dataset transform defined in config (`dataset_params.transform_name`)
+* ```python -m tools.infer --evaluate True --infer_samples False --eval-mode pad-loop``` to run fixed-padding sweep evaluation (`fixed_padding_roi_crop_{X}` or `fixed_padding_roi_crop_yolo_{X}`)
+* ```python -m tools.train --final-eval-mode pad-loop``` to train with per-epoch intermediate default-transform mAP and a final pad-loop evaluation
+
+### Inference/Evaluation modes
+`tools/infer.py` supports:
+* `--eval-mode default`: single evaluation pass using config transform.
+* `--eval-mode pad-loop`: multi-run padding sweep from `0..200` with step `10`.
+
+During training, `tools/train.py` now performs:
+* intermediate mAP evaluation at the end of each epoch using `default` mode.
+* final post-training evaluation using `--final-eval-mode` (`default` or `pad-loop`).
 
 ## Configuration
 * ```config/voc.yaml``` - Allows you to play with different components of SSD on voc dataset  
@@ -127,6 +217,13 @@ For every run a folder of `task_name` key in config will be created
 
 During training of SSD the following output will be saved 
 * Latest Model checkpoint in ```task_name``` directory
+* Per-epoch unified metrics CSV at ```task_name/training_metrics.csv``` with columns:
+    * `epoch`
+    * `classification_loss`
+    * `detection_loss`
+    * `learning_rate`
+    * `mAP`
+    * `mean_detector_recall`
 
 During inference the following output will be saved
 * Sample prediction outputs for images in ```task_name/samples```

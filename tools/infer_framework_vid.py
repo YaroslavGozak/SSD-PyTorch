@@ -1,12 +1,12 @@
 import argparse
 import os
 import time
-from typing import List
+from typing import Any, List, Optional, Tuple
 
 import cv2
 import torch
-import yaml
 
+from tools.helpers.config_reader import load_config
 from tools.helpers.pipeline import (
     MERGE_STRATEGIES,
     FrameResult,
@@ -19,9 +19,61 @@ from tools.helpers.pipeline import (
 )
 
 
+def _extract_sequence_meta(target: dict, fname: Any) -> Tuple[str, bool, Optional[int]]:
+    """Return (video_id, is_first_frame, frame_idx_in_video) for sequence resets."""
+    default_path = fname[0] if isinstance(fname, (list, tuple)) else fname
+    default_video_id = os.path.basename(os.path.dirname(str(default_path)))
+
+    video_id = target.get("video_id", default_video_id)
+    if isinstance(video_id, list):
+        video_id = video_id[0] if video_id else default_video_id
+
+    is_first = target.get("is_first_frame", False)
+    if isinstance(is_first, list):
+        is_first = is_first[0] if is_first else False
+    if isinstance(is_first, torch.Tensor):
+        is_first = bool(is_first.item())
+
+    frame_idx = target.get("frame_idx", None)
+    if isinstance(frame_idx, list):
+        frame_idx = frame_idx[0] if frame_idx else None
+    if isinstance(frame_idx, torch.Tensor):
+        frame_idx = int(frame_idx.item())
+    if frame_idx is not None:
+        frame_idx = int(frame_idx)
+
+    return str(video_id), bool(is_first), frame_idx
+
+
+def _draw_text_with_bg(
+    image: Any,
+    text: str,
+    org: Tuple[int, int],
+    *,
+    font: int = cv2.FONT_HERSHEY_PLAIN,
+    font_scale: float = 1.0,
+    text_color: Tuple[int, int, int] = (255, 255, 255),
+    bg_color: Tuple[int, int, int] = (0, 0, 0),
+    thickness: int = 1,
+    padding: int = 2,
+) -> None:
+    """Draw text with a solid background rectangle for readability."""
+    text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
+    text_w, text_h = text_size
+    x, y = org
+
+    x = max(0, x)
+    y = max(text_h + padding, y)
+    x2 = x + text_w + 2 * padding
+    y2 = y + baseline + padding
+    y1 = y - text_h - padding
+
+    cv2.rectangle(image, (x, y1), (x2, y2), bg_color, thickness=-1)
+    cv2.putText(image, text, (x + padding, y), font, font_scale, text_color, thickness)
+
+
 def infer_sequentially_with_roi(args):
-    with open(args.benchmark_config, 'r') as f:
-        benchmark_cfg = yaml.safe_load(f)
+    benchmark_cfg = load_config(args.benchmark_config)
 
     benchmark_params = benchmark_cfg['benchmark_vid_params']
     train_args = argparse.Namespace(config_path=benchmark_cfg['train_config_path'])
@@ -49,6 +101,7 @@ def infer_sequentially_with_roi(args):
     current_frame_idx = 0
     total_frames = len(test_dataset_loader)
     data_iter = iter(test_dataset_loader)
+    current_video_id: Optional[str] = None
 
     # ROIs predicted by tracker from previous frame.
     next_frame_rois: List[List[int]] = []
@@ -79,6 +132,15 @@ def infer_sequentially_with_roi(args):
                 frame_h, frame_w = frame_bgr.shape[:2]
 
                 gt_target = target[0] if isinstance(target, list) else target
+                video_id, is_first_frame, frame_idx_in_video = _extract_sequence_meta(gt_target, fname)
+                if current_video_id is None:
+                    current_video_id = video_id
+
+                if is_first_frame or video_id != current_video_id:
+                    tracker.reset()
+                    next_frame_rois = []
+                    current_video_id = video_id
+
                 # Oracle detector mode: use GT detections for ROI generation instead of tracker output.
                 tracker_type = str(benchmark_cfg["benchmark_vid_params"]["tracker"]["type"])
                 if tracker_type == "oracle_gt":
@@ -89,6 +151,7 @@ def infer_sequentially_with_roi(args):
                         next_frame_rois = tracker.preview_rois((frame_h, frame_w))
 
                 model_device = next(model.parameters()).device
+                effective_frame_idx = frame_idx_in_video if frame_idx_in_video is not None else current_frame_idx
                 result: FrameResult = process_frame(
                     model=model,
                     idx2label=dataset.idx2label,
@@ -96,7 +159,7 @@ def infer_sequentially_with_roi(args):
                     im_tensor=im_tensor,
                     tracker=tracker,
                     next_frame_rois=next_frame_rois,
-                    frame_idx=current_frame_idx,
+                    frame_idx=effective_frame_idx,
                     key_frame_interval=key_frame_interval,
                     im_size_hw=im_size_hw,
                     conf_threshold=conf_threshold,
@@ -115,14 +178,16 @@ def infer_sequentially_with_roi(args):
                     x1, y1, x2, y2 = det['bbox']
                     cv2.rectangle(display_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)
                     label_text = '{}:{:.2f}'.format(det['class'], det['confidence'])
-                    cv2.putText(
+                    _draw_text_with_bg(
                         display_frame,
                         label_text,
-                        (x1 + 4, max(12, y1 - 4)),
-                        cv2.FONT_HERSHEY_PLAIN,
-                        1.0,
-                        (255, 255, 255),
-                        1,
+                        (x1 + 2, max(12, y1 - 4)),
+                        font=cv2.FONT_HERSHEY_PLAIN,
+                        font_scale=1.0,
+                        text_color=(255, 255, 255),
+                        bg_color=(0, 0, 0),
+                        thickness=1,
+                        padding=2,
                     )
 
                 # Draw detections omitted from tracker input in orange.
@@ -158,11 +223,25 @@ def infer_sequentially_with_roi(args):
                 )
                 cv2.putText(display_frame, overlay, (10, 25), cv2.FONT_HERSHEY_PLAIN, 1.2, (0, 255, 0), 2)
 
+                frame_video_name = os.path.basename(os.path.dirname(fpath))
+                video_overlay = f'Video: {video_id or frame_video_name}'
+                _draw_text_with_bg(
+                    display_frame,
+                    video_overlay,
+                    (10, 48),
+                    font=cv2.FONT_HERSHEY_PLAIN,
+                    font_scale=1.1,
+                    text_color=(255, 255, 255),
+                    bg_color=(0, 0, 0),
+                    thickness=1,
+                    padding=3,
+                )
+
                 if paused:
                     cv2.putText(
                         display_frame,
                         '[PAUSED] (f=next, space=resume, ESC=quit)',
-                        (10, 50),
+                        (10, 70),
                         cv2.FONT_HERSHEY_PLAIN,
                         1.0,
                         (0, 0, 255),

@@ -1,0 +1,1 @@
+Trained on D:/ImageNet-VID/ImageNet/data/ImageNet2015/imagenet_vid_yolo/imagenet_vid.yaml

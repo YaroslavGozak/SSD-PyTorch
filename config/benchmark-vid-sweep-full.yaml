@@ -1,0 +1,13 @@
+# Batch tracker sweep for tools.benchmarks.batch_benchmark_vid
+# Base benchmark config (model, dataset, output path) is passed via CLI.
+
+sweep_name: "fullframe"
+
+experiments:
+  - name: "fullframe"
+    tracker_type: "static_padding"
+    tracker_params:
+      pad_x: 32
+      pad_y: 32
+    inference:
+      key_frame_interval: 1

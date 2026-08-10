@@ -1,15 +1,11 @@
 import argparse
 import time
-
-import numpy as np
-import torchvision
-from dataset.voc import VOCDataset
-from model.roissd_mobilenet import RoiSSDMobileNet
-from tools.voc.adapters.coco_to_voc_adapter import CocoToVocAdapter
 import torch
-import yaml
-
+import torchvision
+import numpy as np
+from model.roissd_mobilenet import RoiSSDMobileNet
 from model.roissd import RoiSSD
+from tools.helpers.config_reader import load_config
 
 
 def run_forward(model, x, is_yolo=False):
@@ -27,23 +23,15 @@ def run_forward(model, x, is_yolo=False):
 
 def measure_time(model, device, iters=50, is_yolo=False):
     model.eval().to(device)
-    is_yolo=True
     use_cuda_sync = str(device).startswith("cuda") and torch.cuda.is_available()
 
-    # For YOLO, test standard detection sizes. For SSD, test custom sizes.
-    if is_yolo:
-        sizes = [(32,32), (64,64), (96,96), (320, 320), (416, 416), (640, 640)]  # Standard YOLO sizes
-    else:
-        sizes = [(32,32), (64,64), (96,96), (140,140), (200,200), (300,300)]
+    sizes = [(32,32), (64,64), (96,96), (320, 320), (416, 416), (640, 640)]
     results = []
 
     # Warmup - use consistent size for both models
     with torch.no_grad():
         for _ in range(10):
-            if is_yolo:
-                x = torch.randn(1, 3, 640, 640, device=device)
-            else:
-                x = torch.randn(1, 3, 300, 300, device=device)
+            x = torch.randn(1, 3, 640, 640, device=device)
             try:
                 _ = run_forward(model, x, is_yolo=is_yolo)
             except RuntimeError as e:
@@ -95,7 +83,6 @@ def build_fcos_model(num_classes):
         num_classes=num_classes,
     )
 
-
 def build_fasterrcnn_model(num_classes):
     return torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
         weights=None,
@@ -111,28 +98,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Measure inference cost model T = K + cA")
     parser.add_argument("--config", default="config/voc.yaml", help="Path to training config")
     parser.add_argument("--model", choices=["yolo", "roissd", "roissd-mobilenet", "fcos", "fasterrcnn"], default="yolo", help="Model to benchmark")
-    parser.add_argument("--yolo-weights", default="yolov8n.pt", help="Ultralytics YOLO weights path")
+    parser.add_argument("--yolo-weights", default="trained_models\\imagenet-vid-yolo-yolo-config\\best.pt", help="Ultralytics YOLO weights path")
     parser.add_argument("--iters", type=int, default=50, help="Timed iterations per image size")
     parser.add_argument("--cuda", action="store_true", help="Also benchmark on CUDA if available")
     args = parser.parse_args()
 
-    # Read the config file #
-    with open(args.config, 'r') as file:
-        try:
-            config = yaml.safe_load(file)
-        except yaml.YAMLError as exc:
-            print(exc)
-            raise
-
+    config = load_config(args.config)
     dataset_config = config['dataset_params']
     train_config = config['train_params']
     model = None
     is_yolo = False
-
-    dataset = VOCDataset('test',
-        im_sets=dataset_config['test_im_sets'],
-        im_size=dataset_config['im_size'],
-        transform_name='ssd')
 
     if args.model == "roissd":
         model = RoiSSD(
@@ -152,18 +127,6 @@ if __name__ == "__main__":
         model = build_fcos_model(num_classes=dataset_config['num_classes'])
         print("Benchmarking model: FCOS")
         is_yolo = False
-    elif args.model == 'fasterrcnn':
-        base_model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
-            weights=torchvision.models.detection.FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.DEFAULT,
-            box_score_thresh=0.9,
-        )
-        model = CocoToVocAdapter(
-            base_model=base_model,
-            voc_label2idx=dataset.label2idx,
-            conf_threshold=train_config.get('infer_conf_threshold', 0.05),
-            normalize_boxes=True,
-        )
-        is_yolo = False
     elif args.model == 'yolo':
         try:
             from ultralytics import YOLO
@@ -178,8 +141,14 @@ if __name__ == "__main__":
         raise ValueError(f"Unsupported model: {args.model}")
 
     measure_time(model, device='cpu', iters=args.iters, is_yolo=is_yolo)
-    if args.cuda and torch.cuda.is_available():
-        measure_time(model, device='cuda', iters=args.iters, is_yolo=is_yolo)
+    print(f"arg.cuda: {args.cuda}, torch.cuda.is_available(): {torch.cuda.is_available()}")
+    print(f"is_yolo: {is_yolo}")
+    if args.cuda:
+        if torch.cuda.is_available():
+            measure_time(model, device='cuda', iters=args.iters, is_yolo=is_yolo)
+        else:
+            print("CUDA requested but not available. Skipping CUDA benchmark.")
+            
 
 
     print("\nDone.")
