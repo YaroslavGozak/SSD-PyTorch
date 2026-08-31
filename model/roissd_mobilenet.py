@@ -509,11 +509,12 @@ class RoiSSDMobileNet(nn.Module):
                 if layer.bias is not None:
                     torch.nn.init.constant_(layer.bias, 0.0)
 
-        for layer in self.features_stage2.modules():
-            if isinstance(layer, nn.Conv2d):
-                torch.nn.init.xavier_uniform_(layer.weight)
-                if layer.bias is not None:
-                    torch.nn.init.constant_(layer.bias, 0.0)
+        # Only initialize the newly-added 160->480 conv; backbone.features[13]
+        # is pretrained and must keep its ImageNet weights.
+        new_conv_in_stage2 = self.features_stage2[1]
+        torch.nn.init.xavier_uniform_(new_conv_in_stage2.weight)
+        if new_conv_in_stage2.bias is not None:
+            torch.nn.init.constant_(new_conv_in_stage2.bias, 0.0)
 
         for conv_module in [self.conv8_2, self.conv9_2, self.conv10_2, self.conv11_2]:
             for layer in conv_module.modules():
