@@ -513,6 +513,7 @@ class VideoSequenceBenchmark:
                     tracker_input_dropout_cfg=self.tracker_input_dropout_cfg,
                 )
 
+                next_frame_rois_current_frame = next_frame_rois # for ROI merge calculation
                 next_frame_rois = result.next_frame_rois
                 final_dets = result.final_detections
                 rois_used = result.rois_used
@@ -557,7 +558,7 @@ class VideoSequenceBenchmark:
                 else:
                     lat_roi.append(result.latency_s)
                     lat_merge.append(result.merge_latency_s)
-                    roi_counts_pre.append(len(next_frame_rois) + len(rois_used))  # pre-merge estimate
+                    roi_counts_pre.append(len(next_frame_rois_current_frame))  # pre-merge estimate
                     roi_counts_post.append(len(rois_used))
 
                 # Accumulate predictions / GT for mAP

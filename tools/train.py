@@ -280,7 +280,8 @@ def train(args):
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scheduler': lr_scheduler.state_dict(),
-            'epoch': i
+            'epoch': i,
+            'stage': 1,
         }
         torch.save(checkpoint, model_checkpoint_path)
         torch.save(i, os.path.join(model_task_path, 'epoch.pth'))

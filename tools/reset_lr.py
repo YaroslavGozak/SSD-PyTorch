@@ -7,14 +7,9 @@ from tools.helpers.config_reader import load_config
 from tools.helpers.pipeline import load_model
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Arguments for ssd training')
-    parser.add_argument('--config', dest='config_path',
-                        default='config/voc.yaml', type=str)
-    args = parser.parse_args()
-    
+def reset_learning_rate(config_path, stage=None):
     # Read the config file #
-    config = load_config(args.config_path)
+    config = load_config(config_path)
 
     train_config = config['train_params']
 
@@ -53,10 +48,25 @@ if __name__ == '__main__':
             'scheduler': lr_scheduler.state_dict(),
             'epoch': 0,
         }
+        checkpoint_stage = stage
+        if checkpoint_stage is None and isinstance(checkpoint, dict):
+            checkpoint_stage = checkpoint.get('stage')
+        if checkpoint_stage is not None:
+            checkpoint_out['stage'] = int(checkpoint_stage)
         torch.save(checkpoint_out, model_checkpoint_path)
         torch.save(0, os.path.join(model_task_path, 'epoch.pth'))
         print(f"Learning rate reset to {train_config['lr']} and epoch reset to 0 in checkpoint '{model_checkpoint_path}'.")
+        return True
 
     else:
         print(f"Checkpoint '{model_checkpoint_path}' does not exist. Cannot reset learning rate.")
+        return False
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Arguments for ssd training')
+    parser.add_argument('--config', dest='config_path',
+                        default='config/voc.yaml', type=str)
+    args = parser.parse_args()
+    if not reset_learning_rate(args.config_path):
         exit(1)

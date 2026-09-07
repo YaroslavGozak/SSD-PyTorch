@@ -4,6 +4,7 @@ from dataset.yolo_imagenet_vid import YoloImageNetVidRawDataset
 from tools.helpers.config_reader import load_config
 from tools.helpers.pipeline import load_model, resolve_device
 from tools.infer import infer_and_evaluate
+from tools.reset_lr import reset_learning_rate
 from tools.train_samplers.roi_mixed_sampling import MixedBatchSampler, MixedCollateFn, RoiBatchProcessor
 import torch
 import argparse
@@ -176,6 +177,16 @@ def train(args):
     if os.path.exists(model_checkpoint_path):
         print('Loading checkpoint as one exists')
         checkpoint = torch.load(model_checkpoint_path, map_location=device)
+        checkpoint_stage = int(checkpoint.get('stage', 1)) if isinstance(checkpoint, dict) else 1
+        if checkpoint_stage < roi_stage:
+            print(
+                'Checkpoint stage {} is below configured stage {}; resetting training state.'.format(
+                    checkpoint_stage, roi_stage
+                )
+            )
+            if not reset_learning_rate(args.config_path, stage=roi_stage):
+                raise RuntimeError('Unable to reset checkpoint training state')
+            checkpoint = torch.load(model_checkpoint_path, map_location=device)
         
         # Handle both old format (state_dict only) and new format (full checkpoint)
         if isinstance(checkpoint, dict) and 'model' in checkpoint:
@@ -293,7 +304,8 @@ def train(args):
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scheduler': lr_scheduler.state_dict(),
-            'epoch': i
+            'epoch': i,
+            'stage': roi_stage,
         }
         torch.save(checkpoint, model_checkpoint_path)
         torch.save(i, os.path.join(model_task_path, 'epoch.pth'))
