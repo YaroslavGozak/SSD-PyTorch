@@ -2,6 +2,7 @@ import torch.nn as nn
 import torch
 import math
 import torchvision
+from collections import OrderedDict
 
 
 def get_iou(boxes1, boxes2):
@@ -117,19 +118,21 @@ def apply_regression_pred_to_default_boxes(box_transform_pred,
     return pred_boxes
 
 
-def generate_default_boxes(feat, aspect_ratios, scales):
+_DEFAULT_BOX_CACHE = OrderedDict()
+_DEFAULT_BOX_CACHE_MAX_ENTRIES = 64
+
+
+def _build_default_boxes(feature_shapes, aspect_ratios, scales):
     r"""
-    Method to generate default_boxes for all feature maps the image
-    :param feat: List[(Tensor of shape B x C x Feat_H x Feat x W)]
+    Build the x1,y1,x2,y2 default boxes for one image.
+    :param feature_shapes: Tuple[Tuple[int, int]] (feat_h, feat_w) per feature map
     :param aspect_ratios: List[List[float]] aspect ratios for each feature map
     :param scales: List[float] scales for each feature map
-    :return: default_boxes : List[(Tensor of shape N x 4)] default_boxes over all
-            feature maps aggregated for each batch image
+    :return: (Tensor of shape N x 4) on cpu
     """
-
     # List to store default boxes for all feature maps
     default_boxes = []
-    for k in range(len(feat)):
+    for k, (feat_h, feat_w) in enumerate(feature_shapes):
         # We first add the aspect ratio 1 and scale (sqrt(scale[k])*sqrt(scale[k+1])
         s_prime_k = math.sqrt(scales[k] * scales[k + 1])
         wh_pairs = [[s_prime_k, s_prime_k]]
@@ -142,8 +145,6 @@ def generate_default_boxes(feat, aspect_ratios, scales):
             h = scales[k] / sq_ar
 
             wh_pairs.extend([[w, h]])
-
-        feat_h, feat_w = feat[k].shape[-2:]
 
         # These shifts will be the centre of each of the default boxes
         shifts_x = ((torch.arange(0, feat_w) + 0.5) / feat_w).to(torch.float32)
@@ -177,26 +178,50 @@ def generate_default_boxes(feat, aspect_ratios, scales):
     default_boxes = torch.cat(default_boxes, dim=0)
     # default_boxes -> (8732, 4)
 
-    # We now duplicate these default boxes
-    # for all images in the batch
-    # and also convert cx,cy,w,h format of
-    # default boxes to x1,y1,x2,y2
-    dboxes = []
-    for _ in range(feat[0].size(0)):
-        dboxes_in_image = default_boxes
-        # x1 = cx - 0.5 * width
-        # y1 = cy - 0.5 * height
-        # x2 = cx + 0.5 * width
-        # y2 = cy + 0.5 * height
-        dboxes_in_image = torch.cat(
-            [
-                (dboxes_in_image[:, :2] - 0.5 * dboxes_in_image[:, 2:]),
-                (dboxes_in_image[:, :2] + 0.5 * dboxes_in_image[:, 2:]),
-            ],
-            -1,
-        )
-        dboxes.append(dboxes_in_image.to(feat[0].device))
-    return dboxes
+    # Convert cx,cy,w,h format of default boxes to x1,y1,x2,y2
+    # x1 = cx - 0.5 * width
+    # y1 = cy - 0.5 * height
+    # x2 = cx + 0.5 * width
+    # y2 = cy + 0.5 * height
+    return torch.cat(
+        [
+            (default_boxes[:, :2] - 0.5 * default_boxes[:, 2:]),
+            (default_boxes[:, :2] + 0.5 * default_boxes[:, 2:]),
+        ],
+        -1,
+    )
+
+
+def generate_default_boxes(feat, aspect_ratios, scales):
+    r"""
+    Method to generate default_boxes for all feature maps the image
+    :param feat: List[(Tensor of shape B x C x Feat_H x Feat x W)]
+    :param aspect_ratios: List[List[float]] aspect ratios for each feature map
+    :param scales: List[float] scales for each feature map
+    :return: default_boxes : List[(Tensor of shape N x 4)] default_boxes over all
+            feature maps aggregated for each batch image
+    """
+
+    device = feat[0].device
+    feature_shapes = tuple((int(f.shape[-2]), int(f.shape[-1])) for f in feat)
+    cache_key = (
+        feature_shapes,
+        tuple(tuple(ar) for ar in aspect_ratios),
+        tuple(scales),
+        str(device),
+    )
+
+    dboxes_in_image = _DEFAULT_BOX_CACHE.get(cache_key)
+    if dboxes_in_image is None:
+        dboxes_in_image = _build_default_boxes(feature_shapes, aspect_ratios, scales).to(device)
+        _DEFAULT_BOX_CACHE[cache_key] = dboxes_in_image
+        if len(_DEFAULT_BOX_CACHE) > _DEFAULT_BOX_CACHE_MAX_ENTRIES:
+            _DEFAULT_BOX_CACHE.popitem(last=False)
+    else:
+        _DEFAULT_BOX_CACHE.move_to_end(cache_key)
+
+    # Batch entries alias one shared tensor; default boxes are only ever read.
+    return [dboxes_in_image] * feat[0].size(0)
 
 
 class SSD(nn.Module):
@@ -572,44 +597,29 @@ class SSD(nn.Module):
                 # Ensure all values are between 0-1
                 boxes.clamp_(min=0., max=1.)
 
-                pred_boxes = []
-                pred_scores = []
-                pred_labels = []
-                # Class wise filtering
-                for label in range(1, num_classes):
-                    score = cls_scores_i[:, label]
+                # Class wise filtering, vectorised over all foreground classes.
+                # Taking topK before thresholding yields the same set as the
+                # reverse order, but keeps every shape static.
+                fg_scores = cls_scores_i[:, 1:]
+                topk = min(self.pre_nms_topK, fg_scores.size(0))
+                top_scores, top_idxs = fg_scores.topk(topk, dim=0)
+                top_scores = top_scores.transpose(0, 1).reshape(-1)
+                top_idxs = top_idxs.transpose(0, 1).reshape(-1)
+                top_labels = torch.arange(1, num_classes,
+                                          dtype=torch.int64,
+                                          device=cls_scores.device)
+                top_labels = top_labels.unsqueeze(1).expand(-1, topk).reshape(-1)
 
-                    # Remove low scoring boxes of this class
-                    keep_idxs = score > self.low_score_threshold
-                    score = score[keep_idxs]
-                    box = boxes[keep_idxs]
+                # Remove low scoring boxes
+                keep_idxs = top_scores > self.low_score_threshold
+                pred_scores = top_scores[keep_idxs]
+                pred_labels = top_labels[keep_idxs]
+                pred_boxes = boxes[top_idxs[keep_idxs]]
 
-                    # keep only topk scoring predictions of this class
-                    score, top_k_idxs = score.topk(min(self.pre_nms_topK, len(score)))
-                    box = box[top_k_idxs]
-
-                    pred_boxes.append(box)
-                    pred_scores.append(score)
-                    pred_labels.append(torch.full_like(score, fill_value=label,
-                                                       dtype=torch.int64,
-                                                       device=cls_scores.device))
-
-                pred_boxes = torch.cat(pred_boxes, dim=0)
-                pred_scores = torch.cat(pred_scores, dim=0)
-                pred_labels = torch.cat(pred_labels, dim=0)
-
-                # Class wise NMS
-                keep_mask = torch.zeros_like(pred_scores, dtype=torch.bool)
-                for class_id in torch.unique(pred_labels):
-                    curr_indices = torch.where(pred_labels == class_id)[0]
-                    curr_keep_idxs = torch.ops.torchvision.nms(pred_boxes[curr_indices],
-                                                               pred_scores[curr_indices],
-                                                               self.nms_threshold)
-                    keep_mask[curr_indices[curr_keep_idxs]] = True
-                keep_indices = torch.where(keep_mask)[0]
-                post_nms_keep_indices = keep_indices[pred_scores[keep_indices].sort(
-                    descending=True)[1]]
-                keep = post_nms_keep_indices[:self.detections_per_img]
+                # Class wise NMS, already sorted by descending score
+                keep = torchvision.ops.batched_nms(pred_boxes, pred_scores, pred_labels,
+                                                   self.nms_threshold)
+                keep = keep[:self.detections_per_img]
                 pred_boxes, pred_scores, pred_labels = (pred_boxes[keep],
                                                         pred_scores[keep],
                                                         pred_labels[keep])
