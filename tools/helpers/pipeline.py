@@ -319,6 +319,42 @@ def ensure_im_size_tuple(im_size: Any) -> Tuple[int, int]:
     raise ValueError(f'Unsupported im_size format: {im_size}')
 
 
+def _convert_rois_between_spaces(
+    rois: List[List[int]],
+    src_size_wh: Tuple[int, int],
+    dst_size_wh: Tuple[int, int],
+) -> List[List[int]]:
+    """Convert ROI coordinates between two image spaces with conservative rounding."""
+    src_w, src_h = int(src_size_wh[0]), int(src_size_wh[1])
+    dst_w, dst_h = int(dst_size_wh[0]), int(dst_size_wh[1])
+
+    if src_w <= 0 or src_h <= 0 or dst_w <= 0 or dst_h <= 0:
+        return []
+
+    sx = float(dst_w) / float(src_w)
+    sy = float(dst_h) / float(src_h)
+
+    out: List[List[int]] = []
+    for roi in rois:
+        x1, y1, x2, y2 = [float(v) for v in roi]
+
+        nx1 = int(np.floor(x1 * sx))
+        ny1 = int(np.floor(y1 * sy))
+        nx2 = int(np.ceil(x2 * sx))
+        ny2 = int(np.ceil(y2 * sy))
+
+        nx1 = max(0, min(dst_w - 1, nx1))
+        ny1 = max(0, min(dst_h - 1, ny1))
+        nx2 = max(0, min(dst_w, nx2))
+        ny2 = max(0, min(dst_h, ny2))
+
+        if nx2 <= nx1 or ny2 <= ny1:
+            continue
+        out.append([nx1, ny1, nx2, ny2])
+
+    return out
+
+
 def convert_crop_to_input_tensor(
     im_tensor: Optional[torch.Tensor] = None,
     crop: Optional[List[int]] = None,
@@ -686,12 +722,28 @@ def process_frame(
     else:
         # Merge ROIs, then run one inference pass per cluster
         tm = time.perf_counter()
-        clusters = merge_fn(next_frame_rois, image_size=(frame_w, frame_h), tau=merge_tau)
-        merge_latency_s = time.perf_counter() - tm
 
+        tensor_chw = im_tensor[0] if im_tensor.dim() == 4 else im_tensor
+        model_h, model_w = int(tensor_chw.shape[-2]), int(tensor_chw.shape[-1])
+
+        model_space_rois = _convert_rois_between_spaces(
+            rois=next_frame_rois,
+            src_size_wh=(frame_w, frame_h),
+            dst_size_wh=(model_w, model_h),
+        )
+        
+        clusters_model = merge_fn(model_space_rois, image_size=(model_w, model_h), tau=merge_tau)      
+
+        clusters = _convert_rois_between_spaces(
+            rois=clusters_model,
+            src_size_wh=(model_w, model_h),
+            dst_size_wh=(frame_w, frame_h),
+        )
+        
+        merge_latency_s = time.perf_counter() - tm
         for roi in clusters:
             roi_c = clip_bbox(roi, frame_w, frame_h)
-            print(roi, "->", roi_c)
+
             if roi_c is None:
                 continue
             rx1, ry1, rx2, ry2 = roi_c

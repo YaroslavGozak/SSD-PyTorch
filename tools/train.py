@@ -53,6 +53,23 @@ def append_epoch_metrics_csv(
         ])
 
 
+def load_best_epoch_metrics(csv_file_path):
+    best_map = float('-inf')
+    best_recall = float('-inf')
+    if not os.path.exists(csv_file_path):
+        return best_map, best_recall
+
+    with open(csv_file_path, 'r', newline='', encoding='utf-8') as csvfile:
+        reader = csv.DictReader(csvfile)
+        for row in reader:
+            try:
+                best_map = max(best_map, float(row['mAP']))
+                best_recall = max(best_recall, float(row['mean_detector_recall']))
+            except (KeyError, TypeError, ValueError):
+                continue
+    return best_map, best_recall
+
+
 def train(args):
     # Read the config file #
     config = load_config(args.config_path)
@@ -124,6 +141,8 @@ def train(args):
     model_checkpoint_path = os.path.join(model_task_path, train_config['ckpt_name'])
     if not os.path.exists(model_task_path):
         os.makedirs(model_task_path, exist_ok=True)
+    metrics_csv_path = os.path.join(model_task_path, 'training_metrics.csv')
+    best_map, best_recall = load_best_epoch_metrics(metrics_csv_path)
 
     optimizer = torch.optim.SGD(lr=train_config['lr'],
                                 params=model.parameters(),
@@ -308,7 +327,6 @@ def train(args):
                     epoch_map = float(evaluation.get('mAP', float('nan')))
                     epoch_recall = float(evaluation.get('mean_detector_recall', float('nan')))
 
-        metrics_csv_path = os.path.join(model_task_path, 'training_metrics.csv')
         append_epoch_metrics_csv(
             metrics_csv_path,
             epoch=i + 1,
@@ -318,6 +336,14 @@ def train(args):
             mean_ap=epoch_map,
             mean_detector_recall=epoch_recall,
         )
+        if np.isfinite(epoch_map) and epoch_map > best_map:
+            best_map = epoch_map
+            torch.save(checkpoint, os.path.join(model_task_path, 'best_map.pt'))
+            print('Saved best mAP checkpoint: epoch {} mAP {:.6f}'.format(i + 1, epoch_map))
+        if np.isfinite(epoch_recall) and epoch_recall > best_recall:
+            best_recall = epoch_recall
+            torch.save(checkpoint, os.path.join(model_task_path, 'best_recall.pt'))
+            print('Saved best recall checkpoint: epoch {} recall {:.6f}'.format(i + 1, epoch_recall))
     print('Done Training...')
     print('Evaluating...')
     final_eval_args = argparse.Namespace(**vars(args))
