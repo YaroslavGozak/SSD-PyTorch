@@ -32,7 +32,7 @@ train_params:
   num_epochs: 100
   num_epochs_stage2: 20
   num_epochs_stage3: 20
-  batch_size: 20
+  batch_size: 20 # can be 20
   lr_steps: [ 40, 50, 60, 70, 80, 90 ]
   lr_steps_stage2: [ 5, 15 ]
   lr_steps_stage3: [ 10, 15 ]
@@ -41,5 +41,5 @@ train_params:
   freeze_extra_bn: false
   train_bn_affine: true
   log_steps : 100
-  task_name: 'imagenet-vid-roissd-yolo-config'
-  ckpt_name: 'imagenet26022026stage3.pt'
+  task_name: 'imagenet-vid-roissd'
+  ckpt_name: 'train_20260902_imagenet_vid200712stage1.pt'

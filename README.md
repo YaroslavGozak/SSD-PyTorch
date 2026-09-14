@@ -196,6 +196,9 @@ This works because `dataset/imagenet_vid.py` already walks the image tree and on
 * ```python -m tools.infer --evaluate True --infer_samples False --eval-mode default``` to evaluate once on the dataset transform defined in config (`dataset_params.transform_name`)
 * ```python -m tools.infer --evaluate True --infer_samples False --eval-mode pad-loop``` to run fixed-padding sweep evaluation (`fixed_padding_roi_crop_{X}` or `fixed_padding_roi_crop_yolo_{X}`)
 * ```python -m tools.train --final-eval-mode pad-loop``` to train with per-epoch intermediate default-transform mAP and a final pad-loop evaluation
+* ```python -m tools.small_object_scale_test --config config/voc.yaml --image path/to/image.jpg --annotation path/to/image.xml --output scale_results.csv``` to measure single-image mAP50 while shrinking the annotated image in 10-pixel steps on a mean-colour padded input canvas.
+  Add `--visualize` to preview the padded frames with green ground-truth boxes and red detections (`Q` or `Esc` stops the run).
+  The CSV includes each transformed ground-truth box's label, width, and height in pixels in `gt_box_sizes_px`.
 
 ### Inference/Evaluation modes
 `tools/infer.py` supports:

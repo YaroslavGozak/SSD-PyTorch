@@ -60,7 +60,7 @@ benchmark_vid_params:
 
   roi_merge:
     strategy: "greedy"   # Options: greedy | simple | simple_v2 | none
-    tau: 225677
+    tau: 17000
     adaptive_tau: false
     adaptive_tau_window_size: 100
     adaptive_tau_min_samples: 30
@@ -69,12 +69,12 @@ benchmark_vid_params:
     adaptive_tau_alpha: 0.1
     adaptive_tau_log_every_frames: 100
     adaptive_tau_min: 1200
-    adaptive_tau_max: 20000
+    adaptive_tau_max: 400000
 
   metrics:
     roi_coverage_threshold: 0.5   # Min GT box area fraction inside ROI to count as covered
 
   output:
-    results_dir: "benchmark_results/vid/imagenet-vid"
-    results_filename: "comparison2026_06_07.csv"
+    results_dir: "benchmark_results/vid/full"
+    results_filename: "comparison_roissd_greedy_fixed.csv"
     verbose: true

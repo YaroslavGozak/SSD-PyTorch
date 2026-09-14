@@ -1,0 +1,27 @@
+seed: 20260913
+model:
+  backend: roissd
+  model_config: config/voc.yaml
+  weights: trained_models/voc-roissd-best/voc200712.pth
+  device: cpu
+  stride: 1
+experiment_a:
+  timing_mode: inference_only
+  max_requested_hw: [320, 320]
+  area_fractions: [0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.0]
+  global_warmup_iterations: 10
+  repetitions_per_effective_shape: 30
+experiment_b:
+  canvas_hw: [1280, 1280]
+  domain_policy: reject_out_of_domain
+  pair_count: 500
+  minimum_near_pairs: 200
+  boundary_quotas:
+    merge: 0.25
+    near_low: 0.20
+    near_high: 0.20
+    separate: 0.35
+  repetitions: 20
+  timing_mode: inference_only
+  control_every_pairs: 25
+  control_shapes: [[64, 64], [160, 160], [160, 320], [320, 320]]

@@ -26,20 +26,20 @@ model_params:
 train_params:
   model: 'roissd-mobilenet'
   model_label_space: 'yolo-imagenet-vid'  # 'coco', 'image-net', 'imagenet-vid-yolo13' or 'voc' - determines how labels are remapped during training and inference
-  roi_mixed_stage: 2
-  seed: 1111
+  roi_mixed_stage: 1
+  seed: 856245
   acc_steps: 3
-  num_epochs: 100
+  num_epochs: 130
   num_epochs_stage2: 20
   num_epochs_stage3: 20
-  batch_size: 20
-  lr_steps: [ 50, 60, 90 ]
-  lr_steps_stage2: [ 10, 15 ]
+  batch_size: 20 # can be 20
+  lr_steps: [ 60, 80, 100, 115 ]
+  lr_steps_stage2: [ 5, 15 ]
   lr_steps_stage3: [ 10, 15 ]
-  lr: 0.000125
+  lr: 0.002
   freeze_backbone_bn: false
   freeze_extra_bn: false
   train_bn_affine: true
   log_steps : 100
-  task_name: 'imagenet-vid-roissd-mobilenet-yolo-config'
-  ckpt_name: 'imagenet20260605stage2.pt'
+  task_name: 'imagenet-vid-roissd-mobilenet-20260910'
+  ckpt_name: 'train_imagenet_vid200712_stage1.pt'

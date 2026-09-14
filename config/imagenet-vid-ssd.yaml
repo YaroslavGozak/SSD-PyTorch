@@ -29,17 +29,17 @@ train_params:
   roi_mixed_stage: 1
   seed: 1111
   acc_steps: 3
-  num_epochs: 100
+  num_epochs: 40
   num_epochs_stage2: 20
   num_epochs_stage3: 20
   batch_size: 12
-  lr_steps: [ 40, 50, 60, 70, 80, 90 ]
+  lr_steps: [ 5, 15 ]
   lr_steps_stage2: [ 5, 15 ]
-  lr_steps_stage3: [ 10, 15 ]
+  lr_steps_stage3: [ 10, 20, 30 ]
   lr: 0.001
   freeze_backbone_bn: false
   freeze_extra_bn: false
   train_bn_affine: true
   log_steps : 100
-  task_name: 'imagenet-vid-ssd'
-  ckpt_name: 'imagenet-vid200712.pth'
+  task_name: 'imagenet-vid-ssd-yolo-config'
+  ckpt_name: 'imagenet-vid200712stage2.pth'

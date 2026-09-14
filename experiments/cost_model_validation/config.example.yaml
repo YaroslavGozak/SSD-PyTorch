@@ -1,0 +1,15 @@
+seed: 20260913
+model:
+  backend: fake
+  weights: null
+  device: cpu
+  stride: 32
+experiment_a:
+  timing_mode: inference_only
+  max_requested_hw: [640, 640]
+  area_fractions: [0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 1.0]
+  global_warmup_iterations: 50
+  repetitions_per_effective_shape: 40
+experiment_b:
+  pair_count: 500
+  repetitions: 20
