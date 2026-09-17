@@ -33,3 +33,9 @@ class UltralyticsAdapter:
 
     def postprocess(self, raw_output):
         return raw_output
+
+    def preprocessing_metadata(self):
+        return {"input": "RGB uint8", "layout": "NCHW", "dtype": "float32", "batch_size": 1,
+                "normalization": "divide_by_255", "resize": "bilinear", "align_corners": False,
+                "shape_policy": "ceil_to_stride", "stride": self.stride,
+                "letterbox": False, "postprocess": "passthrough"}

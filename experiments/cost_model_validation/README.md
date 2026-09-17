@@ -70,3 +70,42 @@ python -m experiments.cost_model_validation.collect_experiment_a `
 	--output outputs/cost_model_voc_roi_ssd `
 	--overwrite
 ```
+
+## Experiment B v2 model comparison
+
+Experiment A writes a versioned `linear_fit.json` calibration artifact containing the linear, quadratic, and piecewise models. Experiment B loads those coefficients without fitting on B and evaluates all available rules on the same measured pairs:
+
+- `linear_tau`: direct linear cost comparison, retaining `tau = K_t / c_t` for compatibility;
+- `quadratic_direct_cost`: direct comparison of the three quadratic predicted costs;
+- `piecewise_direct_cost`: direct comparison using the fitted hinge model and breakpoint.
+
+Run B only after A has completed all repetitions:
+
+```powershell
+python -m experiments.cost_model_validation.collect_experiment_b `
+	--config experiments/cost_model_validation/config.voc-yolo26n.yaml `
+	--fit outputs/cost_model_voc_yolo26n_full/linear_fit.json `
+	--output outputs/cost_model_voc_yolo26n_full `
+	--overwrite
+
+python -m experiments.cost_model_validation.analyze_experiment_b `
+	--input outputs/cost_model_voc_yolo26n_full/experiment_b_raw.csv `
+	--output outputs/cost_model_voc_yolo26n_full `
+	--fit outputs/cost_model_voc_yolo26n_full/linear_fit.json
+```
+
+The B metadata records `schema_version: 2`, the calibration artifact hash, domain counters, order/drift diagnostics, `sampling_basis`/`sampling_tau_pixels`, `measurement_protocol`, and the model metadata. The analyzer automatically resolves calibration from the model snapshot in `experiment_b_metadata.json`, then its referenced artifact, then `linear_fit.json` beside the input CSV. `--fit` explicitly overrides this selection. Recorded relative paths and relocated run folders are supported; discovered files are checked against the recorded hash when one is available.
+
+A piecewise breakpoint enables `area_regime` (`below_breakpoint`/`spans_breakpoint`/`above_breakpoint`) and `metrics_by_area_regime` without requiring `--fit`. The report includes `piecewise_breakpoint_area`, `calibration_reference`, and an explicit `area_regime_unavailable_reason` if no breakpoint can be found. Areas equal to the breakpoint belong to the lower regime.
+
+`decision_metrics.json` contains `model_comparison` for the three rules, each with classification metrics plus `regret_ms_all_pairs` and `regret_ms_determinate_pairs`. The same per-rule breakdown is repeated in `metrics_by_boundary_bin`, `metrics_by_geometry_type`, and, when a breakpoint is available, `metrics_by_area_regime`. Each pair summary includes `effective_areas`, `delta_area`, per-model `predicted_merged_cost_ms`/`predicted_separate_cost_ms`/`predicted_gain_ms`, and the raw per-repetition `M`/`S` observations with their measurement order. Missing quadratic or piecewise coefficients are reported as unavailable rather than estimated from B.
+
+Control records store `predictions.linear`, `predictions.quadratic`, and `predictions.piecewise`, each with predicted latency and relative error `(measured_ms - predicted_ms) / predicted_ms`. Missing models have `available: false` and an explanation. The collector uses the effective shape returned by the timed call. Offline B analysis also reconstructs these predictions for legacy control records and includes them in `decision_metrics.json`; it leaves the original collection metadata unchanged.
+
+## Calibration provenance
+
+New Experiment A collections record weights SHA-256, actual device, backend and package versions, adapter identity, preprocessing (resize, normalization, layout, dtype, stride and postprocessing boundary), Git commit/dirty state, and seed. The analyzer copies this collection-time provenance into `linear_fit.json` and `experiment_a_summary.json`. Use `--metadata` to supply a metadata file stored elsewhere. Experiment B retains the calibration provenance in its metadata.
+
+For historical runs, the analyzer preserves only recorded facts. It does not substitute current package versions or preprocessing for missing historical values. `provenance.complete`, `missing_fields`, and `warnings` identify incomplete records; a new collection is needed to capture values that were never recorded.
+
+Experiment A's `linear_fit.json` reports each model's `fit_metrics` with an explicit `fit_level`: `shape_level` (primary, one point per unique effective shape) and `observation_level` (every raw repetition, kept for noise diagnostics) are both included so model comparison is not silently based on pseudo-replicated observations.

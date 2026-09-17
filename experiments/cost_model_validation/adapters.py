@@ -38,6 +38,9 @@ class PreparedInput:
 class DetectorAdapter(Protocol):
     stride: int
 
+    def preprocessing_metadata(self) -> dict:
+        ...
+
     def prepare(self, image: np.ndarray, requested_hw: Tuple[int, int]) -> PreparedInput:
         ...
 
@@ -73,3 +76,7 @@ class FakeAdapter:
 
     def postprocess(self, raw_output: Any) -> Any:
         return raw_output
+
+    def preprocessing_metadata(self):
+        return {"input": "ignored", "content": "zeros", "layout": "NCHW", "dtype": "float32",
+                "batch_size": 1, "shape_policy": "ceil_to_stride", "stride": self.stride}

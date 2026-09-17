@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import os
 import random
 import time
 import uuid
@@ -11,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from .adapters import FakeAdapter, PreparedInput
-from .common import RAW_A_FIELDS, append_csv, deterministic_image, file_sha256, load_config, system_metadata, write_json
+from .common import RAW_A_FIELDS, append_csv, collection_provenance, deterministic_image, load_config, system_metadata, write_json
 from .timing import measure
 
 
@@ -83,6 +82,11 @@ def collect(config, output: str, overwrite: bool = False) -> None:
         with raw_path.open(newline="", encoding="utf-8") as handle:
             existing = {(row.get("session_id"), row.get("run_id"), row.get("requested_w"), row.get("requested_h")) for row in csv.DictReader(handle)}
     session_start = time.perf_counter()
+    provenance = collection_provenance(config, adapter, mode)
+    if raw_path.exists() and not overwrite:
+        # A resumed legacy run must not acquire invented historical environment data.
+        old_metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
+        provenance = old_metadata.get("provenance", {})
     print(f"[experiment_a] starting {repetitions} repetitions across {len(shapes)} effective shapes; mode={mode}", flush=True)
     for _ in range(int(experiment.get("global_warmup_iterations", 50))):
         measure(adapter, image, shapes[0][::-1], mode)
@@ -120,7 +124,8 @@ def collect(config, output: str, overwrite: bool = False) -> None:
     metadata = system_metadata()
     metadata.update({"config": config, "session_id": session_id, "timing_mode": mode, "model_stride": adapter.stride,
                      "effective_shape_sources": shape_sources,
-                     "model_weights_sha256": file_sha256(config["model"]["weights"]) if config.get("model", {}).get("weights") and os.path.exists(config["model"]["weights"]) else None,
+                     "model_weights_sha256": provenance.get("weights_sha256"),
+                     "provenance": provenance,
                      "warnings": ["temperature/frequency unavailable"]})
     write_json(output_dir / "metadata.json", metadata)
 

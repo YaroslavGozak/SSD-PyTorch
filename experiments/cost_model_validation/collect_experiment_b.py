@@ -10,14 +10,14 @@ from pathlib import Path
 import numpy as np
 
 from .adapters import FakeAdapter
-from .common import append_csv, deterministic_image, load_config, system_metadata, write_json
+from .common import append_csv, deterministic_image, file_sha256, load_config, read_cpu_freq, read_cpu_temp, system_metadata, write_json
 from .geometry import Rectangle, union_rectangle
-from .models import merge_decision
+from .models import control_predictions, decide_merge, load_latency_models
 from .collect_experiment_a import build_adapter
 from .timing import measure
 
 
-FIELDS = ["session_id", "pair_id", "repetition", "order", "timing_mode", "geometry_type", "boundary_bin", "r1_x1", "r1_y1", "r1_x2", "r1_y2", "r2_x1", "r2_y1", "r2_x2", "r2_y2", "union_x1", "union_y1", "union_x2", "union_y2", "r1_tensor_w", "r1_tensor_h", "r2_tensor_w", "r2_tensor_h", "union_tensor_w", "union_tensor_h", "a1_effective", "a2_effective", "au_effective", "delta_effective_area", "tau_used", "predicted_merge", "separate_ms", "merged_ms", "difference_ms", "cpu_temp_c", "cpu_freq_mhz", "elapsed_s", "timestamp_utc"]
+FIELDS = ["session_id", "pair_id", "repetition", "order", "timing_mode", "geometry_type", "boundary_bin", "r1_x1", "r1_y1", "r1_x2", "r1_y2", "r2_x1", "r2_y1", "r2_x2", "r2_y2", "union_x1", "union_y1", "union_x2", "union_y2", "r1_tensor_w", "r1_tensor_h", "r2_tensor_w", "r2_tensor_h", "union_tensor_w", "union_tensor_h", "a1_effective", "a2_effective", "au_effective", "delta_effective_area", "tau_used", "predicted_merge", "linear_tau_predicted_merge", "quadratic_direct_predicted_merge", "piecewise_direct_predicted_merge", "linear_predicted_gain_ms", "quadratic_predicted_gain_ms", "piecewise_predicted_gain_ms", "linear_predicted_merged_cost_ms", "linear_predicted_separate_cost_ms", "quadratic_predicted_merged_cost_ms", "quadratic_predicted_separate_cost_ms", "piecewise_predicted_merged_cost_ms", "piecewise_predicted_separate_cost_ms", "separate_ms", "merged_ms", "difference_ms", "cpu_temp_c", "cpu_freq_mhz", "elapsed_s", "timestamp_utc"]
 
 
 def generate_pairs(count: int, canvas_hw, tau: float, seed: int, quotas=None):
@@ -105,9 +105,13 @@ def generate_pairs(count: int, canvas_hw, tau: float, seed: int, quotas=None):
 def balanced_orders(repetitions: int, seed: int):
     if repetitions < 2 or repetitions % 2:
         raise ValueError("Experiment B repetitions must be a positive even number")
-    orders = ["separate_first"] * (repetitions // 2) + ["merged_first"] * (repetitions // 2)
-    random.Random(seed).shuffle(orders)
-    return orders
+    blocks = []
+    for block_id in range(repetitions // 4):
+        blocks.append(["merged_first", "separate_first", "separate_first", "merged_first"] if block_id % 2 == 0 else ["separate_first", "merged_first", "merged_first", "separate_first"])
+    if repetitions % 4:
+        blocks.append(["separate_first", "merged_first"])
+    random.Random(seed).shuffle(blocks)
+    return [order for block in blocks for order in block][:repetitions]
 
 
 def validate_complete_experiment_a(output_dir: Path, config, expected_shapes: int):
@@ -140,6 +144,7 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
     if tau <= 0:
         raise ValueError("Experiment B requires positive tau; use --tau-override explicitly for a manual override")
     experiment = config.get("experiment_b", {})
+    latency_models = load_latency_models(fit)
     progress_every = max(1, int(experiment.get("progress_every_pairs", 1)))
     progress_every_repetitions = max(1, int(experiment.get("progress_every_repetitions", 5)))
     seed = int(config.get("seed", 0))
@@ -160,8 +165,9 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
     selected_by_bin = {name: 0 for name in quota_targets}
     envelope = fit.get("calibration_envelope")
     domain_policy = str(experiment.get("domain_policy", "reject_out_of_domain"))
-    out_of_domain_pairs = 0
-    out_of_domain_invocations = 0
+    rejected_out_of_domain_candidate_count = 0
+    rejected_out_of_domain_shape_check_count = 0
+    accepted_out_of_calibration_pair_count = 0
     rejection_counts = {"out_of_domain": 0, "duplicate": 0, "outside_boundary_bins": 0, "quota_full": 0}
     batch_size = max(requested_count * 10, 1000)
     max_batches = max(1, int(experiment.get("max_pair_generation_batches", 20)))
@@ -182,11 +188,12 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
                                 envelope.get("min_aspect_ratio", 0.0) <= item.tensor_w / item.tensor_h <= envelope.get("max_aspect_ratio", float("inf"))
                                 for item in prepared)
                 if not in_domain:
-                    out_of_domain_pairs += 1
-                    out_of_domain_invocations += 3
+                    rejected_out_of_domain_candidate_count += 1
+                    rejected_out_of_domain_shape_check_count += len(prepared)
                     rejection_counts["out_of_domain"] += 1
                     if domain_policy == "reject_out_of_domain":
                         continue
+                    accepted_out_of_calibration_pair_count += 1
             key = tuple(value for item in prepared for value in item.tensor_hw)
             if key in computational_keys:
                 rejection_counts["duplicate"] += 1
@@ -237,10 +244,11 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
     completed_pairs = set()
     pair_trial_counts = {}
     control_every_pairs = max(0, int(experiment.get("control_every_pairs", 25)))
-    control_shapes = [tuple(map(int, shape)) for shape in experiment.get("control_shapes", [[64, 64], [160, 160], [160, 320], [320, 320]])]
+    control_shapes = [tuple(map(int, shape)) for shape in experiment.get("control_shapes", [[160, 160], [160, 320], [320, 320]])]
+    invalid_controls = [shape for shape in control_shapes if not latency_models["linear"].is_in_domain(*shape)]
+    if invalid_controls:
+        raise ValueError(f"Primary control shapes are outside the calibration envelope: {invalid_controls}")
     control_records = []
-    fit_k = float(fit.get("K_t_s", 0.0))
-    fit_c = float(fit.get("c_t_s_per_pixel", 0.0))
     for completed_trial, (pair_id, repetition) in enumerate(trials, 1):
         pair = pairs[pair_id]
         prepared_shapes = pair["prepared"]
@@ -255,10 +263,19 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
                 values.append(result.inference_ms if experiment.get("timing_mode", "inference_only") == "inference_only" else result.detector_call_ms)
             if kind == "separate": separate_ms = sum(values)
             else: merged_ms = values[0]
+        decisions = {name: decide_merge(model, shapes[0], shapes[1], shapes[2]) for name, model in latency_models.items()}
+        linear_decision = decisions["linear"]
+
+        def _gain_ms(name):
+            return decisions[name]["predicted_gain_s"] * 1000.0 if name in decisions else "unavailable"
+
+        def _cost_ms(name, key):
+            return decisions[name][key] * 1000.0 if name in decisions else "unavailable"
+
         row = {"session_id": session_id, "pair_id": pair_id, "repetition": repetition, "order": order, "timing_mode": experiment.get("timing_mode", "inference_only"), "geometry_type": pair["geometry_type"], "boundary_bin": pair["boundary_bin"],
                    **{f"r1_{key}": getattr(pair["first"], key) for key in ("x1", "y1", "x2", "y2")}, **{f"r2_{key}": getattr(pair["second"], key) for key in ("x1", "y1", "x2", "y2")}, **{f"union_{key}": getattr(pair["union"], key) for key in ("x1", "y1", "x2", "y2")},
                    "r1_tensor_w": shapes[0][1], "r1_tensor_h": shapes[0][0], "r2_tensor_w": shapes[1][1], "r2_tensor_h": shapes[1][0], "union_tensor_w": shapes[2][1], "union_tensor_h": shapes[2][0],
-                   "a1_effective": prepared_shapes[0].effective_area, "a2_effective": prepared_shapes[1].effective_area, "au_effective": prepared_shapes[2].effective_area, "delta_effective_area": pair["delta"], "tau_used": tau, "predicted_merge": merge_decision(pair["delta"], tau), "separate_ms": separate_ms, "merged_ms": merged_ms, "difference_ms": separate_ms - merged_ms, "elapsed_s": __import__("time").perf_counter() - session_start, "timestamp_utc": system_metadata()["timestamp_utc"]}
+                   "a1_effective": prepared_shapes[0].effective_area, "a2_effective": prepared_shapes[1].effective_area, "au_effective": prepared_shapes[2].effective_area, "delta_effective_area": pair["delta"], "tau_used": tau, "predicted_merge": linear_decision["predicted_merge"], "linear_tau_predicted_merge": linear_decision["predicted_merge"], "quadratic_direct_predicted_merge": decisions.get("quadratic", {}).get("predicted_merge", "unavailable"), "piecewise_direct_predicted_merge": decisions.get("piecewise", {}).get("predicted_merge", "unavailable"), "linear_predicted_gain_ms": _gain_ms("linear"), "quadratic_predicted_gain_ms": _gain_ms("quadratic"), "piecewise_predicted_gain_ms": _gain_ms("piecewise"), "linear_predicted_merged_cost_ms": _cost_ms("linear", "predicted_merged_cost_s"), "linear_predicted_separate_cost_ms": _cost_ms("linear", "predicted_separate_cost_s"), "quadratic_predicted_merged_cost_ms": _cost_ms("quadratic", "predicted_merged_cost_s"), "quadratic_predicted_separate_cost_ms": _cost_ms("quadratic", "predicted_separate_cost_s"), "piecewise_predicted_merged_cost_ms": _cost_ms("piecewise", "predicted_merged_cost_s"), "piecewise_predicted_separate_cost_ms": _cost_ms("piecewise", "predicted_separate_cost_s"), "separate_ms": separate_ms, "merged_ms": merged_ms, "difference_ms": separate_ms - merged_ms, "cpu_temp_c": read_cpu_temp(), "cpu_freq_mhz": read_cpu_freq(), "elapsed_s": __import__("time").perf_counter() - session_start, "timestamp_utc": system_metadata()["timestamp_utc"]}
         append_csv(raw_path, row, FIELDS)
         pair_trial_counts[pair_id] = pair_trial_counts.get(pair_id, 0) + 1
         if completed_trial % progress_every_repetitions == 0 or completed_trial == len(trials):
@@ -271,23 +288,32 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
             completed_pairs.add(pair_id)
             if control_every_pairs and len(completed_pairs) % control_every_pairs == 0:
                 for control_h, control_w in control_shapes:
-                    _, control_result = measure(adapter, image, (control_h, control_w), str(experiment.get("timing_mode", "inference_only")))
+                    prepared_control, control_result = measure(adapter, image, (control_h, control_w), str(experiment.get("timing_mode", "inference_only")))
                     measured_ms = control_result.inference_ms if experiment.get("timing_mode", "inference_only") == "inference_only" else control_result.detector_call_ms
-                    prepared_control = adapter.prepare(image, (control_h, control_w))
-                    predicted_ms = (fit_k + fit_c * prepared_control.effective_area) * 1000.0
-                    relative_error = (measured_ms - predicted_ms) / predicted_ms if predicted_ms > 0 else float("nan")
-                    control_records.append({"pair_completed": len(completed_pairs), "requested_h": control_h, "requested_w": control_w, "tensor_h": prepared_control.tensor_h, "tensor_w": prepared_control.tensor_w, "measured_ms": measured_ms, "predicted_ms": predicted_ms, "relative_error": relative_error})
+                    predictions = control_predictions(latency_models, prepared_control.effective_area, measured_ms)
+                    control_records.append({"pair_completed": len(completed_pairs), "requested_h": control_h, "requested_w": control_w,
+                                            "tensor_h": prepared_control.tensor_h, "tensor_w": prepared_control.tensor_w,
+                                            "effective_area": prepared_control.effective_area,
+                                            "measured_ms": measured_ms, "predictions": predictions})
                 print(f"[experiment_b] control checkpoint after {len(completed_pairs)} pairs: "
-                      f"max abs model deviation {max(abs(item['relative_error']) for item in control_records[-len(control_shapes):]):.1%}", flush=True)
+                      f"max abs linear model deviation {max(abs(item['predictions']['linear']['relative_error']) for item in control_records[-len(control_shapes):]):.1%}", flush=True)
             if len(completed_pairs) % progress_every == 0 or len(completed_pairs) == len(pairs):
                 print(f"[experiment_b] completed {len(completed_pairs)}/{len(pairs)} pairs; elapsed {time.perf_counter() - collection_start:.1f}s", flush=True)
     write_json(output_dir / "experiment_b_metadata.json", {**system_metadata(), "config": config, "tau_used": tau, "tau_override": tau_override is not None, "session_id": session_id,
                                                             "pair_count": len(pairs), "near_pair_count": sum(pair["boundary_bin"] in {"near", "near_low", "near_high"} for pair in pairs),
                                                             "unique_computational_pair_count": len(computational_keys),
-                                                            "domain_policy": domain_policy, "out_of_calibration_pair_count": out_of_domain_pairs,
-                                                            "out_of_calibration_invocation_count": out_of_domain_invocations,
+                                                            "domain_policy": domain_policy,
+                                                            "rejected_out_of_domain_candidate_count": rejected_out_of_domain_candidate_count,
+                                                            "rejected_out_of_domain_shape_check_count": rejected_out_of_domain_shape_check_count,
+                                                            "accepted_out_of_calibration_pair_count": accepted_out_of_calibration_pair_count,
                                                             "control_shapes": control_shapes, "control_records": control_records,
-                                                            "hardware_state_shift": any(abs(item["relative_error"]) > .10 for item in control_records)})
+                                                            "schema_version": 2, "calibration_reference": {"path": str(Path(fit_path).resolve()), "content_hash": file_sha256(fit_path)}, "latency_models": {name: model.metadata() for name, model in latency_models.items()},
+                                                            "calibration_provenance": fit.get("provenance", {}),
+                                                            "sampling_basis": "linear_tau", "sampling_tau_pixels": tau, "boundary_quotas": quota_fractions,
+                                                            "measurement_protocol": {"timing_mode": experiment.get("timing_mode", "inference_only"), "order_design": "balanced_abba_baab",
+                                                                                      "repetitions_per_pair": repetitions, "control_every_pairs": control_every_pairs},
+                                                            "cpu_temp_sensor_available": read_cpu_temp() is not None, "cpu_freq_sensor_available": read_cpu_freq() is not None,
+                                                            "hardware_state_shift": any(abs(item["predictions"]["linear"]["relative_error"]) > .10 for item in control_records)})
 
 
 def main():

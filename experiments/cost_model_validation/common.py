@@ -7,6 +7,8 @@ import os
 import platform
 import subprocess
 import time
+from importlib.metadata import PackageNotFoundError, version
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -47,12 +49,48 @@ def _json_default(value: Any) -> Any:
     raise TypeError(f"Not JSON serializable: {type(value)!r}")
 
 
-def system_metadata() -> Dict[str, Any]:
-    return {"timestamp_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "python": platform.python_version(), "os": platform.platform(),
+@lru_cache(maxsize=1)
+def _static_system_metadata() -> Dict[str, Any]:
+    return {"python": platform.python_version(), "os": platform.platform(),
             "architecture": platform.machine(), "logical_cpu_count": os.cpu_count(),
             "pid": os.getpid(), "cpu_temp_c": read_cpu_temp(), "cpu_freq_mhz": read_cpu_freq(),
             "git_commit": _git("rev-parse", "HEAD"), "git_dirty": bool(_git("status", "--porcelain"))}
+
+
+def system_metadata() -> Dict[str, Any]:
+    metadata = dict(_static_system_metadata())
+    metadata["timestamp_utc"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    return metadata
+
+
+def collection_provenance(config, adapter, timing_mode):
+    """Capture model identity at collection time, never from an analysis environment."""
+    model = config.get("model", {})
+    backend = model.get("backend", "fake")
+    versions = {}
+    for package in ("numpy", "torch", "torchvision", "ultralytics"):
+        try:
+            versions[package] = version(package)
+        except PackageNotFoundError:
+            versions[package] = None
+    weights = model.get("weights")
+    preprocessing = adapter.preprocessing_metadata()
+    return {
+        "backend": backend,
+        "backend_version": versions.get("ultralytics" if backend == "ultralytics" else "numpy" if backend == "fake" else "torch"),
+        "versions": versions,
+        "adapter": f"{type(adapter).__module__}.{type(adapter).__name__}",
+        "device": str(getattr(adapter, "device", "cpu")),
+        "weights_path": weights,
+        "weights_sha256": file_sha256(weights) if weights else None,
+        "model_config": model.get("model_config"),
+        "model_config_sha256": file_sha256(model["model_config"]) if model.get("model_config") else None,
+        "model_stride": adapter.stride,
+        "preprocessing": preprocessing,
+        "timing_mode": timing_mode,
+        "seed": int(config.get("seed", 0)),
+        **system_metadata(),
+    }
 
 
 def read_cpu_temp() -> Any:
@@ -82,8 +120,8 @@ def file_sha256(path: str) -> str:
 
 def _git(*args: str) -> str:
     try:
-        return subprocess.check_output(["git", *args], text=True, stderr=subprocess.DEVNULL).strip()
-    except (OSError, subprocess.CalledProcessError):
+        return subprocess.check_output(["git", *args], text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return ""
 
 

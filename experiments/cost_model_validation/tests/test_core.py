@@ -5,7 +5,9 @@ from experiments.cost_model_validation.geometry import (
     Rectangle, effective_area, stride_rounded_shape, union_rectangle,
 )
 from experiments.cost_model_validation.timing import measure
-from experiments.cost_model_validation.models import fit_linear_model, merge_decision
+from experiments.cost_model_validation.models import (
+    CalibrationEnvelope, PolynomialLatencyModel, decide_merge, fit_linear_model, merge_decision,
+)
 from experiments.cost_model_validation.collect_experiment_b import balanced_orders, generate_pairs
 from experiments.cost_model_validation.common import bootstrap_ci
 
@@ -56,6 +58,18 @@ class CoreTests(unittest.TestCase):
     def test_bootstrap_ci_uses_replicate_quantiles(self):
         ci = bootstrap_ci([0.0, 1.0, 2.0, 3.0, 4.0])
         self.assertEqual(ci, [0.1, 3.9])
+
+    def test_linear_direct_cost_matches_tau_and_strict_tie(self):
+        envelope = CalibrationEnvelope(1, 1_000_000, 1, 1000, 1, 1000, .1, 10.0)
+        model = PolynomialLatencyModel("linear", {"b0": 10.0, "b1": 2.0}, envelope)
+        self.assertEqual(decide_merge(model, (2, 2), (2, 2), (2, 3))["predicted_merge"], True)
+        self.assertEqual(decide_merge(model, (2, 2), (2, 2), (1, 13))["predicted_merge"], False)
+
+    def test_piecewise_formula_is_continuous_at_breakpoint(self):
+        envelope = CalibrationEnvelope(1, 1_000_000, 1, 1000, 1, 1000, .1, 10.0)
+        model = PolynomialLatencyModel("piecewise", {"b0": 1.0, "b1": 2.0, "b2": 3.0}, envelope, 10)
+        self.assertAlmostEqual(model.predict_seconds(10), 21.0)
+        self.assertAlmostEqual(model.predict_seconds(11), 26.0)
 
 
 if __name__ == "__main__":

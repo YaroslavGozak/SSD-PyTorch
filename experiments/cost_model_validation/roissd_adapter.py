@@ -55,3 +55,9 @@ class RoiSSDAdapter:
 
     def postprocess(self, raw_output):
         return raw_output
+
+    def preprocessing_metadata(self):
+        return {"input": "RGB uint8", "layout": "NCHW", "dtype": "float32", "batch_size": 1,
+                "normalization": "divide_by_255", "resize": "bilinear", "align_corners": False,
+                "shape_policy": "ceil_to_stride" if self.stride > 1 else "requested_hw", "stride": self.stride,
+                "letterbox": False, "postprocess": "passthrough; model forward includes detection processing"}
