@@ -168,10 +168,11 @@ def fit_quadratic_model(area: Sequence[float], time_s: Sequence[float]) -> FitRe
                     {"b0": float(b0), "b1": float(b1), "b2": float(b2)}, 3)
 
 
-def fit_piecewise_model(area: Sequence[float], time_s: Sequence[float], breakpoint: Optional[float] = None) -> FitResult:
+def fit_piecewise_model(area: Sequence[float], time_s: Sequence[float], breakpoint: Optional[float] = None, min_support: int = 1) -> FitResult:
     x, y = _arrays(area, time_s)
     unique = np.unique(x)
     candidates = [breakpoint] if breakpoint is not None else [v for v in unique if np.quantile(x, .1) <= v <= np.quantile(x, .9)]
+    candidates = [v for v in candidates if np.sum(unique <= v) >= min_support and np.sum(unique > v) >= min_support]
     if not candidates:
         raise ValueError("At least three unique areas are required for a breakpoint fit")
     best = None

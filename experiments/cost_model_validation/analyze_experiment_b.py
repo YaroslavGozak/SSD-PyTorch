@@ -10,6 +10,7 @@ import numpy as np
 
 from .common import file_sha256, write_json
 from .models import control_predictions, load_latency_models
+from .reproducibility import order_estimate, gate, canonical_hash
 
 # (rule_name, predicted_merge column, gain column, merged-cost column, separate-cost column)
 RULES = (
@@ -160,15 +161,31 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
     else:
         control_records = controls
 
+    if metadata.get("pair_specs") and canonical_hash(metadata["pair_specs"]) != metadata.get("pair_specs_hash"):
+        raise ValueError("Recorded pair specs hash mismatch")
+    if len({r.get("session_id", "legacy") for r in rows}) != 1 or len({r["timing_mode"] for r in rows}) != 1:
+        raise ValueError("Mixed sessions or timing modes in Experiment B")
     grouped = defaultdict(list)
     for row in rows:
         grouped[row["pair_id"]].append(row)
 
+    options = metadata.get("config", {}).get("experiment_b", {})
+    bootstrap_count = int(options.get("bootstrap_count", 2000))
+    bootstrap_seed = int(options.get("bootstrap_seed", 0))
+    confidence = float(options.get("confidence_level", .95))
+    warnings = list(metadata.get("quality_warnings", []))
+    gate(not metadata.get("hardware_state_shift",False), "control_drift", metadata.get("config", {}), warnings)
     summaries = []
     for pair_id, pair_rows in grouped.items():
         first = pair_rows[0]
+        if len({r["repetition"] for r in pair_rows}) != len(pair_rows):
+            raise ValueError(f"Duplicate repetition in pair {pair_id}")
+        if metadata.get("schema_version", 0) >= 3:
+            gate(len(pair_rows) == int(options.get("repetitions",20)), "repetition_count", metadata.get("config",{}), warnings)
         differences = [float(row["difference_ms"]) for row in pair_rows]
-        ci = _mean_ci(differences, seed=int(pair_id))
+        estimate = order_estimate(pair_rows, seed=bootstrap_seed+int(canonical_hash(pair_id)[:8],16), count=bootstrap_count, confidence=confidence)
+        gate(estimate["balanced"], "order_balance", metadata.get("config", {}), warnings)
+        ci = estimate["ci"]
         label = "merge_beneficial" if ci[0] > 0 else ("separate_beneficial" if ci[1] < 0 else "ambiguous")
 
         predictions = {
@@ -184,7 +201,7 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
         raw_observations = [
             {"repetition": int(row["repetition"]), "order": row["order"],
              "separate_ms": float(row["separate_ms"]), "merged_ms": float(row["merged_ms"]),
-             "difference_ms": float(row["difference_ms"])}
+             "difference_ms": float(row["difference_ms"]), "order_block_id": row.get("order_block_id"), "position_in_order_block": row.get("position_in_order_block")}
             for row in pair_rows
         ]
         a1 = float(first["a1_effective"]); a2 = float(first["a2_effective"]); au = float(first["au_effective"])
@@ -200,17 +217,23 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
             "measurements": {
                 "merged_mean_ms": float(np.mean([obs["merged_ms"] for obs in raw_observations])),
                 "separate_mean_ms": float(np.mean([obs["separate_ms"] for obs in raw_observations])),
-                "mean_difference_ms": float(np.mean(differences)),
+                "mean_difference_ms": estimate["estimate"],
+                "order_counts": estimate["order_counts"],
                 "difference_ci_ms": ci,
                 "n_paired_samples": len(raw_observations),
             },
             "raw_observations": raw_observations,
+            "bootstrap_stability": next((p.get("bootstrap_stability", {}) for p in metadata.get("pair_specs", {}).get("pairs", []) if str(p["pair_id"]) == pair_id), {}),
+            "primary_stratum": first.get("primary_stratum") or first["boundary_bin"],
             "boundary_bin": first["boundary_bin"],
             "geometry_type": first["geometry_type"],
             "area_regime": _area_regime(a1, a2, au, breakpoint_area),
             "computational_key": tuple(first[key] for key in ("r1_tensor_h", "r1_tensor_w", "r2_tensor_h", "r2_tensor_w", "union_tensor_h", "union_tensor_w")),
         })
 
+    if metadata.get("pair_specs"):
+        expected = {str(p["pair_id"]) for p in metadata["pair_specs"]["pairs"]}
+        gate(set(grouped) == expected, "missing_pairs", metadata.get("config",{}), warnings)
     order_means = {
         order: float(np.mean([float(row["difference_ms"]) for row in rows if row["order"] == order]))
         for order in ("separate_first", "merged_first") if any(row["order"] == order for row in rows)
@@ -226,10 +249,14 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
     cpu_freq_available = any(row.get("cpu_freq_mhz") not in (None, "") for row in rows)
 
     result = {
-        "schema_version": 2,
+        "schema_version": 3,
+        "pair_specs_hash": metadata.get("pair_specs_hash"),
+        "quality_warnings": warnings,
+        "bootstrap_method": dict(method="stratified_by_order", count=bootstrap_count, seed=bootstrap_seed, confidence_level=confidence),
+        "metrics_by_stratum": _group_reports(summaries,"primary_stratum"),
         "pairs": len(summaries),
         "ambiguous_fraction": sum(row["label"] == "ambiguous" for row in summaries) / max(len(summaries), 1),
-        "sampling": {"sampling_basis": "linear_tau", "sampling_tau_pixels": summaries[0]["tau_used"] if summaries else None},
+        "sampling": {"sampling_basis": metadata.get("sampling_basis", "legacy_linear_tau"), "sampling_tau_pixels": summaries[0]["tau_used"] if summaries else None},
         "measurement_protocol": {
             "timing_mode": rows[0].get("timing_mode"),
             "order_design": "balanced_abba_baab",
@@ -244,7 +271,7 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
         "model_comparison": model_comparison,
         "order_means_ms": order_means,
         "order_effect_ms": order_effect,
-        "order_effect_warning": bool(np.isfinite(order_effect) and abs(order_effect) > .5),
+        "order_effect_warning": bool(np.isfinite(order_effect) and abs(order_effect) > float(options.get("order_effect_warning_ms", .5))),
         "metrics_by_boundary_bin": metrics_by_boundary_bin,
         "metrics_by_geometry_type": metrics_by_geometry_type,
         "metrics_by_area_regime": metrics_by_area_regime,

@@ -1,5 +1,10 @@
 # Cost model validation
 
+For the current schema-v3 workflow (saved A schedules, robust bootstrap, pooled
+sessions and frozen multi-model B pairs), use [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
+The older B command examples below require generating `pair_specs.json` first;
+the single-command `run_experiments` runner handles initial generation.
+
 This package validates `T(A) = K_t + c_t A` independently of the video benchmark. `A` is always the spatial area read from the prepared model tensor. The two timing boundaries are explicit: `inference_only` and `detector_call`; never combine their rows in one fit.
 
 ## CPU smoke test

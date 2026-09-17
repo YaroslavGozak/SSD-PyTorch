@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List
 import numpy as np
 
 
-RAW_A_FIELDS = ["session_id", "run_id", "order_index", "timing_mode", "seed", "requested_w", "requested_h", "requested_area", "crop_w", "crop_h", "crop_area", "tensor_w", "tensor_h", "effective_area", "aspect_ratio", "model_stride", "preprocess_ms", "inference_ms", "postprocess_ms", "detector_call_ms", "prediction_count_before_nms", "prediction_count_after_nms", "cpu_temp_c", "cpu_freq_mhz", "process_rss_mb", "elapsed_s", "timestamp_utc"]
+RAW_A_FIELDS = ["shape_id", "block_index", "position_in_block", "global_position", "latency_s", "session_id", "run_id", "order_index", "timing_mode", "seed", "requested_w", "requested_h", "requested_area", "crop_w", "crop_h", "crop_area", "tensor_w", "tensor_h", "effective_area", "aspect_ratio", "model_stride", "preprocess_ms", "inference_ms", "postprocess_ms", "detector_call_ms", "prediction_count_before_nms", "prediction_count_after_nms", "cpu_temp_c", "cpu_freq_mhz", "process_rss_mb", "elapsed_s", "timestamp_utc"]
 
 
 def load_config(path: str) -> Dict[str, Any]:
@@ -87,6 +87,8 @@ def collection_provenance(config, adapter, timing_mode):
         "model_config_sha256": file_sha256(model["model_config"]) if model.get("model_config") else None,
         "model_stride": adapter.stride,
         "preprocessing": preprocessing,
+        "dtype": preprocessing.get("dtype"),
+        "shape_policy": preprocessing.get("shape_policy"),
         "timing_mode": timing_mode,
         "seed": int(config.get("seed", 0)),
         **system_metadata(),
