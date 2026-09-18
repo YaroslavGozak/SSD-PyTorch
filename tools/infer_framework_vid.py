@@ -86,7 +86,8 @@ def infer_sequentially_with_roi(args):
     inference_cfg = benchmark_params['inference']
     tracker_input_dropout_cfg = benchmark_params.get('tracker_input_dropout', None)
     roi_merge_cfg = benchmark_params['roi_merge']
-    merge_fn = MERGE_STRATEGIES[roi_merge_cfg['strategy']]
+    from tools.helpers.pipeline import build_merge_strategy
+    merge_fn = build_merge_strategy(roi_merge_cfg)
     merge_tau = float(roi_merge_cfg.get('tau', 150000.0))
     im_size_hw = ensure_im_size_tuple(config['dataset_params']['im_size'])
 

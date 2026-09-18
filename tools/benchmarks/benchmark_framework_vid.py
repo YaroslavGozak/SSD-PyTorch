@@ -289,7 +289,8 @@ class VideoSequenceBenchmark:
         self.key_frame_interval = max(1, int(inf["key_frame_interval"]))
         self.nms_iou = float(inf["nms_iou"])
         roi_m = p["roi_merge"]
-        self.merge_fn = MERGE_STRATEGIES[roi_m["strategy"]]
+        from tools.helpers.pipeline import build_merge_strategy
+        self.merge_fn = build_merge_strategy(roi_m)
         self.merge_tau = float(roi_m.get("tau", 150000.0))
         self.adaptive_tau_enabled = bool(roi_m.get('adaptive_tau', False))
         self.adaptive_tau_window_size = int(roi_m.get('adaptive_tau_window_size', 100))
@@ -322,6 +323,7 @@ class VideoSequenceBenchmark:
             "benchmark_tracker_type": "none" if self.key_frame_interval == 1 else str(tracker_cfg.get("type", "unknown")),
             "merge_fn": str(roi_m.get("strategy", "unknown")),
             "merge_tau": self.merge_tau,
+            "calibrated_merge": self.merge_fn.metadata() if hasattr(self.merge_fn,"metadata") else None,
             "adaptive_tau_enabled": self.adaptive_tau_enabled,
             "adaptive_tau_window_size": self.adaptive_tau_window_size,
             "adaptive_tau_min_samples": self.adaptive_tau_min_samples,

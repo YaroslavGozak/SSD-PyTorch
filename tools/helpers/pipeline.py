@@ -71,7 +71,19 @@ def run_model_inference(model, images: torch.Tensor):
 def _merge_none(rois: List, **_) -> List:
     return list(rois)
 
+def _calibrated_requires_config(*args, **kwargs):
+    raise ValueError("calibrated strategy requires calibration via build_merge_strategy")
+
+
+def build_merge_strategy(config):
+    if config["strategy"] == "calibrated":
+        from tools.mergers.calibrated import CalibratedRoiMerger
+        return CalibratedRoiMerger(config["calibration"],config.get("policies"))
+    return MERGE_STRATEGIES[config["strategy"]]
+
+
 MERGE_STRATEGIES: Dict[str, Callable] = {
+    "calibrated": _calibrated_requires_config,
     "greedy":    lambda rois, image_size, tau=150000.0: greedy_roi_merge(rois, tau=tau, image_size=image_size),
     "simple":    lambda rois, **_: simple_roi_merge(rois),
     "simple_v2": lambda rois, **_: simple_roi_merge_v2(rois),
