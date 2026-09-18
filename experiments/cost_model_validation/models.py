@@ -105,9 +105,33 @@ def load_latency_models(artifact: Dict[str, Any]) -> Dict[str, PolynomialLatency
         if name == "piecewise" and breakpoint_area is None:
             continue
         models[name] = PolynomialLatencyModel(name, {key: float(value) for key, value in coefficients.items()}, envelope, breakpoint_area)
+        validate_monotonic(models[name])
     if "linear" not in models:
         raise ValueError("Calibration artifact does not contain a valid linear model")
     return models
+
+
+def validate_monotonic(model):
+    c = model.coefficients
+    slopes = [c["b1"]]
+    if model.name == "piecewise":
+        slopes.append(c["b1"]+c["b2"])
+    if model.name == "quadratic":
+        slopes = [c["b1"]+2*c["b2"]*a for a in (model.envelope.min_effective_area,model.envelope.max_effective_area)]
+    if any(not np.isfinite(v) or v <= 0 for v in slopes):
+        raise ValueError(f"{model.name} latency model must be strictly increasing on its domain")
+
+
+def piecewise_area_limit(a1, a2, model):
+    if model.name != "piecewise":
+        raise ValueError("piecewise_area_limit requires a piecewise model")
+    validate_monotonic(model)
+    c = model.coefficients
+    separate = model.predict_seconds(a1)+model.predict_seconds(a2)
+    at_breakpoint = c["b0"]+c["b1"]*model.breakpoint_area
+    if separate <= at_breakpoint:
+        return (separate-c["b0"])/c["b1"]
+    return model.breakpoint_area+(separate-at_breakpoint)/(c["b1"]+c["b2"])
 
 
 @dataclass

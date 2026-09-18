@@ -18,9 +18,12 @@ from .pair_specs import load as load_pair_specs
 from .common import collection_provenance
 from .geometry import stride_rounded_shape
 from .reproducibility import gate
+from .artifacts import load_calibration, reference
+from .shape_model import MergePolicy, policy_declaration
+from .validation_design import check_freshness, mark_used, repetitions_for_pair, control_diagnostics
 
 
-FIELDS = ["order_block_id", "position_in_order_block", "primary_stratum", "stratum_tags", "session_id", "pair_id", "repetition", "order", "timing_mode", "geometry_type", "boundary_bin", "r1_x1", "r1_y1", "r1_x2", "r1_y2", "r2_x1", "r2_y1", "r2_x2", "r2_y2", "union_x1", "union_y1", "union_x2", "union_y2", "r1_tensor_w", "r1_tensor_h", "r2_tensor_w", "r2_tensor_h", "union_tensor_w", "union_tensor_h", "a1_effective", "a2_effective", "au_effective", "delta_effective_area", "tau_used", "predicted_merge", "linear_tau_predicted_merge", "quadratic_direct_predicted_merge", "piecewise_direct_predicted_merge", "linear_predicted_gain_ms", "quadratic_predicted_gain_ms", "piecewise_predicted_gain_ms", "linear_predicted_merged_cost_ms", "linear_predicted_separate_cost_ms", "quadratic_predicted_merged_cost_ms", "quadratic_predicted_separate_cost_ms", "piecewise_predicted_merged_cost_ms", "piecewise_predicted_separate_cost_ms", "separate_ms", "merged_ms", "difference_ms", "cpu_temp_c", "cpu_freq_mhz", "elapsed_s", "timestamp_utc"]
+FIELDS = ["evaluation_design", "order_block_id", "position_in_order_block", "primary_stratum", "stratum_tags", "session_id", "pair_id", "repetition", "order", "timing_mode", "geometry_type", "boundary_bin", "r1_x1", "r1_y1", "r1_x2", "r1_y2", "r2_x1", "r2_y1", "r2_x2", "r2_y2", "union_x1", "union_y1", "union_x2", "union_y2", "r1_tensor_w", "r1_tensor_h", "r2_tensor_w", "r2_tensor_h", "union_tensor_w", "union_tensor_h", "a1_effective", "a2_effective", "au_effective", "delta_effective_area", "tau_used", "predicted_merge", "linear_tau_predicted_merge", "quadratic_direct_predicted_merge", "piecewise_direct_predicted_merge", "linear_predicted_gain_ms", "quadratic_predicted_gain_ms", "piecewise_predicted_gain_ms", "linear_predicted_merged_cost_ms", "linear_predicted_separate_cost_ms", "quadratic_predicted_merged_cost_ms", "quadratic_predicted_separate_cost_ms", "piecewise_predicted_merged_cost_ms", "piecewise_predicted_separate_cost_ms", "separate_ms", "merged_ms", "difference_ms", "cpu_temp_c", "cpu_freq_mhz", "elapsed_s", "timestamp_utc"]
 
 
 def generate_pairs(count: int, canvas_hw, tau: float, seed: int, quotas=None):
@@ -135,12 +138,12 @@ def validate_complete_experiment_a(output_dir: Path, config, expected_shapes: in
     return len(rows)
 
 
-def collect(config, fit_path: str, output: str, tau_override: float | None = None, overwrite: bool = False, pairs_path: str | None = None):
+def collect(config, fit_path: str, output: str, tau_override: float | None = None, overwrite: bool = False, pairs_path: str | None = None, allow_reused_pairs: bool = False):
     import json
     output_dir = Path(output)
     output_dir.mkdir(parents=True, exist_ok=True)
     raw_path = output_dir / "experiment_b_raw.csv"
-    fit = json.loads(Path(fit_path).read_text(encoding="utf-8"))
+    fit = load_calibration(fit_path)
     if tau_override is not None:
         raise ValueError("Frozen validation uses calibration coefficients; tau override is not supported")
     tau = float(fit["tau_pixels"])
@@ -167,6 +170,20 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
     if not specs_path.exists():
         raise FileNotFoundError(f"Generate frozen pairs first with python -m experiments.cost_model_validation.pair_specs: {specs_path}")
     pairs, specs = load_pair_specs(specs_path,config,fit_path,adapter,image)
+    quality_warnings.extend(check_freshness(specs_path,specs,config,allow_reused_pairs))
+    policy = MergePolicy(fit,policy_declaration(config))
+    strict_lookup = experiment.get("strict_lookup",False) or config.get("publication_run",False)
+    if experiment.get("confirmatory") and fit.get("policy_declaration") != policy_declaration(config):
+        raise ValueError("Calibration policy declaration differs from requested validation")
+    candidate_predictions = {}
+    for index,pair in enumerate(pairs):
+        shapes = [p.tensor_hw for p in pair["prepared"]]
+        values = {}
+        for name in ("shape_lookup","shape_lookup_conservative","conservative_consensus"):
+            if name.startswith("shape_lookup") and not strict_lookup and (policy.lookup is None or not all(policy.lookup.is_in_domain(*hw) for hw in shapes)):
+                continue
+            values[name] = policy.predict(shapes,name,strict=True)
+        candidate_predictions[str(pair["specification"]["pair_id"])] = values
     computational_keys = {tuple(p["specification"]["computational_key"]) for p in pairs}
     quota_fractions = specs["payload"]["quotas"]
     domain_policy = "reject_out_of_domain"
@@ -175,12 +192,12 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
         if not overwrite:
             raise ValueError("Experiment B output already exists; use --overwrite or a new output directory")
         raw_path.unlink()
-    repetitions = int(experiment.get("repetitions", 20))
+    repetitions_by_pair = {i:repetitions_for_pair(config,p["specification"]) for i,p in enumerate(pairs)}
     randomizer = random.Random(seed)
     session_id = str(uuid.uuid4())
     session_start = __import__("time").perf_counter()
-    orders = {pair_id: balanced_orders(repetitions, seed + pair_id) for pair_id in range(len(pairs))}
-    blocks = [(pair_id, list(range(start,min(start+4,repetitions)))) for pair_id in range(len(pairs)) for start in range(0,repetitions,4)]
+    orders = {pair_id: balanced_orders(repetitions_by_pair[pair_id], seed + pair_id) for pair_id in range(len(pairs))}
+    blocks = [(pair_id, list(range(start,min(start+4,repetitions_by_pair[pair_id])))) for pair_id in range(len(pairs)) for start in range(0,repetitions_by_pair[pair_id],4)]
     randomizer.shuffle(blocks)
     trials = [(pair_id,repetition) for pair_id,block in blocks for repetition in block]
     completed_pairs = set()
@@ -191,7 +208,22 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
     if invalid_controls:
         raise ValueError(f"Primary control shapes are outside the calibration envelope: {invalid_controls}")
     control_records = []
+    # Freeze the declaration and predictions before any measured outcomes exist.
+    write_json(output_dir / "validation_declaration.json",specs["payload"].get("validation_declaration",{}))
+    write_json(output_dir / "pair_specs.json",specs)
+    write_json(output_dir / "candidate_predictions.json",candidate_predictions)
+    import shutil
+    calibration_copy = output_dir / "calibration"
+    calibration_copy.mkdir(exist_ok=True)
+    shutil.copy2(fit_path,calibration_copy / "linear_fit.json")
+    for key in ("shape_statistics_reference","control_records_reference"):
+        if fit.get(key):
+            source = Path(fit_path).parent / fit[key]["path"]
+            shutil.copy2(source,calibration_copy / source.name)
+    if experiment.get("confirmatory",False):
+        mark_used(specs_path,specs["sha256"],output_dir)
     for completed_trial, (pair_id, repetition) in enumerate(trials, 1):
+        repetitions = repetitions_by_pair[pair_id]
         pair = pairs[pair_id]
         prepared_shapes = pair["prepared"]
         shapes = [item.tensor_hw for item in prepared_shapes]
@@ -215,7 +247,7 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
         def _cost_ms(name, key):
             return decisions[name][key] * 1000.0 if name in decisions else "unavailable"
 
-        row = {"session_id": session_id, "pair_id": pair["specification"]["pair_id"], "order_block_id": repetition//4, "position_in_order_block": repetition%4, "primary_stratum": pair["boundary_bin"], "stratum_tags": json.dumps(pair["specification"]["stratum_tags"]), "repetition": repetition, "order": order, "timing_mode": experiment.get("timing_mode", "inference_only"), "geometry_type": pair["geometry_type"], "boundary_bin": pair["boundary_bin"],
+        row = {"evaluation_design":specs["payload"].get("evaluation_design","challenge"), "session_id": session_id, "pair_id": pair["specification"]["pair_id"], "order_block_id": repetition//4, "position_in_order_block": repetition%4, "primary_stratum": pair["boundary_bin"], "stratum_tags": json.dumps(pair["specification"]["stratum_tags"]), "repetition": repetition, "order": order, "timing_mode": experiment.get("timing_mode", "inference_only"), "geometry_type": pair["geometry_type"], "boundary_bin": pair["boundary_bin"],
                    **{f"r1_{key}": getattr(pair["first"], key) for key in ("x1", "y1", "x2", "y2")}, **{f"r2_{key}": getattr(pair["second"], key) for key in ("x1", "y1", "x2", "y2")}, **{f"union_{key}": getattr(pair["union"], key) for key in ("x1", "y1", "x2", "y2")},
                    "r1_tensor_w": shapes[0][1], "r1_tensor_h": shapes[0][0], "r2_tensor_w": shapes[1][1], "r2_tensor_h": shapes[1][0], "union_tensor_w": shapes[2][1], "union_tensor_h": shapes[2][0],
                    "a1_effective": prepared_shapes[0].effective_area, "a2_effective": prepared_shapes[1].effective_area, "au_effective": prepared_shapes[2].effective_area, "delta_effective_area": pair["delta"], "tau_used": tau, "predicted_merge": linear_decision["predicted_merge"], "linear_tau_predicted_merge": linear_decision["predicted_merge"], "quadratic_direct_predicted_merge": decisions.get("quadratic", {}).get("predicted_merge", "unavailable"), "piecewise_direct_predicted_merge": decisions.get("piecewise", {}).get("predicted_merge", "unavailable"), "linear_predicted_gain_ms": _gain_ms("linear"), "quadratic_predicted_gain_ms": _gain_ms("quadratic"), "piecewise_predicted_gain_ms": _gain_ms("piecewise"), "linear_predicted_merged_cost_ms": _cost_ms("linear", "predicted_merged_cost_s"), "linear_predicted_separate_cost_ms": _cost_ms("linear", "predicted_separate_cost_s"), "quadratic_predicted_merged_cost_ms": _cost_ms("quadratic", "predicted_merged_cost_s"), "quadratic_predicted_separate_cost_ms": _cost_ms("quadratic", "predicted_separate_cost_s"), "piecewise_predicted_merged_cost_ms": _cost_ms("piecewise", "predicted_merged_cost_s"), "piecewise_predicted_separate_cost_ms": _cost_ms("piecewise", "predicted_separate_cost_s"), "separate_ms": separate_ms, "merged_ms": merged_ms, "difference_ms": separate_ms - merged_ms, "cpu_temp_c": read_cpu_temp(), "cpu_freq_mhz": read_cpu_freq(), "elapsed_s": __import__("time").perf_counter() - session_start, "timestamp_utc": system_metadata()["timestamp_utc"]}
@@ -242,25 +274,35 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
                       f"max abs linear model deviation {max(abs(item['predictions']['linear']['relative_error']) for item in control_records[-len(control_shapes):]):.1%}", flush=True)
             if len(completed_pairs) % progress_every == 0 or len(completed_pairs) == len(pairs):
                 print(f"[experiment_b] completed {len(completed_pairs)}/{len(pairs)} pairs; elapsed {time.perf_counter() - collection_start:.1f}s", flush=True)
-    hardware_shift = any(abs(item["predictions"]["linear"]["relative_error"]) > float(experiment.get("control_drift_threshold", .10)) for item in control_records)
+    diagnostics = control_diagnostics(fit,control_records,experiment)
+    hardware_shift = diagnostics["hardware_state_shift"]
     drift_error = None
     try:
-        gate(not hardware_shift, "control_drift", config, quality_warnings)
+        gate(not hardware_shift, "calibration_to_validation_shift", config, quality_warnings)
+        gate(not diagnostics["within_session_drift_detected"], "within_session_drift", config, quality_warnings)
     except ValueError as exc:
         drift_error = exc
     write_json(output_dir / "experiment_b_metadata.json", {**system_metadata(), "config": config, "quality_warnings": quality_warnings, "tau_used": tau, "tau_override": tau_override is not None, "session_id": session_id,
-                                                            "pair_count": len(pairs), "near_pair_count": sum(pair["boundary_bin"] in {"near", "near_low", "near_high"} for pair in pairs),
+                                                            "pair_count": len(pairs), "boundary_pair_count": sum(any(tag.endswith("_boundary") for tag in pair["specification"]["stratum_tags"]) for pair in pairs),
                                                             "unique_computational_pair_count": len(computational_keys),
                                                             "domain_policy": domain_policy,
                                                             "rejected_out_of_domain_candidate_count": rejected_out_of_domain_candidate_count,
                                                             "rejected_out_of_domain_shape_check_count": rejected_out_of_domain_shape_check_count,
                                                             "accepted_out_of_calibration_pair_count": accepted_out_of_calibration_pair_count,
                                                             "control_shapes": control_shapes, "control_records": control_records,
-                                                            "schema_version": 3, "pair_specs_hash": specs["sha256"], "pair_specs": specs["payload"], "provenance": current, "bootstrap": fit.get("bootstrap", {}), "calibration_reference": {"path": str(Path(fit_path).resolve()), "content_hash": file_sha256(fit_path)}, "latency_models": {name: model.metadata() for name, model in latency_models.items()},
+                                                            "schema_version": 4, "pair_specs_hash": specs["sha256"], "pair_specs_reference": reference(output_dir / "pair_specs.json"),
+                                                            "candidate_predictions_reference": reference(output_dir / "candidate_predictions.json"),
+                                                            "raw_observations_reference": reference(raw_path), "provenance": current,
+                                                            "evaluation_design": specs["payload"].get("evaluation_design","challenge"),
+                                                            "aggregate_scope": specs["payload"].get("aggregate_scope","unweighted_challenge_average"),
+                                                            "policy_declaration": policy.declaration,"fallback_counts":dict(policy.fallback_counts),
+                                                            "control_diagnostics": diagnostics,
+                                                            "confirmatory": experiment.get("confirmatory",False) and not any("NON-CONFIRMATORY" in w for w in quality_warnings),
+                                                            "calibration_reference": {"path": "calibration/linear_fit.json", "content_hash": file_sha256(fit_path)},
                                                             "calibration_provenance": fit.get("provenance", {}),
-                                                            "sampling_basis": "frozen_multi_model_strata", "sampling_tau_pixels": tau, "boundary_quotas": quota_fractions,
+                                                            "sampling_basis": specs["payload"].get("reference_distribution") or "frozen_multi_model_strata", "sampling_tau_pixels": tau, "boundary_quotas": quota_fractions,
                                                             "measurement_protocol": {"timing_mode": experiment.get("timing_mode", "inference_only"), "order_design": "balanced_abba_baab",
-                                                                                      "repetitions_per_pair": repetitions, "control_every_pairs": control_every_pairs},
+                                                                                      "repetitions_per_pair": {str(pairs[i]["specification"]["pair_id"]):r for i,r in repetitions_by_pair.items()}, "stopping_rule":"fixed_predeclared_repetitions", "control_every_pairs": control_every_pairs},
                                                             "cpu_temp_sensor_available": read_cpu_temp() is not None, "cpu_freq_sensor_available": read_cpu_freq() is not None,
                                                             "hardware_state_shift": hardware_shift})
     if drift_error is not None:
@@ -271,7 +313,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True); parser.add_argument("--fit", required=True); parser.add_argument("--output", required=True); parser.add_argument("--tau-override", type=float); parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--pairs", help="Frozen pair_specs.json; never regenerated in measure mode")
-    args = parser.parse_args(); collect(load_config(args.config), args.fit, args.output, args.tau_override, args.overwrite, args.pairs)
+    parser.add_argument("--allow-reused-pairs",action="store_true",help="Explicit non-confirmatory reuse; records a warning")
+    args = parser.parse_args(); collect(load_config(args.config), args.fit, args.output, args.tau_override, args.overwrite, args.pairs,args.allow_reused_pairs)
 
 
 if __name__ == "__main__": main()

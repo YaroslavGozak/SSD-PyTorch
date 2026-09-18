@@ -14,10 +14,16 @@ from .timing import measure
 from .reproducibility import canonical_hash, schedule, gate
 from .geometry import stride_rounded_shape
 from .models import CalibrationEnvelope
+from .shape_model import calibration_grid, policy_declaration
 
 
 def requested_shapes(config):
     experiment = config.get("experiment_a", config)
+    if experiment.get("shape_design") == "full_grid":
+        grid = calibration_grid(experiment["calibration_envelope"],int(config.get("model",{}).get("stride",32)))
+        if not grid:
+            raise ValueError("Empty calibration grid")
+        return [(w,h) for h,w in grid]
     max_h, max_w = map(int, experiment.get("max_requested_hw", [640, 640]))
     fractions = experiment.get("area_fractions", np.linspace(.05, 1.0, 20).tolist())
     shapes = []
@@ -109,6 +115,9 @@ def collect(config, output: str, overwrite: bool = False) -> None:
                     effective_shape_sources=shape_sources, model_weights_sha256=provenance.get("weights_sha256"),
                     provenance=provenance, schedule_hash=saved["hash"], schedule_seed=schedule_seed,
                     warmup_schedule=prewarm, warmup_seed=schedule_seed+1, warnings=warnings)
+    metadata["policy_declaration"] = policy_declaration(config)
+    metadata["grid_hash"] = canonical_hash(sorted(tensor_shapes))
+    write_json(output_dir / "calibration_grid.json", {"shapes":sorted(tensor_shapes),"sha256":metadata["grid_hash"]})
     write_json(metadata_path, metadata)
     existing = set()
     elapsed_offset = 0.

@@ -1,5 +1,11 @@
 # Cost model validation
 
+The current YOLO26n CPU workflow uses schema v4: full ordered-shape lookup,
+separate representative/challenge validations, and compact artifacts. See
+[YOLO26N_CPU_V4.md](YOLO26N_CPU_V4.md) for commands and migration notes.
+`linear_tau` remains the default calibrated baseline; nonlinear/lookup rules
+are evaluated as separately declared candidates.
+
 For the current schema-v3 workflow (saved A schedules, robust bootstrap, pooled
 sessions and frozen multi-model B pairs), use [REPRODUCIBILITY.md](REPRODUCIBILITY.md).
 The older B command examples below require generating `pair_specs.json` first;

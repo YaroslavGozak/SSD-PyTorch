@@ -11,6 +11,8 @@ import numpy as np
 
 from .common import bootstrap_ci, write_json, file_sha256
 from .models import fit_all, load_latency_models, control_predictions
+from .shape_model import build_lookup, calibration_grid, policy_declaration
+from .artifacts import export_calibration
 from .reproducibility import statistics, design, fit_models, bootstrap_models, gate, canonical_hash
 
 
@@ -202,7 +204,7 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
     for name, model in primary.items():
         gate(model["valid"], "invalid_"+name, config, warnings)
         gate(uncertainty["summaries"][name]["invalid_fraction"] <= float(options.get("max_invalid_bootstrap_fraction", .2)), "invalid_bootstrap", config, warnings)
-    summary.update(schema_version=3, primary_fit_selector=dict(statistic=statistic, level=level, trim_fraction_each_tail=trim),
+    summary.update(schema_version=4, primary_fit_selector=dict(statistic=statistic, level=level, trim_fraction_each_tail=trim),
                    alternative_fits=alternatives, bootstrap=uncertainty, schedule_hash=metadata.get("schedule_hash"),
                    raw_observations_reference=str(Path(path).resolve()), raw_observations_sha256=file_sha256(path), shape_statistics=shape_rows,
                    unique_effective_areas=len(area_rows), area_multiplicity={str(a):sum(r["effective_area"] == a for r in shape_rows) for a in sorted(area_groups)},
@@ -220,7 +222,7 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
                 values.append((left["breakpoint_area"],right["breakpoint_area"]))
             if any(abs(a-b)/max(abs(a),abs(b),1e-15)>threshold for a,b in values):
                 warnings.append(f"{name}: coefficients/breakpoint depend on fit level (threshold {threshold})")
-    summary["latency_models"] = primary
+    summary["latency_models"] = {name:dict(model) for name,model in primary.items()}
     summary["linear_fit"] = dict(K_t_s=k_t, c_t_s_per_pixel=c_t, tau_pixels=k_t/c_t, tau_bootstrap_ci=bootstrap_ci(valid_tau))
     models = load_latency_models(summary)
     controls_path = Path(path).with_name("experiment_a_controls.json")
@@ -240,14 +242,25 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
     shifted = any(d["relative_change"] is not None and abs(d["relative_change"]) > float(options.get("control_drift_threshold", .1)) for d in diagnostics.values())
     gate(not shifted, "control_drift", config, warnings)
     summary.update(control_records=controls, control_diagnostics=diagnostics, hardware_state_shift=shifted)
+    stride = int(metadata.get("model_stride",1))
+    declared_envelope = options.get("calibration_envelope",envelope)
+    grid = calibration_grid(declared_envelope,stride)
+    complete = set(grid) == set(shape_groups)
+    if options.get("shape_design") == "full_grid" and not complete:
+        raise ValueError("Incomplete shape lookup coverage for declared calibration grid")
+    summary["calibration_envelope"] = declared_envelope
+    summary["grid_hash"] = canonical_hash(grid)
+    summary["lookup_coverage"] = dict(expected_shapes=len(grid),measured_shapes=len(shape_groups),complete=complete)
+    summary["shape_policy"] = dict(name="ceil_to_stride",stride=stride,numeric_dtype=summary["provenance"].get("dtype"))
+    summary["policy_declaration"] = metadata.get("policy_declaration",policy_declaration(config))
+    summary["latency_models"]["shape_lookup"] = build_lookup(shape_groups,statistic,trim,bootstrap_count,int(options.get("bootstrap_seed",0)))
     if output_dir:
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
         _write_rows(output / "experiment_a_shape_summary.csv", shape_rows)
         _write_rows(output / "experiment_a_area_summary.csv", area_rows)
         _write_rows(output / "bootstrap_fits.csv", bootstrap_rows)
-        write_json(output / "linear_fit.json", summary | summary["linear_fit"])
-        write_json(output / "bootstrap_models.json", uncertainty)
+        export_calibration(output,summary,uncertainty)
         write_json(output / "fit_area_level.json", alternatives[statistic]["area_level"])
         write_json(output / "fit_observation_level.json", observation_models)
         write_json(output / "fit_shape_level.json", shape_models)
@@ -259,6 +272,7 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
             "K_t_ci": bootstrap_ci([row["K_t_s"] for row in bootstrap_rows]),
             "c_t_ci": bootstrap_ci([row["c_t_s_per_pixel"] for row in bootstrap_rows]),
         })
+    summary["bootstrap"] = {k:v for k,v in uncertainty.items() if k != "replicates"}
     return summary
 
 

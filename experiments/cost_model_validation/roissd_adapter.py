@@ -1,3 +1,4 @@
+from .geometry import stride_rounded_shape
 """Adapter for the repository's RoiSSD and RoiSSDMobileNet models."""
 
 from pathlib import Path
@@ -41,9 +42,7 @@ class RoiSSDAdapter:
 
     def prepare(self, image: np.ndarray, requested_hw):
         height, width = (int(v) for v in requested_hw)
-        if self.stride > 1:
-            height = (height + self.stride - 1) // self.stride * self.stride
-            width = (width + self.stride - 1) // self.stride * self.stride
+        height, width = stride_rounded_shape(height, width, self.stride)
         tensor = torch.from_numpy(np.asarray(image)).permute(2, 0, 1).float() / 255.0
         tensor = F.interpolate(tensor[None], size=(height, width), mode="bilinear", align_corners=False)
         tensor = tensor.to(self.device)

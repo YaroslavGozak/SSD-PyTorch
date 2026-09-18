@@ -6,6 +6,8 @@ The package deliberately does not depend on an Ultralytics import at module load
 from dataclasses import dataclass
 from typing import Any, Optional, Protocol, Tuple
 
+from .geometry import stride_rounded_shape
+
 import numpy as np
 
 
@@ -62,8 +64,7 @@ class FakeAdapter:
 
     def prepare(self, image: np.ndarray, requested_hw: Tuple[int, int]) -> PreparedInput:
         height, width = (int(v) for v in requested_hw)
-        rounded = ((height + self.stride - 1) // self.stride * self.stride,
-                   (width + self.stride - 1) // self.stride * self.stride)
+        rounded = stride_rounded_shape(height, width, self.stride)
         tensor = np.zeros((1, 3, *rounded), dtype=np.float32)
         return PreparedInput(tensor, height, width, height, width, int(tensor.shape[-2]), int(tensor.shape[-1]))
 

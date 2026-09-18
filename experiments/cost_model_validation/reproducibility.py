@@ -22,7 +22,8 @@ def gate(condition, name, config, warnings):
         raise ValueError(message)
     if policy != "warn":
         raise ValueError(f"Unknown quality policy {policy}")
-    warnings.append(message)
+    if message not in warnings:
+        warnings.append(message)
 
 
 def schedule(shapes, repetitions, seed):
@@ -75,6 +76,8 @@ def fit_models(x, y, support=2):
             fit = fitter(x, y, min_support=support) if name == "piecewise" else fitter(x, y)
             c = fit.coefficients
             valid = c["b1"] > 0 and (name != "piecewise" or c["b1"]+c["b2"] > 0)
+            if name == "quadratic":
+                valid = min(c["b1"]+2*c["b2"]*float(a) for a in (min(x),max(x))) > 0
             if name == "linear":
                 valid = valid and c["b0"] > 0
             result[name] = dict(coefficients=c, breakpoint_area=fit.breakpoint, valid=bool(valid),

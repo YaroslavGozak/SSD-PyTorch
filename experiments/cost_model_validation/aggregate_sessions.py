@@ -10,13 +10,15 @@ import numpy as np
 
 from .common import file_sha256, write_json, system_metadata
 from .models import load_latency_models
+from .artifacts import load_calibration, export_calibration
+from .shape_model import build_lookup
 from .reproducibility import design, statistics, fit_models, bootstrap_models
 
 
 def aggregate(sessions, output, count=2000, seed=0, pairs=None, method="mean"):
     if len(sessions) < 2:
         raise ValueError("At least two independent sessions required (3–5 recommended)")
-    artifacts = [json.loads(Path(p).read_text(encoding="utf-8")) for p in sessions]
+    artifacts = [load_calibration(p) for p in sessions]
     if any(a.get("schema_version",0) < 3 or not a.get("provenance",{}).get("complete") for a in artifacts):
         raise ValueError("Aggregation requires schema-v3 artifacts with complete provenance")
     first = artifacts[0]
@@ -100,13 +102,24 @@ def aggregate(sessions, output, count=2000, seed=0, pairs=None, method="mean"):
                   pooling_method=method, latency_models=pooled, K_t_s=b0,c_t_s_per_pixel=b1,tau_pixels=b0/b1,
                   bootstrap=uncertainty, between_session_stability=stability, pairwise_prediction_differences=prediction_differences,
                   frozen_pair_decision_agreement=agreement, config=first.get("config", {}),
-                  per_session_summaries=[dict(session_id=i,models=a["latency_models"]) for i,a in zip(ids,artifacts)],
+                  per_session_summaries=[dict(session_id=i,models={name:a["latency_models"][name] for name in ("linear","quadratic","piecewise")}) for i,a in zip(ids,artifacts)],
                   quality_warnings=["Fewer than three sessions"] if len(ids)<3 else [])
     threshold = float(first.get("config",{}).get("experiment_a",{}).get("session_coefficient_cv_threshold",.2))
     for name,report in stability.items():
         if any(v["cv"] is not None and v["cv"]>threshold for v in report["coefficients"].values()):
             result["quality_warnings"].append(f"{name}: between-session coefficient CV exceeds {threshold}")
     result["stability_thresholds"] = dict(session_coefficient_cv_threshold=threshold)
+    result["schema_version"] = 4
+    result["shape_policy"] = first.get("shape_policy",{})
+    result["policy_declaration"] = first.get("policy_declaration",{})
+    result["lookup_coverage"] = first.get("lookup_coverage",{})
+    result["latency_models"]["shape_lookup"] = build_lookup(grouped,method,0,count,seed)
+    bootstrap_path = Path(output).with_name(Path(output).stem+"_bootstrap_models.json")
+    write_json(bootstrap_path,uncertainty)
+    from .artifacts import reference
+    result["bootstrap_reference"] = reference(bootstrap_path)
+    result["bootstrap"] = {k:v for k,v in uncertainty.items() if k != "replicates"}
+    result["control_records"] = [r for a in artifacts for r in a.get("control_records",[])]
     write_json(Path(output),result)
     return result
 

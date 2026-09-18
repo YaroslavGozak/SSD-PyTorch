@@ -1,10 +1,9 @@
-seed: 20260913
+seed: 20260918
 model:
-  backend: roissd
-  model_config: config/imagenet-vid-roissd-mobilenet.yaml
-  weights: trained_models/imagenet-vid-roissd-mobilenet-20260910/best_map.pt
+  backend: ultralytics
+  weights: trained_models/voc-yolo26n/best.pt
   device: cpu
-  stride: 1
+  stride: 32
 experiment_a:
   schedule_seed: 20260918
   prewarm_passes: 2
@@ -60,10 +59,10 @@ experiment_b:
   - 640
   max_pair_generation_batches: 100
   domain_policy: reject_out_of_domain
-  pair_count: 500
+  pair_count: 20
   repetitions: 20
   timing_mode: inference_only
-  control_every_pairs: 25
+  control_every_pairs: 5
   control_shapes:
   - - 160
     - 160
@@ -71,13 +70,7 @@ experiment_b:
     - 320
   - - 320
     - 320
-  generator_seed: 2026091802
-  strata_quotas:
-    broad_random: 0.2
-    linear_boundary: 0.2
-    piecewise_boundary: 0.2
-    quadratic_boundary: 0.2
-    model_disagreement: 0.2
+  generator_seed: 2026091801
   boundary_width_ms: 0.5
   max_generation_attempts: 5000000
   bootstrap_count: 2000
@@ -85,7 +78,7 @@ experiment_b:
   confidence_level: 0.95
   order_effect_warning_ms: 0.5
   control_drift_threshold: 0.1
-  evaluation_design: challenge
+  evaluation_design: representative
   strict_lookup: true
   confirmatory: true
   challenge_repetitions: 40
@@ -95,6 +88,8 @@ experiment_b:
   random_generation_attempts: 10000
   prior_pair_specs:
   - outputs/cost_model_voc_yolo26n_v6/pair_specs.json
+  run_purpose: fresh_hardware_smoke_not_policy_selection
+  progress_every_repetitions: 100
 decision_stability:
   stable_separate_max_probability: 0.1
   stable_merge_min_probability: 0.9

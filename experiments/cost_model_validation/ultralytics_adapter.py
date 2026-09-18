@@ -1,5 +1,7 @@
 """Optional Ultralytics implementation of the experiment adapter."""
 
+from .geometry import stride_rounded_shape
+
 import numpy as np
 import torch
 
@@ -17,8 +19,7 @@ class UltralyticsAdapter:
 
     def prepare(self, image: np.ndarray, requested_hw):
         height, width = map(int, requested_hw)
-        rounded = ((height + self.stride - 1) // self.stride * self.stride,
-                   (width + self.stride - 1) // self.stride * self.stride)
+        rounded = stride_rounded_shape(height, width, self.stride)
         tensor = torch.from_numpy(np.asarray(image)).permute(2, 0, 1).float() / 255.0
         tensor = torch.nn.functional.interpolate(tensor[None], size=rounded, mode="bilinear", align_corners=False)
         tensor = tensor.to(self.device)

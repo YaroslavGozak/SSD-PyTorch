@@ -3,7 +3,7 @@
 import argparse
 import csv
 import json
-from collections import defaultdict
+from collections import defaultdict, Counter
 from pathlib import Path
 
 import numpy as np
@@ -11,9 +11,14 @@ import numpy as np
 from .common import file_sha256, write_json
 from .models import control_predictions, load_latency_models
 from .reproducibility import order_estimate, gate, canonical_hash
+from .artifacts import load_calibration, read_reference, reference
+from .validation_design import practical_label, control_diagnostics, repetitions_for_pair
 
 # (rule_name, predicted_merge column, gain column, merged-cost column, separate-cost column)
 RULES = (
+    ("shape_lookup", "lookup_predicted_merge", "lookup_gain_ms", "lookup_merged_ms", "lookup_separate_ms"),
+    ("shape_lookup_conservative", "conservative_predicted_merge", "conservative_gain_ms", "conservative_merged_ms", "conservative_separate_ms"),
+    ("conservative_consensus", "consensus_predicted_merge", "consensus_gain_ms", "consensus_merged_ms", "consensus_separate_ms"),
     ("linear_tau", "linear_tau_predicted_merge", "linear_predicted_gain_ms", "linear_predicted_merged_cost_ms", "linear_predicted_separate_cost_ms"),
     ("quadratic_direct_cost", "quadratic_direct_predicted_merge", "quadratic_predicted_gain_ms", "quadratic_predicted_merged_cost_ms", "quadratic_predicted_separate_cost_ms"),
     ("piecewise_direct_cost", "piecewise_direct_predicted_merge", "piecewise_predicted_gain_ms", "piecewise_predicted_merged_cost_ms", "piecewise_predicted_separate_cost_ms"),
@@ -82,6 +87,9 @@ def _rule_report(rows, rule_name):
     # determinate pairs, since ambiguous ground truth should not be blamed on the model.
     metrics["regret_ms_all_pairs"] = _regret(rows, rule_name)
     metrics["regret_ms_determinate_pairs"] = _regret([row for row in rows if row["label"] != "ambiguous"], rule_name)
+    available = [r for r in rows if r["predictions"][rule_name]["predicted_merge"] is not None]
+    metrics["expected_latency_gain_ms"] = float(np.mean([r["measurements"]["mean_difference_ms"] if r["predictions"][rule_name]["predicted_merge"] else 0 for r in available])) if available else None
+    metrics["exploratory"] = rule_name == "conservative_consensus"
     return metrics
 
 
@@ -111,7 +119,9 @@ def _load_calibration(input_path: str, calibration_path: str | None, metadata):
     """Prefer the recorded model snapshot; support portable and legacy run folders."""
     if calibration_path:
         path = Path(calibration_path)
-        return json.loads(path.read_text(encoding="utf-8")), {"source": "explicit_fit", "path": str(path.resolve()), "content_hash": file_sha256(path)}
+        if metadata.get("schema_version",0)>=4 and file_sha256(path) != metadata["calibration_reference"]["content_hash"]:
+            raise ValueError("Explicit calibration hash mismatch for frozen validation")
+        return load_calibration(path), {"source": "explicit_fit", "path": str(path.resolve()), "content_hash": file_sha256(path)}
     snapshot = metadata.get("latency_models")
     if snapshot:
         envelope = metadata.get("calibration_envelope") or next(
@@ -132,7 +142,7 @@ def _load_calibration(input_path: str, calibration_path: str | None, metadata):
             digest = file_sha256(path)
             if reference.get("content_hash") and digest != reference["content_hash"]:
                 raise ValueError(f"Calibration hash mismatch: {path}; pass --fit explicitly to select another artifact")
-            return json.loads(path.read_text(encoding="utf-8")), {"source": "discovered_fit", "path": str(path.resolve()), "content_hash": digest}
+            return load_calibration(path), {"source": "discovered_fit", "path": str(path.resolve()), "content_hash": digest}
     return {}, {"source": None}
 
 
@@ -144,6 +154,14 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
 
     metadata_file = Path(path).with_name("experiment_b_metadata.json")
     metadata = json.loads(metadata_file.read_text(encoding="utf-8")) if metadata_file.exists() else {}
+    if metadata.get("pair_specs_reference"):
+        document = read_reference(metadata_file,metadata["pair_specs_reference"])
+        metadata["pair_specs"] = document["payload"]
+        if document["sha256"] != metadata["pair_specs_hash"]:
+            raise ValueError("Pair specs hash mismatch")
+    candidate_predictions = read_reference(metadata_file,metadata["candidate_predictions_reference"]) if metadata.get("candidate_predictions_reference") else {}
+    if metadata.get("raw_observations_reference") and file_sha256(path) != metadata["raw_observations_reference"]["sha256"]:
+        raise ValueError("Raw observations hash mismatch")
     calibration, calibration_reference = _load_calibration(path, calibration_path, metadata)
     breakpoint_area = calibration.get("latency_models", {}).get("piecewise", {}).get("breakpoint_area")
     if breakpoint_area is not None:
@@ -174,14 +192,17 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
     bootstrap_seed = int(options.get("bootstrap_seed", 0))
     confidence = float(options.get("confidence_level", .95))
     warnings = list(metadata.get("quality_warnings", []))
-    gate(not metadata.get("hardware_state_shift",False), "control_drift", metadata.get("config", {}), warnings)
+    if metadata.get("schema_version",0)<4:
+        gate(not metadata.get("hardware_state_shift",False), "control_drift", metadata.get("config", {}), warnings)
+    if len({r.get("evaluation_design","legacy") for r in rows})>1:
+        raise ValueError("Representative and challenge measurements cannot be mixed")
     summaries = []
     for pair_id, pair_rows in grouped.items():
         first = pair_rows[0]
         if len({r["repetition"] for r in pair_rows}) != len(pair_rows):
             raise ValueError(f"Duplicate repetition in pair {pair_id}")
         if metadata.get("schema_version", 0) >= 3:
-            gate(len(pair_rows) == int(options.get("repetitions",20)), "repetition_count", metadata.get("config",{}), warnings)
+            gate(len(pair_rows) == repetitions_for_pair(metadata.get("config",{}),{"primary_stratum":first.get("primary_stratum") or first["boundary_bin"]}), "repetition_count", metadata.get("config",{}), warnings)
         differences = [float(row["difference_ms"]) for row in pair_rows]
         estimate = order_estimate(pair_rows, seed=bootstrap_seed+int(canonical_hash(pair_id)[:8],16), count=bootstrap_count, confidence=confidence)
         gate(estimate["balanced"], "order_balance", metadata.get("config", {}), warnings)
@@ -198,6 +219,12 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
             for rule_name, merge_col, gain_col, merged_cost_col, separate_cost_col in RULES
         }
 
+        for name,decision in candidate_predictions.get(pair_id,{}).items():
+            predictions[name] = dict(predicted_merge=decision["predicted_merge"],predicted_gain_ms=decision.get("predicted_gain_s")*1000 if decision.get("predicted_gain_s") is not None else None,
+                                     predicted_merged_cost_ms=decision.get("predicted_merged_cost_s",0)*1000,
+                                     predicted_separate_cost_ms=decision.get("predicted_separate_cost_s",0)*1000,
+                                     gain_lcb_ms=decision.get("gain_lcb_s")*1000 if decision.get("gain_lcb_s") is not None else None,
+                                     exploratory=name=="conservative_consensus")
         raw_observations = [
             {"repetition": int(row["repetition"]), "order": row["order"],
              "separate_ms": float(row["separate_ms"]), "merged_ms": float(row["merged_ms"]),
@@ -211,12 +238,14 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
             "predicted_merge": predictions["linear_tau"]["predicted_merge"],  # backward-compatible alias
             "predictions": predictions,
             "label": label,
+            "practical_label":practical_label(ci,float(options.get("minimum_worthwhile_gain_ms",0))),
             "effective_areas": {"a1": a1, "a2": a2, "merged": au},
             "delta_area": float(first["delta_effective_area"]),
             "tau_used": _parse_optional_float(first.get("tau_used")),
             "measurements": {
-                "merged_mean_ms": float(np.mean([obs["merged_ms"] for obs in raw_observations])),
-                "separate_mean_ms": float(np.mean([obs["separate_ms"] for obs in raw_observations])),
+                "merged_mean_ms": float(np.mean([np.mean([obs["merged_ms"] for obs in raw_observations if obs["order"]==order]) for order in ("merged_first","separate_first")])),
+                "separate_mean_ms": float(np.mean([np.mean([obs["separate_ms"] for obs in raw_observations if obs["order"]==order]) for order in ("merged_first","separate_first")])),
+                "difference_by_order_ms": {order:float(np.mean([obs["difference_ms"] for obs in raw_observations if obs["order"]==order])) for order in ("merged_first","separate_first")},
                 "mean_difference_ms": estimate["estimate"],
                 "order_counts": estimate["order_counts"],
                 "difference_ci_ms": ci,
@@ -249,7 +278,7 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
     cpu_freq_available = any(row.get("cpu_freq_mhz") not in (None, "") for row in rows)
 
     result = {
-        "schema_version": 3,
+        "schema_version": 4,
         "pair_specs_hash": metadata.get("pair_specs_hash"),
         "quality_warnings": warnings,
         "bootstrap_method": dict(method="stratified_by_order", count=bootstrap_count, seed=bootstrap_seed, confidence_level=confidence),
@@ -278,9 +307,82 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
         "unique_computational_configurations": len({row["computational_key"] for row in summaries}),
         "pair_summaries": summaries,
     }
+    evaluation_design = metadata.get("evaluation_design", "challenge")
+    result["evaluation_design"] = evaluation_design
+    result["aggregate_scope"] = "reference_distribution" if evaluation_design=="representative" else "unweighted_challenge_average"
+    result["policy_declaration"] = metadata.get("policy_declaration")
+    result["primary_policy"] = metadata.get("policy_declaration",{}).get("primary","linear_tau")
+    result["primary_metrics"] = model_comparison.get(result["primary_policy"])
+    result["confirmatory"] = metadata.get("confirmatory",False)
+    result["fallback_counts"] = metadata.get("fallback_counts",{})
+    result["reference_distribution"] = metadata.get("pair_specs",{}).get("reference_distribution")
+    result["control_diagnostics"] = control_diagnostics(calibration,controls,options) if calibration.get("calibration_envelope") else {}
+    for flag,gate_name in (("hardware_state_shift","calibration_to_validation_shift"),("within_session_drift_detected","within_session_drift")):
+        if metadata.get("schema_version",0)>=4:
+            gate(not result["control_diagnostics"].get(flag,False),gate_name,metadata.get("config",{}),warnings)
+    result["hardware_state_shift"] = result["control_diagnostics"].get("hardware_state_shift",metadata.get("hardware_state_shift",False))
+    result["quality_warnings"] = list(dict.fromkeys(warnings))
+    result["sampling_diagnostics"] = sampling_diagnostics(summaries,metadata.get("pair_specs",{}).get("sampling_diagnostics",{}))
+    result["agreement_matrix"] = agreement_matrix(summaries)
+    result["artifact_references"] = {key:metadata.get(key) for key in ("pair_specs_reference","candidate_predictions_reference","calibration_reference","raw_observations_reference")}
+    result["weighted_reference_metrics"] = weighted_metrics(summaries,options.get("aggregation_weights"))
+    if metadata.get("schema_version",0)>=4:
+        for pair in summaries:
+            pair.pop("raw_observations",None)
     if output:
         write_json(Path(output) / "decision_metrics.json", result)
     return result
+
+
+def sampling_diagnostics(rows, generation):
+    report = {}
+    for name in sorted({r["primary_stratum"] for r in rows}):
+        scoped = [r for r in rows if r["primary_stratum"]==name]
+        report[name] = {**generation.get("by_stratum",{}).get(name,{}),
+                        "generated_pairs":len(scoped),"determinate_pairs":sum(r["label"]!="ambiguous" for r in scoped),
+                        "ambiguous_pairs":sum(r["label"]=="ambiguous" for r in scoped),
+                        "actual_class_counts":dict(Counter(r["label"] for r in scoped)),
+                        "prediction_counts_by_model":{rule:dict(Counter(str(r["predictions"][rule]["predicted_merge"]) for r in scoped)) for rule,*_ in RULES}}
+    return dict(strata=report,generation_attempts=generation.get("generation_attempts"),rejection_reasons=generation.get("rejection_reasons",{}))
+
+
+def agreement_matrix(rows):
+    result = {}
+    for left,*_ in RULES:
+        result[left] = {}
+        for right,*_ in RULES:
+            common = [r for r in rows if r["predictions"][left]["predicted_merge"] is not None and r["predictions"][right]["predicted_merge"] is not None]
+            result[left][right] = dict(pairs=len(common),agreement_fraction=float(np.mean([r["predictions"][left]["predicted_merge"]==r["predictions"][right]["predicted_merge"] for r in common])) if common else None)
+    return result
+
+
+def weighted_metrics(rows, declaration):
+    if declaration is None:
+        return None
+    if not declaration.get("source") or declaration.get("derived_from_labels",False):
+        raise ValueError("Weights require an external/reference source, never observed labels")
+    weights = declaration["strata"]
+    counts = Counter(r["primary_stratum"] for r in rows)
+    if set(weights)!=set(counts) or any(not np.isfinite(v) or v<0 for v in weights.values()) or not np.isclose(sum(weights.values()),1):
+        raise ValueError("External weights must cover strata and sum to one")
+    report = {}
+    for rule,*_ in RULES:
+        if any(r["predictions"][rule]["predicted_merge"] is None for r in rows):
+            report[rule] = None
+            continue
+        regret,gain,pair_weights = [],[],[]
+        for r in rows:
+            merge = r["predictions"][rule]["predicted_merge"]
+            measured = r["measurements"]
+            chosen = measured["merged_mean_ms"] if merge else measured["separate_mean_ms"]
+            regret.append(chosen-min(measured["merged_mean_ms"],measured["separate_mean_ms"]))
+            gain.append(measured["mean_difference_ms"] if merge else 0)
+            pair_weights.append(weights[r["primary_stratum"]]/counts[r["primary_stratum"]])
+        order = np.argsort(regret)
+        cumulative = np.cumsum(np.asarray(pair_weights)[order])
+        p95 = np.asarray(regret)[order][min(np.searchsorted(cumulative,.95),len(order)-1)]
+        report[rule] = dict(mean_regret_ms=float(np.dot(regret,pair_weights)),p95_regret_ms=float(p95),expected_latency_gain_ms=float(np.dot(gain,pair_weights)))
+    return dict(source=declaration["source"],stratum_weights=weights,metrics=report)
 
 
 def main():

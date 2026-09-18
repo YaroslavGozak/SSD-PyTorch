@@ -42,6 +42,29 @@ def config():
 
 
 class ReproducibilityTests(unittest.TestCase):
+    def test_grid_search_fills_narrow_boundary_without_random_hits(self):
+        envelope = dict(min_effective_area=4096,max_effective_area=102400,min_tensor_h=64,max_tensor_h=320,
+                        min_tensor_w=64,max_tensor_w=320,min_aspect_ratio=.1,max_aspect_ratio=10)
+        artifact = dict(calibration_envelope=envelope,latency_models={"linear":dict(coefficients=dict(b0=.01,b1=.000001))})
+        cfg = config()
+        cfg["experiment_b"].update(strata_quotas={"linear_boundary":1.},pair_count=20,
+                                  linear_boundary_width_pixels=1024,random_generation_attempts=0,max_generation_attempts=0)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            write_json(root/"fit.json",artifact)
+            cfg["experiment_b"]["tensor_grid_search"] = False
+            with self.assertRaisesRegex(ValueError,"Unattainable"):
+                generate(cfg,str(root/"fit.json"),str(root/"pairs.json"))
+            cfg["experiment_b"]["tensor_grid_search"] = True
+            payload = generate(cfg,str(root/"fit.json"),str(root/"pairs.json"))
+            self.assertEqual(len(payload["pairs"]),20)
+            self.assertEqual(Counter(p["threshold_side"] for p in payload["pairs"]),{"merge":10,"separate":10})
+            self.assertEqual(len({tuple(p["computational_key"]) for p in payload["pairs"]}),20)
+            load(str(root/"pairs.json"),cfg,str(root/"fit.json"),FakeAdapter(),None)
+            before = (root/"pairs.json").read_bytes()
+            generate(cfg,str(root/"fit.json"),str(root/"pairs.json"),True)
+            self.assertEqual(before,(root/"pairs.json").read_bytes())
+
     def test_merge_probability_uses_only_valid_calibration_models(self):
         envelope = dict(min_effective_area=1,max_effective_area=10000,min_tensor_h=1,max_tensor_h=100,
                         min_tensor_w=1,max_tensor_w=100,min_aspect_ratio=.01,max_aspect_ratio=100)
@@ -176,7 +199,7 @@ class ReproducibilityTests(unittest.TestCase):
                 self.assertEqual(schedule_hash,json.loads((directory/"metadata.json").read_text())["schedule_hash"])
                 report = analyze_a(str(directory/"experiment_a_raw.csv"),str(directory),10)
                 self.assertTrue(report["control_records"])
-                self.assertEqual(report["schema_version"],3)
+                self.assertEqual(report["schema_version"],4)
                 paths.append(str(directory/"linear_fit.json"))
             pooled_path = root/"pooled.json"
             pooled = aggregate(paths,str(pooled_path),10)
@@ -188,13 +211,14 @@ class ReproducibilityTests(unittest.TestCase):
             changed["latency_models"]["linear"]["coefficients"]["b0"]+=100
             write_json(Path(paths[0]),changed)
             refitted=aggregate(paths,str(root/"refitted.json"),2)
-            self.assertEqual(refitted["latency_models"],pooled["latency_models"])
+            for name in ("linear","quadratic","piecewise"):
+                self.assertEqual(refitted["latency_models"][name],pooled["latency_models"][name])
             write_json(Path(paths[0]),original_artifact)
             bad = json.loads(Path(paths[1]).read_text())
             bad["provenance"]["device"]="cuda"
-            write_json(root/"bad.json",bad)
+            write_json(Path(paths[1]).with_name("bad.json"),bad)
             with self.assertRaisesRegex(ValueError,"Incompatible"):
-                aggregate([paths[0],str(root/"bad.json")],str(root/"unused.json"),2)
+                aggregate([paths[0],str(Path(paths[1]).with_name("bad.json"))],str(root/"unused.json"),2)
             pair_path = root/"pairs.json"
             payload = generate(cfg,str(pooled_path),str(pair_path))
             first_bytes = pair_path.read_bytes()
@@ -211,7 +235,10 @@ class ReproducibilityTests(unittest.TestCase):
             m1=json.loads((root/"b1"/"experiment_b_metadata.json").read_text())
             m2=json.loads((root/"b2"/"experiment_b_metadata.json").read_text())
             self.assertEqual(m1["pair_specs_hash"],m2["pair_specs_hash"])
-            self.assertEqual([p["pair_id"] for p in m1["pair_specs"]["pairs"]],[p["pair_id"] for p in m2["pair_specs"]["pairs"]])
+            from experiments.cost_model_validation.artifacts import read_reference
+            specs1 = read_reference(root/"b1"/"experiment_b_metadata.json",m1["pair_specs_reference"])["payload"]
+            specs2 = read_reference(root/"b2"/"experiment_b_metadata.json",m2["pair_specs_reference"])["payload"]
+            self.assertEqual([p["pair_id"] for p in specs1["pairs"]],[p["pair_id"] for p in specs2["pairs"]])
             document = json.loads(pair_path.read_text())
             document["payload"]["pairs"].append(document["payload"]["pairs"][0])
             document["sha256"] = canonical_hash(document["payload"])

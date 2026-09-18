@@ -38,7 +38,17 @@ def append_csv(path: Path, row: Dict[str, Any], fields: Iterable[str]) -> None:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        json.dump(value, handle, indent=2, sort_keys=True, default=_json_default)
+        json.dump(_finite_json(value), handle, indent=2, sort_keys=True, default=_json_default, allow_nan=False)
+
+
+def _finite_json(value):
+    if isinstance(value, dict):
+        return {key:_finite_json(item) for key,item in value.items()}
+    if isinstance(value, (list,tuple)):
+        return [_finite_json(item) for item in value]
+    if isinstance(value,(float,np.floating)) and not np.isfinite(value):
+        return None
+    return value
 
 
 def _json_default(value: Any) -> Any:
