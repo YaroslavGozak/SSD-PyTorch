@@ -38,6 +38,8 @@ runtime:
 
 The collectors apply the per-process thread and affinity settings before loading the model. They record the requested settings, observed affinity, PyTorch thread counts, thread-related environment variables, and active OS power policy in metadata and collection provenance. The power policy is not changed because it is machine-wide; when an expected Windows scheme GUID or Linux governor is configured, collection stops before measurement if it does not match. Experiment B also requires this runtime provenance to match Experiment A.
 
+Raspberry Pi 5 challenge configurations are provided for [YOLO26n](config.voc-yolo26n.raspberry-pi5.yaml) and [ROI-SSD-MobileNet](config.voc-roi-ssd-mobilenet.raspberry-pi5.yaml). They preserve the desktop experimental design, pin the process to all four Pi 5 cores, and require the Linux `performance` governor. Check the active policy before collection with `cat /sys/devices/system/cpu/cpufreq/policy*/scaling_governor`; the collector stops before measurement if any policy differs. These clean-checkout configs generate new frozen pairs and do not depend on prior desktop output folders.
+
 ## Full YOLO Experiment A and B
 
 The repository configuration [config.voc-yolo26n.yaml](config.voc-yolo26n.yaml) uses `trained_models/voc-yolo26n/best.pt`, CPU inference, stride 32, and the `inference_only` timing boundary. Experiment B must use the fitted `tau` from Experiment A; do not enter a paper value manually unless using `--tau-override` explicitly.
