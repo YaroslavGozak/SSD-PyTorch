@@ -4,6 +4,11 @@ model:
   weights: trained_models/voc-yolo26n/best.pt
   device: cpu
   stride: 32
+runtime:
+  cpu_threads: 4
+  torch_interop_threads: 1
+  cpu_affinity: [0, 1, 2, 3]
+  expected_power_scheme_guid: 381b4222-f694-41f0-9685-ff5bb260df2e
 experiment_a:
   schedule_seed: 20260918
   prewarm_passes: 2
@@ -99,7 +104,7 @@ quality_gates:
   calibration_to_validation_shift: warn
 publication_run: false
 policies:
-  primary: linear_tau
+  primary: shape_lookup_conservative
   confidence_level: 0.95
   decision_margin_s: 0.0
   fallback: error

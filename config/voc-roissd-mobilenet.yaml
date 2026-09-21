@@ -1,0 +1,6 @@
+extends: "voc.yaml"
+
+train_params:
+  model: "roissd-mobilenet"
+  task_name: "voc-roissdlite-mobilenet-bn"
+  ckpt_name: "voc200712.pth"

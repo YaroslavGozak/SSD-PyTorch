@@ -207,6 +207,11 @@ gains and per-model bootstrap stability:
 Stability thresholds default to <=0.10 / >=0.90 and are configurable under
 `decision_stability`. No observed B label is involved. B raw CSV adds
 `order_block_id`, `position_in_order_block`, `primary_stratum`, `stratum_tags`.
+Lookup-aware challenge runs additionally record `boundary_side`. For
+`shape_lookup_conservative_boundary`, `low` means
+`gain_lcb_ms - decision_margin_ms <= 0` and `high` means it is positive. The
+frozen specification also stores raw lookup gain, conservative LCB gain, and
+their boundary-centered scores.
 `decision_metrics.json` includes order-aware estimates/CIs, stability, overall
 and stratum/geometry/area-regime metrics and all/determinate regret.
 

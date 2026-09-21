@@ -4,6 +4,7 @@ import json
 import random
 from dataclasses import replace
 from pathlib import Path
+from statistics import NormalDist
 
 import numpy as np
 
@@ -15,7 +16,10 @@ from .artifacts import load_calibration
 from .shape_model import ShapeLookupLatencyModel, policy_declaration
 from .validation_design import validation_declaration
 
-PRIORITY = ["model_disagreement", "piecewise_boundary", "quadratic_boundary", "linear_boundary", "broad_random"]
+PRIORITY = ["shape_lookup_conservative_boundary", "shape_lookup_boundary",
+            "linear_tau_shape_lookup_conservative_disagreement", "model_disagreement",
+            "piecewise_boundary", "quadratic_boundary", "linear_boundary", "broad_random"]
+DEFAULT_STRATA = ["model_disagreement", "piecewise_boundary", "quadratic_boundary", "linear_boundary", "broad_random"]
 
 
 def stability(artifact, areas, config):
@@ -40,8 +44,27 @@ def stability(artifact, areas, config):
     return result
 
 
-def classify(shapes, models, options):
+def _lookup_gains(shapes, lookup, declaration):
+    if lookup is None or not all(lookup.is_in_domain(*hw) for hw in shapes):
+        return {}
+    estimates = [lookup.estimate(*hw) for hw in shapes]
+    raw = estimates[0].point_s + estimates[1].point_s - estimates[2].point_s
+    ses = [estimate.standard_error_s for estimate in estimates]
+    if not all(value is not None for value in ses):
+        return {"shape_lookup": raw * 1000}
+    conservative = raw - NormalDist().inv_cdf(declaration["confidence_level"]) * sum(ses)
+    return {"shape_lookup": raw * 1000, "shape_lookup_conservative": conservative * 1000}
+
+
+def _boundary_score(name, gains, declaration):
+    margin_ms = 1000 * float(declaration.get("decision_margin_s", 0))
+    return gains[name] - margin_ms if name.startswith("shape_lookup") else gains[name]
+
+
+def classify(shapes, models, options, lookup=None, declaration=None):
+    declaration = declaration or policy_declaration({})
     gains = {name: decide_merge(model, *shapes)["predicted_gain_s"]*1000 for name,model in models.items()}
+    gains.update(_lookup_gains(shapes, lookup, declaration))
     tau = models["linear"].coefficients["b0"]/models["linear"].coefficients["b1"]
     areas = [h*w for h,w in shapes]
     distance = areas[2]-areas[0]-areas[1]-tau
@@ -51,12 +74,22 @@ def classify(shapes, models, options):
     for name in ("piecewise", "quadratic"):
         if name in gains and abs(gains[name]) <= float(options.get("boundary_width_ms", .5)):
             tags.append(name+"_boundary")
-    if len({v>0 for v in gains.values()}) > 1:
+    enabled = set(options.get("strata_quotas", {}))
+    for name in ("shape_lookup", "shape_lookup_conservative"):
+        tag = name + "_boundary"
+        if tag in enabled and name in gains and abs(_boundary_score(name, gains, declaration)) <= float(options.get("boundary_width_ms", .5)):
+            tags.append(tag)
+    if len({gains[name]>0 for name in models}) > 1:
         tags.append("model_disagreement")
-    return next(t for t in PRIORITY if t in tags), tags, gains, distance
+    disagreement = "linear_tau_shape_lookup_conservative_disagreement"
+    if (disagreement in enabled and "shape_lookup_conservative" in gains
+            and (gains["linear"] > 0) != (_boundary_score("shape_lookup_conservative", gains, declaration) > 0)):
+        tags.append(disagreement)
+    scores = {name:_boundary_score(name,gains,declaration) for name in gains}
+    return next(t for t in PRIORITY if t in tags), tags, gains, distance, scores
 
 
-def grid_candidates(models, canvas, stride, options, quotas, selected, seed):
+def grid_candidates(models, lookup, declaration, canvas, stride, options, quotas, selected, seed):
     """Search realizable tensor geometry directly instead of hoping random gaps hit boundaries.
 
     For any three shapes with union dimensions >= both ROI dimensions, putting
@@ -71,6 +104,13 @@ def grid_candidates(models, canvas, stride, options, quotas, selected, seed):
     array = np.asarray(shapes)
     areas = array[:,0]*array[:,1]
     costs = {name:np.array([model.predict_seconds(int(a)) for a in areas]) for name,model in models.items()}
+    lookup_points = lookup_ses = None
+    if lookup is not None:
+        estimates = [lookup.estimate(*shape) if lookup.is_in_domain(*shape) else None for shape in shapes]
+        lookup_points = np.array([estimate.point_s if estimate else np.nan for estimate in estimates])
+        lookup_ses = np.array([estimate.standard_error_s if estimate and estimate.standard_error_s is not None else np.nan for estimate in estimates])
+    margin_ms = 1000 * float(declaration.get("decision_margin_s", 0))
+    z = NormalDist().inv_cdf(declaration["confidence_level"])
     tau = models["linear"].coefficients["b0"]/models["linear"].coefficients["b1"]
     for i,(h1,w1) in enumerate(shapes):
         for j,(h2,w2) in enumerate(shapes):
@@ -78,12 +118,22 @@ def grid_candidates(models, canvas, stride, options, quotas, selected, seed):
                 return
             possible = (array[:,0]>=max(h1,h2)) & (array[:,1]>=max(w1,w2))
             gains = {name:1000*(v[i]+v[j]-v) for name,v in costs.items()}
-            decisions = np.array([v>0 for v in gains.values()])
+            if lookup_points is not None:
+                gains["shape_lookup"] = 1000*(lookup_points[i]+lookup_points[j]-lookup_points)
+                gains["shape_lookup_conservative"] = gains["shape_lookup"]-1000*z*(lookup_ses[i]+lookup_ses[j]+lookup_ses)
+            decisions = np.array([gains[name]>0 for name in models])
             tags = {"model_disagreement":np.any(decisions != decisions[0],axis=0),
                     "linear_boundary":np.abs(areas-areas[i]-areas[j]-tau)<=float(options.get("linear_boundary_width_pixels",abs(tau)*.2)),
                     "broad_random":np.ones(len(shapes),dtype=bool)}
             for name in ("piecewise","quadratic"):
                 tags[name+"_boundary"] = np.abs(gains[name])<=float(options.get("boundary_width_ms",.5)) if name in gains else np.zeros(len(shapes),dtype=bool)
+            for name in ("shape_lookup", "shape_lookup_conservative"):
+                score = gains.get(name, np.full(len(shapes),np.nan))-margin_ms
+                tag = name+"_boundary"
+                tags[tag] = np.abs(score)<=float(options.get("boundary_width_ms",.5)) if tag in quotas else np.zeros(len(shapes),dtype=bool)
+            conservative_score = gains.get("shape_lookup_conservative",np.full(len(shapes),np.nan))-margin_ms
+            disagreement = "linear_tau_shape_lookup_conservative_disagreement"
+            tags[disagreement] = ((gains["linear"]>0) != (conservative_score>0)) if disagreement in quotas else np.zeros(len(shapes),dtype=bool)
             claimed = np.zeros(len(shapes),dtype=bool)
             wanted = np.zeros(len(shapes),dtype=bool)
             for name in PRIORITY:
@@ -93,12 +143,13 @@ def grid_candidates(models, canvas, stride, options, quotas, selected, seed):
                     continue
                 if name.endswith("_boundary"):
                     model_name = name.removesuffix("_boundary")
+                    score = gains[model_name] - (margin_ms if model_name.startswith("shape_lookup") else 0)
                     for side in (False,True):
                         limit = (quotas[name]+int(side))//2
-                        present = sum((p["predicted_gains_ms"][model_name]>0)==side for p in selected[name])
+                        present = sum((p["boundary_scores_ms"][model_name]>0)==side for p in selected[name])
                         if present < limit:
-                            wanted |= primary & ((gains[model_name]>0)==side)
-                elif name == "model_disagreement":
+                            wanted |= primary & ((score>0)==side)
+                elif name in {"model_disagreement", "linear_tau_shape_lookup_conservative_disagreement"}:
                     wanted |= primary
             # Broad/random coverage is exclusively supplied by random candidates.
             for index in np.flatnonzero(possible & wanted):
@@ -106,7 +157,7 @@ def grid_candidates(models, canvas, stride, options, quotas, selected, seed):
                 yield Rectangle(0,0,w1,h1), Rectangle(wu-w2,hu-h2,wu,hu)
 
 
-def candidates(models, canvas, stride, options, quotas, selected, rng, seed):
+def candidates(models, lookup, declaration, canvas, stride, options, quotas, selected, rng, seed):
     # Preserve broad random coverage, then search the rare boundary keys directly.
     maximum = int(options.get("max_generation_attempts",5000000))
     attempts = min(maximum,
@@ -123,7 +174,7 @@ def candidates(models, canvas, stride, options, quotas, selected, rng, seed):
     for _ in range(attempts):
         yield random_pair()
     if options.get("tensor_grid_search", True):
-        yield from grid_candidates(models,canvas,stride,options,quotas,selected,seed)
+        yield from grid_candidates(models,lookup,declaration,canvas,stride,options,quotas,selected,seed)
     # Grid candidates never fill broad_random. Preserve the remaining random
     # budget when that quota is still short (or grid search was disabled).
     if (len(selected.get("broad_random",[])) < quotas.get("broad_random",0)
@@ -150,7 +201,7 @@ def generate(config, calibration, output, regenerate=False):
     if evaluation_design not in {"representative","challenge"}:
         raise ValueError("Unknown evaluation design")
     representative = evaluation_design == "representative"
-    fractions = {"reference":1.} if representative else options.get("strata_quotas", {name:.2 for name in PRIORITY})
+    fractions = {"reference":1.} if representative else options.get("strata_quotas", {name:.2 for name in DEFAULT_STRATA})
     if set(fractions)-set(PRIORITY+["reference"]) or any(v<0 for v in fractions.values()) or abs(sum(fractions.values())-1)>1e-8:
         raise ValueError("strata_quotas must be nonnegative fractions summing to one")
     quotas = {name:int(count*fraction) for name,fraction in fractions.items()}
@@ -161,6 +212,11 @@ def generate(config, calibration, output, regenerate=False):
     strict_lookup = options.get("strict_lookup",False) or config.get("publication_run",False)
     lookup_data = artifact.get("latency_models",{}).get("shape_lookup")
     lookup = ShapeLookupLatencyModel(lookup_data,artifact["calibration_envelope"],stride) if lookup_data else None
+    declaration = policy_declaration(config)
+    lookup_strata = {"shape_lookup_boundary", "shape_lookup_conservative_boundary",
+                     "linear_tau_shape_lookup_conservative_disagreement"}
+    if lookup_strata.intersection(quotas) and lookup is None:
+        raise ValueError("Lookup-based strata require a shape_lookup calibration model")
     if strict_lookup and (lookup is None or not artifact.get("lookup_coverage",{}).get("complete")):
         raise ValueError("Strict validation requires complete shape lookup calibration")
     excluded_keys, prior_hashes = set(),[]
@@ -182,7 +238,7 @@ def generate(config, calibration, output, regenerate=False):
     candidate_options = dict(options)
     if representative:
         candidate_options.update(tensor_grid_search=False,random_generation_attempts=options.get("max_generation_attempts",5000000))
-    for rectangles in candidates(models,canvas,stride,candidate_options,quotas,selected,rng,seed):
+    for rectangles in candidates(models,lookup,declaration,canvas,stride,candidate_options,quotas,selected,rng,seed):
         diagnostics["generation_attempts"] += 1
         first, second = rectangles
         union = union_rectangle(first,second)
@@ -196,7 +252,7 @@ def generate(config, calibration, output, regenerate=False):
         if key in keys or key in excluded_keys:
             reject("duplicate_or_prior_computational_key")
             continue
-        primary,tags,gains,distance = classify(shapes,models,options)
+        primary,tags,gains,distance,boundary_scores = classify(shapes,models,options,lookup,declaration)
         if representative:
             primary = "reference"
         if primary in diagnostics["by_stratum"]:
@@ -207,9 +263,9 @@ def generate(config, calibration, output, regenerate=False):
         # Reserve half of each boundary quota for each sign.
         if primary.endswith("_boundary"):
             name = primary.removesuffix("_boundary")
-            side = gains[name]>0
+            side = boundary_scores[name]>0
             limit = (quotas[primary]+1)//2 if side else quotas[primary]//2
-            if sum((p["predicted_gains_ms"][name]>0) == side for p in selected[primary]) >= limit:
+            if sum((p["boundary_scores_ms"][name]>0) == side for p in selected[primary]) >= limit:
                 reject("boundary_side_full",primary)
                 continue
         contained = ((first.x1<=second.x1 and first.y1<=second.y1 and first.x2>=second.x2 and first.y2>=second.y2) or
@@ -222,7 +278,8 @@ def generate(config, calibration, output, regenerate=False):
                     geometry_type=geometry, requested_shapes=[[r.height,r.width] for r in (first,second,union)],
                     tensor_shapes=shapes, effective_areas=areas, delta_area=areas[2]-areas[0]-areas[1],
                     domain_result=True, computational_key=key, primary_stratum=primary, stratum_tags=tags,
-                    predicted_gains_ms=gains, linear_signed_distance=distance,
+                    predicted_gains_ms=gains, boundary_scores_ms=boundary_scores, linear_signed_distance=distance,
+                    boundary_side=("high" if boundary_scores[primary.removesuffix("_boundary")]>0 else "low") if primary.endswith("_boundary") else None,
                     threshold_side="merge" if distance<0 else "separate", calibration_hash=digest,
                     generator_seed=seed, schema_version=1)
         diagnostics["by_stratum"][primary]["generated_pairs"] += 1
@@ -233,12 +290,12 @@ def generate(config, calibration, output, regenerate=False):
             break
     counts = {name:len(items) for name,items in selected.items()}
     if counts != quotas:
-        sides = {name:{"merge":sum(p["predicted_gains_ms"][name.removesuffix("_boundary")]>0 for p in items),
-                       "separate":sum(p["predicted_gains_ms"][name.removesuffix("_boundary")]<=0 for p in items)}
+        sides = {name:{"high":sum(p["boundary_scores_ms"][name.removesuffix("_boundary")]>0 for p in items),
+                       "low":sum(p["boundary_scores_ms"][name.removesuffix("_boundary")]<=0 for p in items)}
                  for name,items in selected.items() if name.endswith("_boundary")}
         raise ValueError(f"Unattainable strata quotas/boundary sides after random and tensor-grid search: obtained={counts}, required={quotas}, sides={sides}. Priority={PRIORITY}. No substitution performed.")
     for name,items in selected.items():
-        if name.endswith("_boundary") and items and len({p["predicted_gains_ms"][name.removesuffix("_boundary")]>0 for p in items}) != 2:
+        if name.endswith("_boundary") and items and len({p["boundary_scores_ms"][name.removesuffix("_boundary")]>0 for p in items}) != 2:
             raise ValueError(f"Both sides of {name} are required")
     for pair in pairs:
         pair["bootstrap_stability"] = stability(artifact,pair["effective_areas"],config)
@@ -269,6 +326,7 @@ def load(path, config, calibration, adapter, image):
     strict_lookup = config.get("experiment_b",{}).get("strict_lookup",False) or config.get("publication_run",False)
     lookup_data = artifact.get("latency_models",{}).get("shape_lookup")
     lookup = ShapeLookupLatencyModel(lookup_data,artifact["calibration_envelope"],adapter.stride) if lookup_data else None
+    declaration = policy_declaration(config)
     if strict_lookup and lookup is None:
         raise ValueError("Missing lookup table")
     pairs, keys, ids = [],set(),set()
@@ -288,7 +346,7 @@ def load(path, config, calibration, adapter, image):
         areas = [h*w for h,w in shapes]
         if strict_lookup and not all(lookup.is_in_domain(*hw) for hw in shapes):
             raise ValueError("Missing lookup entry for validation shape")
-        primary,tags,gains,distance = classify(shapes,models,payload["config"])
+        primary,tags,gains,distance,boundary_scores = classify(shapes,models,payload["config"],lookup,declaration)
         if payload.get("evaluation_design") == "representative":
             primary = "reference"
         if (list(key) != specification["computational_key"] or areas != specification["effective_areas"] or
@@ -307,7 +365,7 @@ def load(path, config, calibration, adapter, image):
     for name,count in counts.items():
         if count and name.endswith("_boundary"):
             model_name = name.removesuffix("_boundary")
-            sides = {p["specification"]["predicted_gains_ms"][model_name]>0 for p in pairs if p["boundary_bin"] == name}
+            sides = {p["specification"].get("boundary_scores_ms",p["specification"]["predicted_gains_ms"])[model_name]>0 for p in pairs if p["boundary_bin"] == name}
             if sides != {True,False}:
                 raise ValueError(f"Both boundary sides required for {name}")
     return pairs,document

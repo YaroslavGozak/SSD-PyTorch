@@ -1,8 +1,8 @@
 seed: 20260918
 model:
   backend: roissd
-  model_config: config/voc-roissd-mobilenet.yaml
-  weights: trained_models/voc-roissdlite-mobilenet-bn/voc200712.pth
+  model_config: config/voc.yaml
+  weights: trained_models/voc-roissd-best/voc200712.pth
   device: cpu
   stride: 32
 runtime:

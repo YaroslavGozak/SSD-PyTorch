@@ -1,10 +1,15 @@
-seed: 20260913
+seed: 20260918
 model:
   backend: roissd
-  model_config: config/imagenet-vid-roissd-mobilenet.yaml
-  weights: trained_models/imagenet-vid-roissd-mobilenet-20260910/best_map.pt
+  model_config: config/voc-roissd-mobilenet.yaml
+  weights: trained_models/voc-roissdlite-mobilenet-bn/voc200712.pth
   device: cpu
-  stride: 1
+  stride: 32
+runtime:
+  cpu_threads: 4
+  torch_interop_threads: 1
+  cpu_affinity: [0, 1, 2, 3]
+  expected_power_scheme_guid: 381b4222-f694-41f0-9685-ff5bb260df2e
 experiment_a:
   schedule_seed: 20260918
   prewarm_passes: 2
@@ -71,13 +76,16 @@ experiment_b:
     - 320
   - - 320
     - 320
-  generator_seed: 2026091802
+  generator_seed: 2026091803
   strata_quotas:
-    broad_random: 0.2
-    linear_boundary: 0.2
-    piecewise_boundary: 0.2
-    quadratic_boundary: 0.2
-    model_disagreement: 0.2
+    broad_random: 0.125
+    linear_boundary: 0.125
+    piecewise_boundary: 0.125
+    quadratic_boundary: 0.125
+    shape_lookup_boundary: 0.125
+    shape_lookup_conservative_boundary: 0.125
+    model_disagreement: 0.125
+    linear_tau_shape_lookup_conservative_disagreement: 0.125
   boundary_width_ms: 0.5
   max_generation_attempts: 5000000
   bootstrap_count: 2000
@@ -95,6 +103,7 @@ experiment_b:
   random_generation_attempts: 10000
   prior_pair_specs:
   - outputs/cost_model_voc_yolo26n_v6/pair_specs.json
+  - outputs/cost_model_voc_yolo26n_v8/challenge/pair_specs.json
 decision_stability:
   stable_separate_max_probability: 0.1
   stable_merge_min_probability: 0.9
@@ -106,7 +115,7 @@ quality_gates:
   calibration_to_validation_shift: warn
 publication_run: false
 policies:
-  primary: linear_tau
+  primary: shape_lookup_conservative
   confidence_level: 0.95
   decision_margin_s: 0.0
   fallback: error

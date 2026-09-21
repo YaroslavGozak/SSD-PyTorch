@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .adapters import FakeAdapter
-from .common import RAW_A_FIELDS, append_csv, collection_provenance, deterministic_image, load_config, system_metadata, write_json
+from .common import RAW_A_FIELDS, append_csv, apply_runtime_controls, collection_provenance, deterministic_image, load_config, system_metadata, write_json
 from .timing import measure
 from .reproducibility import canonical_hash, schedule, gate
 from .geometry import stride_rounded_shape
@@ -38,9 +38,10 @@ def requested_shapes(config):
 
 def build_adapter(config):
     model_cfg = config.get("model", {})
-    if model_cfg.get("backend", "fake") == "fake":
+    backend = str(model_cfg.get("backend", "fake")).lower().replace("_", "-")
+    if backend == "fake":
         return FakeAdapter(int(model_cfg.get("stride", 32)))
-    if model_cfg.get("backend") == "roissd":
+    if backend == "roissd":
         from .roissd_adapter import RoiSSDAdapter
         return RoiSSDAdapter(
             model_config=model_cfg["model_config"],
@@ -48,7 +49,7 @@ def build_adapter(config):
             device=model_cfg.get("device", "cpu"),
             stride=int(model_cfg.get("stride", 1)),
         )
-    if model_cfg.get("backend") != "ultralytics":
+    if backend != "ultralytics":
         raise ValueError("model.backend must be 'fake', 'ultralytics', or 'roissd'")
     from .ultralytics_adapter import UltralyticsAdapter
     return UltralyticsAdapter(model_cfg["weights"], model_cfg.get("device", "cpu"), int(model_cfg.get("stride", 32)))
@@ -60,6 +61,7 @@ def collect(config, output: str, overwrite: bool = False) -> None:
     raw_path = output_dir / "experiment_a_raw.csv"
     if raw_path.exists() and overwrite:
         raw_path.unlink()
+    runtime_environment = apply_runtime_controls(config)
     adapter = build_adapter(config)
     experiment = config.get("experiment_a", config)
     seed = int(config.get("seed", 0))
@@ -87,10 +89,10 @@ def collect(config, output: str, overwrite: bool = False) -> None:
     schedule_seed = int(experiment.get("schedule_seed", seed))
     tensor_shapes = [adapter.prepare(image, (h, w)).tensor_hw for w, h in shapes]
     sources = dict(zip(tensor_shapes, shapes))
-    provenance = collection_provenance(config, adapter, mode)
+    provenance = collection_provenance(config, adapter, mode, runtime_environment)
     warnings = []
     gate(not config.get("publication_run", False) or not provenance["git_dirty"], "git_dirty", config, warnings)
-    identity = {k: provenance.get(k) for k in ("weights_sha256", "backend", "device", "preprocessing", "model_stride", "timing_mode")}
+    identity = {k: provenance.get(k) for k in ("weights_sha256", "backend", "device", "preprocessing", "model_stride", "timing_mode", "runtime_environment")}
     settings = dict(shapes=tensor_shapes, repetitions=repetitions, seed=schedule_seed, identity=identity,
                     experiment=experiment)
     if raw_path.exists() and not overwrite:
@@ -114,7 +116,8 @@ def collect(config, output: str, overwrite: bool = False) -> None:
     metadata.update(config=config, session_id=session_id, timing_mode=mode, model_stride=adapter.stride,
                     effective_shape_sources=shape_sources, model_weights_sha256=provenance.get("weights_sha256"),
                     provenance=provenance, schedule_hash=saved["hash"], schedule_seed=schedule_seed,
-                    warmup_schedule=prewarm, warmup_seed=schedule_seed+1, warnings=warnings)
+                    warmup_schedule=prewarm, warmup_seed=schedule_seed+1, warnings=warnings,
+                    runtime_environment=runtime_environment)
     metadata["policy_declaration"] = policy_declaration(config)
     metadata["grid_hash"] = canonical_hash(sorted(tensor_shapes))
     write_json(output_dir / "calibration_grid.json", {"shapes":sorted(tensor_shapes),"sha256":metadata["grid_hash"]})

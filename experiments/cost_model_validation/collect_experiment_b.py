@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .common import append_csv, deterministic_image, file_sha256, load_config, read_cpu_freq, read_cpu_temp, system_metadata, write_json
+from .common import append_csv, apply_runtime_controls, deterministic_image, file_sha256, load_config, read_cpu_freq, read_cpu_temp, system_metadata, write_json
 from .geometry import Rectangle, union_rectangle
 from .models import control_predictions, decide_merge, load_latency_models
 from .collect_experiment_a import build_adapter
@@ -23,7 +23,7 @@ from .shape_model import MergePolicy, policy_declaration
 from .validation_design import check_freshness, mark_used, repetitions_for_pair, control_diagnostics
 
 
-FIELDS = ["evaluation_design", "order_block_id", "position_in_order_block", "primary_stratum", "stratum_tags", "session_id", "pair_id", "repetition", "order", "timing_mode", "geometry_type", "boundary_bin", "r1_x1", "r1_y1", "r1_x2", "r1_y2", "r2_x1", "r2_y1", "r2_x2", "r2_y2", "union_x1", "union_y1", "union_x2", "union_y2", "r1_tensor_w", "r1_tensor_h", "r2_tensor_w", "r2_tensor_h", "union_tensor_w", "union_tensor_h", "a1_effective", "a2_effective", "au_effective", "delta_effective_area", "tau_used", "predicted_merge", "linear_tau_predicted_merge", "quadratic_direct_predicted_merge", "piecewise_direct_predicted_merge", "linear_predicted_gain_ms", "quadratic_predicted_gain_ms", "piecewise_predicted_gain_ms", "linear_predicted_merged_cost_ms", "linear_predicted_separate_cost_ms", "quadratic_predicted_merged_cost_ms", "quadratic_predicted_separate_cost_ms", "piecewise_predicted_merged_cost_ms", "piecewise_predicted_separate_cost_ms", "separate_ms", "merged_ms", "difference_ms", "cpu_temp_c", "cpu_freq_mhz", "elapsed_s", "timestamp_utc"]
+FIELDS = ["evaluation_design", "order_block_id", "position_in_order_block", "primary_stratum", "stratum_tags", "boundary_side", "session_id", "pair_id", "repetition", "order", "timing_mode", "geometry_type", "boundary_bin", "r1_x1", "r1_y1", "r1_x2", "r1_y2", "r2_x1", "r2_y1", "r2_x2", "r2_y2", "union_x1", "union_y1", "union_x2", "union_y2", "r1_tensor_w", "r1_tensor_h", "r2_tensor_w", "r2_tensor_h", "union_tensor_w", "union_tensor_h", "a1_effective", "a2_effective", "au_effective", "delta_effective_area", "tau_used", "predicted_merge", "linear_tau_predicted_merge", "quadratic_direct_predicted_merge", "piecewise_direct_predicted_merge", "linear_predicted_gain_ms", "quadratic_predicted_gain_ms", "piecewise_predicted_gain_ms", "linear_predicted_merged_cost_ms", "linear_predicted_separate_cost_ms", "quadratic_predicted_merged_cost_ms", "quadratic_predicted_separate_cost_ms", "piecewise_predicted_merged_cost_ms", "piecewise_predicted_separate_cost_ms", "separate_ms", "merged_ms", "difference_ms", "cpu_temp_c", "cpu_freq_mhz", "elapsed_s", "timestamp_utc"]
 
 
 def generate_pairs(count: int, canvas_hw, tau: float, seed: int, quotas=None):
@@ -154,12 +154,13 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
     progress_every = max(1, int(experiment.get("progress_every_pairs", 1)))
     progress_every_repetitions = max(1, int(experiment.get("progress_every_repetitions", 5)))
     seed = int(config.get("seed", 0))
+    runtime_environment = apply_runtime_controls(config)
     adapter = build_adapter(config)
     mode = str(experiment.get("timing_mode", "inference_only"))
-    current = collection_provenance(config,adapter,mode)
+    current = collection_provenance(config,adapter,mode,runtime_environment)
     quality_warnings = []
     gate(not config.get("publication_run",False) or not current["git_dirty"], "git_dirty", config, quality_warnings)
-    for key in ("weights_sha256", "backend", "device", "preprocessing", "model_stride", "timing_mode", "dtype", "shape_policy"):
+    for key in ("weights_sha256", "backend", "device", "preprocessing", "model_stride", "timing_mode", "dtype", "shape_policy", "runtime_environment"):
         if key in fit.get("provenance", {}) and current.get(key) != fit["provenance"][key]:
             raise ValueError(f"Calibration provenance mismatch: {key}")
     requested_count = int(experiment.get("pair_count", 500))
@@ -247,7 +248,7 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
         def _cost_ms(name, key):
             return decisions[name][key] * 1000.0 if name in decisions else "unavailable"
 
-        row = {"evaluation_design":specs["payload"].get("evaluation_design","challenge"), "session_id": session_id, "pair_id": pair["specification"]["pair_id"], "order_block_id": repetition//4, "position_in_order_block": repetition%4, "primary_stratum": pair["boundary_bin"], "stratum_tags": json.dumps(pair["specification"]["stratum_tags"]), "repetition": repetition, "order": order, "timing_mode": experiment.get("timing_mode", "inference_only"), "geometry_type": pair["geometry_type"], "boundary_bin": pair["boundary_bin"],
+        row = {"evaluation_design":specs["payload"].get("evaluation_design","challenge"), "session_id": session_id, "pair_id": pair["specification"]["pair_id"], "order_block_id": repetition//4, "position_in_order_block": repetition%4, "primary_stratum": pair["boundary_bin"], "stratum_tags": json.dumps(pair["specification"]["stratum_tags"]), "boundary_side": pair["specification"].get("boundary_side"), "repetition": repetition, "order": order, "timing_mode": experiment.get("timing_mode", "inference_only"), "geometry_type": pair["geometry_type"], "boundary_bin": pair["boundary_bin"],
                    **{f"r1_{key}": getattr(pair["first"], key) for key in ("x1", "y1", "x2", "y2")}, **{f"r2_{key}": getattr(pair["second"], key) for key in ("x1", "y1", "x2", "y2")}, **{f"union_{key}": getattr(pair["union"], key) for key in ("x1", "y1", "x2", "y2")},
                    "r1_tensor_w": shapes[0][1], "r1_tensor_h": shapes[0][0], "r2_tensor_w": shapes[1][1], "r2_tensor_h": shapes[1][0], "union_tensor_w": shapes[2][1], "union_tensor_h": shapes[2][0],
                    "a1_effective": prepared_shapes[0].effective_area, "a2_effective": prepared_shapes[1].effective_area, "au_effective": prepared_shapes[2].effective_area, "delta_effective_area": pair["delta"], "tau_used": tau, "predicted_merge": linear_decision["predicted_merge"], "linear_tau_predicted_merge": linear_decision["predicted_merge"], "quadratic_direct_predicted_merge": decisions.get("quadratic", {}).get("predicted_merge", "unavailable"), "piecewise_direct_predicted_merge": decisions.get("piecewise", {}).get("predicted_merge", "unavailable"), "linear_predicted_gain_ms": _gain_ms("linear"), "quadratic_predicted_gain_ms": _gain_ms("quadratic"), "piecewise_predicted_gain_ms": _gain_ms("piecewise"), "linear_predicted_merged_cost_ms": _cost_ms("linear", "predicted_merged_cost_s"), "linear_predicted_separate_cost_ms": _cost_ms("linear", "predicted_separate_cost_s"), "quadratic_predicted_merged_cost_ms": _cost_ms("quadratic", "predicted_merged_cost_s"), "quadratic_predicted_separate_cost_ms": _cost_ms("quadratic", "predicted_separate_cost_s"), "piecewise_predicted_merged_cost_ms": _cost_ms("piecewise", "predicted_merged_cost_s"), "piecewise_predicted_separate_cost_ms": _cost_ms("piecewise", "predicted_separate_cost_s"), "separate_ms": separate_ms, "merged_ms": merged_ms, "difference_ms": separate_ms - merged_ms, "cpu_temp_c": read_cpu_temp(), "cpu_freq_mhz": read_cpu_freq(), "elapsed_s": __import__("time").perf_counter() - session_start, "timestamp_utc": system_metadata()["timestamp_utc"]}
@@ -304,6 +305,7 @@ def collect(config, fit_path: str, output: str, tau_override: float | None = Non
                                                             "measurement_protocol": {"timing_mode": experiment.get("timing_mode", "inference_only"), "order_design": "balanced_abba_baab",
                                                                                       "repetitions_per_pair": {str(pairs[i]["specification"]["pair_id"]):r for i,r in repetitions_by_pair.items()}, "stopping_rule":"fixed_predeclared_repetitions", "control_every_pairs": control_every_pairs},
                                                             "cpu_temp_sensor_available": read_cpu_temp() is not None, "cpu_freq_sensor_available": read_cpu_freq() is not None,
+                                                            "runtime_environment": runtime_environment,
                                                             "hardware_state_shift": hardware_shift})
     if drift_error is not None:
         raise drift_error

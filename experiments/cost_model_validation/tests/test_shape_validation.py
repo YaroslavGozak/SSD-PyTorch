@@ -25,7 +25,7 @@ from experiments.cost_model_validation.collect_experiment_a import collect as co
 from experiments.cost_model_validation.analyze_experiment_a import analyze as analyze_a
 from experiments.cost_model_validation.collect_experiment_b import collect as collect_b
 from experiments.cost_model_validation.analyze_experiment_b import analyze as analyze_b, weighted_metrics
-from experiments.cost_model_validation.pair_specs import generate, load
+from experiments.cost_model_validation.pair_specs import classify, generate, load
 from experiments.cost_model_validation.adapters import FakeAdapter
 from experiments.cost_model_validation.timing import TimingResult
 
@@ -50,6 +50,21 @@ def measured(adapter,image,hw,mode):
 
 
 class ShapeValidationTests(unittest.TestCase):
+    def test_lookup_boundary_scores_and_linear_conservative_disagreement(self):
+        artifact=fixture()
+        for entry in artifact["latency_models"]["shape_lookup"]["table"].values():
+            entry.update(point_s=.001,standard_error_s=.001)
+        models={name:PolynomialLatencyModel(name,data["coefficients"],CalibrationEnvelope(**artifact["calibration_envelope"]),data.get("breakpoint_area"))
+                for name,data in artifact["latency_models"].items() if name != "shape_lookup"}
+        lookup=ShapeLookupLatencyModel(artifact["latency_models"]["shape_lookup"],artifact["calibration_envelope"],32)
+        options=dict(strata_quotas={"linear_tau_shape_lookup_conservative_disagreement":1.},boundary_width_ms=0)
+        primary,tags,gains,_,scores=classify([(64,64)]*3,models,options,lookup,policy_declaration({}))
+        self.assertEqual(primary,"linear_tau_shape_lookup_conservative_disagreement")
+        self.assertIn(primary,tags)
+        self.assertGreater(gains["linear"],0)
+        self.assertLess(gains["shape_lookup_conservative"],0)
+        self.assertEqual(scores["shape_lookup_conservative"],gains["shape_lookup_conservative"])
+
     def test_canonical_alignment_and_grid(self):
         self.assertEqual(stride_rounded_shape(161,319,32),(192,320))
         self.assertNotEqual(161*319,192*320)
@@ -190,6 +205,7 @@ class ShapeValidationTests(unittest.TestCase):
                 result=analyze_b(str(root/design/"experiment_b_raw.csv"),str(root/design))
                 self.assertEqual(result["evaluation_design"],design)
                 self.assertEqual(result["aggregate_scope"],"reference_distribution" if design=="representative" else "unweighted_challenge_average")
+                self.assertIn("metrics_by_stratum_and_boundary_side",result)
                 self.assertFalse(result["fallback_counts"])
                 metadata=json.loads((root/design/"experiment_b_metadata.json").read_text())
                 self.assertNotIn("bootstrap",metadata)

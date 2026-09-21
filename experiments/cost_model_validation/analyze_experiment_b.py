@@ -255,6 +255,7 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
             "bootstrap_stability": next((p.get("bootstrap_stability", {}) for p in metadata.get("pair_specs", {}).get("pairs", []) if str(p["pair_id"]) == pair_id), {}),
             "primary_stratum": first.get("primary_stratum") or first["boundary_bin"],
             "boundary_bin": first["boundary_bin"],
+            "boundary_side": first.get("boundary_side") or None,
             "geometry_type": first["geometry_type"],
             "area_regime": _area_regime(a1, a2, au, breakpoint_area),
             "computational_key": tuple(first[key] for key in ("r1_tensor_h", "r1_tensor_w", "r2_tensor_h", "r2_tensor_w", "union_tensor_h", "union_tensor_w")),
@@ -271,6 +272,11 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
 
     model_comparison = {rule_name: _rule_report(summaries, rule_name) for rule_name, *_ in RULES}
     metrics_by_boundary_bin = _group_reports(summaries, "boundary_bin")
+    metrics_by_boundary_side = _group_reports(summaries, "boundary_side")
+    metrics_by_stratum_and_boundary_side = {
+        stratum:_group_reports([row for row in summaries if row["primary_stratum"] == stratum], "boundary_side")
+        for stratum in sorted({row["primary_stratum"] for row in summaries if row["boundary_side"] is not None})
+    }
     metrics_by_geometry_type = _group_reports(summaries, "geometry_type")
     metrics_by_area_regime = _group_reports(summaries, "area_regime") if breakpoint_area is not None else None
 
@@ -302,6 +308,8 @@ def analyze(path: str, output: str | None = None, calibration_path: str | None =
         "order_effect_ms": order_effect,
         "order_effect_warning": bool(np.isfinite(order_effect) and abs(order_effect) > float(options.get("order_effect_warning_ms", .5))),
         "metrics_by_boundary_bin": metrics_by_boundary_bin,
+        "metrics_by_boundary_side": metrics_by_boundary_side,
+        "metrics_by_stratum_and_boundary_side": metrics_by_stratum_and_boundary_side,
         "metrics_by_geometry_type": metrics_by_geometry_type,
         "metrics_by_area_regime": metrics_by_area_regime,
         "unique_computational_configurations": len({row["computational_key"] for row in summaries}),

@@ -25,6 +25,19 @@ The example uses the deterministic fake adapter and needs no weights. For Raspbe
 
 Raw CSV is append-only and metadata records the model checksum, environment, timing boundary, stride, and warnings. A production run should use at least 30 repetitions and a warmed, stable hardware state.
 
+CPU execution can be pinned with an optional top-level `runtime` section:
+
+```yaml
+runtime:
+  cpu_threads: 4
+  torch_interop_threads: 1
+  cpu_affinity: [0, 1, 2, 3]
+  expected_power_scheme_guid: 381b4222-f694-41f0-9685-ff5bb260df2e  # Windows
+  # expected_cpu_governor: performance  # Linux
+```
+
+The collectors apply the per-process thread and affinity settings before loading the model. They record the requested settings, observed affinity, PyTorch thread counts, thread-related environment variables, and active OS power policy in metadata and collection provenance. The power policy is not changed because it is machine-wide; when an expected Windows scheme GUID or Linux governor is configured, collection stops before measurement if it does not match. Experiment B also requires this runtime provenance to match Experiment A.
+
 ## Full YOLO Experiment A and B
 
 The repository configuration [config.voc-yolo26n.yaml](config.voc-yolo26n.yaml) uses `trained_models/voc-yolo26n/best.pt`, CPU inference, stride 32, and the `inference_only` timing boundary. Experiment B must use the fitted `tau` from Experiment A; do not enter a paper value manually unless using `--tau-override` explicitly.
@@ -58,11 +71,13 @@ The final command writes `decision_metrics.json`. The raw `experiment_b_raw.csv`
 
 Experiment B uses explicit `merge`, `near_low`, `near_high`, and `separate` quotas, rejects duplicate computational shape keys after preprocessing, and varies horizontal, vertical, diagonal, partial-overlap, and containment geometries. All pair/repetition trials are globally shuffled while each pair retains an exactly balanced first-order schedule. Periodic control shapes compare B latency with the A fit; `experiment_b_metadata.json` records `hardware_state_shift` when a control differs by more than 10%.
 
+Challenge generation also supports `shape_lookup_boundary`, `shape_lookup_conservative_boundary`, and `linear_tau_shape_lookup_conservative_disagreement`. Lookup boundaries use `boundary_width_ms`. The conservative boundary is centered on `gain_lcb_ms - decision_margin_ms` and its quota is split between explicit `low` and `high` sides. The YOLO and ROI-SSD-MobileNet challenge configurations allocate equal fractions to these strata and the existing broad, area-model boundary, and disagreement strata.
+
 The full configuration collects 500 pairs with 20 paired repetitions. On CPU this can take a long time because each repetition performs three model calls. Use a separate output directory for every run; the raw CSV files are append-only and the `--overwrite` flag intentionally starts a new collection.
 
 ## ROI-SSD and ROI-SSD-MobileNet
 
-The `roissd` backend supports both repository models. Set `model.model_config` to a training configuration whose `train_params.model` is `roissd` or `roissd-mobilenet`, and set `model.weights` to the checkpoint. Unlike YOLO, these models accept `(images, None)` and use stride 1 by default.
+The `roissd` backend supports both repository ROI-SSD architectures. Set `model.model_config` to a training configuration whose `train_params.model` selects `roissd` or `roissd-mobilenet`, and set `model.weights` to the matching checkpoint. Unlike YOLO, these models accept `(images, None)`. Experiment B uses the same `build_adapter` path as Experiment A, so the backend is supported by both collectors.
 
 Example:
 
@@ -109,7 +124,7 @@ The B metadata records `schema_version: 2`, the calibration artifact hash, domai
 
 A piecewise breakpoint enables `area_regime` (`below_breakpoint`/`spans_breakpoint`/`above_breakpoint`) and `metrics_by_area_regime` without requiring `--fit`. The report includes `piecewise_breakpoint_area`, `calibration_reference`, and an explicit `area_regime_unavailable_reason` if no breakpoint can be found. Areas equal to the breakpoint belong to the lower regime.
 
-`decision_metrics.json` contains `model_comparison` for the three rules, each with classification metrics plus `regret_ms_all_pairs` and `regret_ms_determinate_pairs`. The same per-rule breakdown is repeated in `metrics_by_boundary_bin`, `metrics_by_geometry_type`, and, when a breakpoint is available, `metrics_by_area_regime`. Each pair summary includes `effective_areas`, `delta_area`, per-model `predicted_merged_cost_ms`/`predicted_separate_cost_ms`/`predicted_gain_ms`, and the raw per-repetition `M`/`S` observations with their measurement order. Missing quadratic or piecewise coefficients are reported as unavailable rather than estimated from B.
+`decision_metrics.json` contains `model_comparison` for all declared rules, each with classification metrics plus `regret_ms_all_pairs` and `regret_ms_determinate_pairs`. The same per-rule breakdown is repeated in `metrics_by_boundary_bin`, `metrics_by_boundary_side`, `metrics_by_stratum_and_boundary_side`, `metrics_by_geometry_type`, and, when a breakpoint is available, `metrics_by_area_regime`. Each pair summary includes `effective_areas`, `delta_area`, boundary side, per-model `predicted_merged_cost_ms`/`predicted_separate_cost_ms`/`predicted_gain_ms`, and the raw per-repetition `M`/`S` observations with their measurement order. Missing quadratic or piecewise coefficients are reported as unavailable rather than estimated from B.
 
 Control records store `predictions.linear`, `predictions.quadratic`, and `predictions.piecewise`, each with predicted latency and relative error `(measured_ms - predicted_ms) / predicted_ms`. Missing models have `available: false` and an explanation. The collector uses the effective shape returned by the timed call. Offline B analysis also reconstructs these predictions for legacy control records and includes them in `decision_metrics.json`; it leaves the original collection metadata unchanged.
 

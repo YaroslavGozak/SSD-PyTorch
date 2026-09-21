@@ -22,7 +22,7 @@ def aggregate(sessions, output, count=2000, seed=0, pairs=None, method="mean"):
     if any(a.get("schema_version",0) < 3 or not a.get("provenance",{}).get("complete") for a in artifacts):
         raise ValueError("Aggregation requires schema-v3 artifacts with complete provenance")
     first = artifacts[0]
-    keys = ("weights_sha256", "backend", "device", "preprocessing", "model_stride", "timing_mode", "model_config_sha256", "dtype", "shape_policy")
+    keys = ("weights_sha256", "backend", "device", "preprocessing", "model_stride", "timing_mode", "model_config_sha256", "dtype", "shape_policy", "runtime_environment")
     identity = {k:first["provenance"].get(k) for k in keys}
     selector = first["primary_fit_selector"]
     shape_set = {(r["tensor_h"],r["tensor_w"]) for r in first["shape_statistics"]}

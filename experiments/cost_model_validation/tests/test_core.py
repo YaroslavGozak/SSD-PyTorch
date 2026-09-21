@@ -1,5 +1,8 @@
 import unittest
 
+import numpy as np
+import torch
+
 from experiments.cost_model_validation.adapters import FakeAdapter
 from experiments.cost_model_validation.geometry import (
     Rectangle, effective_area, stride_rounded_shape, union_rectangle,
@@ -13,6 +16,16 @@ from experiments.cost_model_validation.common import bootstrap_ci
 
 
 class CoreTests(unittest.TestCase):
+    def test_roissd_adapter_uses_training_normalization(self):
+        from experiments.cost_model_validation.roissd_adapter import RoiSSDAdapter
+        adapter = RoiSSDAdapter.__new__(RoiSSDAdapter)
+        adapter.device = torch.device("cpu")
+        adapter.stride = 32
+        prepared = adapter.prepare(np.zeros((32,32,3),dtype=np.uint8),(32,32))
+        expected = -torch.tensor(RoiSSDAdapter.IMAGENET_MEAN) / torch.tensor(RoiSSDAdapter.IMAGENET_STD)
+        self.assertTrue(torch.allclose(prepared.value[0,:,0,0],expected))
+        self.assertEqual(adapter.preprocessing_metadata()["normalization"],"divide_by_255_then_imagenet")
+
     def test_union_and_areas(self):
         first = Rectangle(2, 3, 12, 13)
         second = Rectangle(8, 5, 20, 17)
