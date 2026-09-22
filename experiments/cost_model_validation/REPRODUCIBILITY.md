@@ -116,8 +116,11 @@ python -m experiments.cost_model_validation.pair_specs --config experiments/cost
 ```
 
 `--regenerate-pairs` explicitly replaces an existing specification. Quotas are
-fractions summing to one; primary tags use priority disagreement → piecewise →
-quadratic → linear → broad. Candidate rectangles are sampled without using
+fractions summing to one; primary tags use priority conservative lookup boundary →
+lookup boundary → linear/conservative disagreement → model disagreement →
+piecewise boundary → quadratic boundary → linear boundary → broad. Candidates
+matching multiple strata are assigned to the first stratum that still needs
+their boundary side or quota. Candidate rectangles are sampled without using
 measured B timings. All matched tags are retained. Each boundary primary quota
 reserves half its slots per decision side (the extra slot goes to merge).
 Generation fails with obtained/required counts if quotas or both sides are

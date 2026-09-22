@@ -17,7 +17,7 @@ from experiments.cost_model_validation.collect_experiment_b import collect as co
 from experiments.cost_model_validation.analyze_experiment_a import analyze as analyze_a
 from experiments.cost_model_validation.analyze_experiment_b import analyze as analyze_b
 from experiments.cost_model_validation.aggregate_sessions import aggregate
-from experiments.cost_model_validation.pair_specs import generate, load, stability
+from experiments.cost_model_validation.pair_specs import generate, load, stability, _select_stratum
 from experiments.cost_model_validation.common import write_json
 from experiments.cost_model_validation.adapters import FakeAdapter
 from experiments.cost_model_validation.timing import TimingResult
@@ -42,6 +42,14 @@ def config():
 
 
 class ReproducibilityTests(unittest.TestCase):
+    def test_filled_overlapping_stratum_does_not_block_later_quota(self):
+        tags = ["shape_lookup_boundary", "piecewise_boundary", "broad_random"]
+        scores = {"shape_lookup": -.1, "piecewise": -.2}
+        filled = {"boundary_scores_ms": {"shape_lookup": -.1}}
+        quotas = {"shape_lookup_boundary": 1, "piecewise_boundary": 2, "broad_random": 1}
+        selected = {"shape_lookup_boundary": [filled], "piecewise_boundary": [], "broad_random": []}
+        self.assertEqual(_select_stratum(tags, scores, quotas, selected), "piecewise_boundary")
+
     def test_grid_search_fills_narrow_boundary_without_random_hits(self):
         envelope = dict(min_effective_area=4096,max_effective_area=102400,min_tensor_h=64,max_tensor_h=320,
                         min_tensor_w=64,max_tensor_w=320,min_aspect_ratio=.1,max_aspect_ratio=10)

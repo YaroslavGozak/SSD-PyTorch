@@ -61,6 +61,23 @@ def _boundary_score(name, gains, declaration):
     return gains[name] - margin_ms if name.startswith("shape_lookup") else gains[name]
 
 
+def _select_stratum(tags, boundary_scores, quotas, selected):
+    """Allocate an overlapping candidate to the first stratum that still needs it."""
+    for name in PRIORITY:
+        if name not in tags or name not in quotas or len(selected[name]) >= quotas[name]:
+            continue
+        if name.endswith("_boundary"):
+            model_name = name.removesuffix("_boundary")
+            side = boundary_scores[model_name] > 0
+            limit = (quotas[name] + int(side)) // 2
+            present = sum((pair["boundary_scores_ms"][model_name] > 0) == side
+                          for pair in selected[name])
+            if present >= limit:
+                continue
+        return name
+    return None
+
+
 def classify(shapes, models, options, lookup=None, declaration=None):
     declaration = declaration or policy_declaration({})
     gains = {name: decide_merge(model, *shapes)["predicted_gain_s"]*1000 for name,model in models.items()}
@@ -134,11 +151,8 @@ def grid_candidates(models, lookup, declaration, canvas, stride, options, quotas
             conservative_score = gains.get("shape_lookup_conservative",np.full(len(shapes),np.nan))-margin_ms
             disagreement = "linear_tau_shape_lookup_conservative_disagreement"
             tags[disagreement] = ((gains["linear"]>0) != (conservative_score>0)) if disagreement in quotas else np.zeros(len(shapes),dtype=bool)
-            claimed = np.zeros(len(shapes),dtype=bool)
             wanted = np.zeros(len(shapes),dtype=bool)
             for name in PRIORITY:
-                primary = tags[name] & ~claimed
-                claimed |= tags[name]
                 if name not in quotas or len(selected[name]) >= quotas[name]:
                     continue
                 if name.endswith("_boundary"):
@@ -148,9 +162,9 @@ def grid_candidates(models, lookup, declaration, canvas, stride, options, quotas
                         limit = (quotas[name]+int(side))//2
                         present = sum((p["boundary_scores_ms"][model_name]>0)==side for p in selected[name])
                         if present < limit:
-                            wanted |= primary & ((score>0)==side)
+                            wanted |= tags[name] & ((score>0)==side)
                 elif name in {"model_disagreement", "linear_tau_shape_lookup_conservative_disagreement"}:
-                    wanted |= primary
+                    wanted |= tags[name]
             # Broad/random coverage is exclusively supplied by random candidates.
             for index in np.flatnonzero(possible & wanted):
                 hu,wu = shapes[index]
@@ -252,22 +266,16 @@ def generate(config, calibration, output, regenerate=False):
         if key in keys or key in excluded_keys:
             reject("duplicate_or_prior_computational_key")
             continue
-        primary,tags,gains,distance,boundary_scores = classify(shapes,models,options,lookup,declaration)
+        _,tags,gains,distance,boundary_scores = classify(shapes,models,options,lookup,declaration)
         if representative:
             primary = "reference"
+        else:
+            primary = _select_stratum(tags,boundary_scores,quotas,selected)
         if primary in diagnostics["by_stratum"]:
             diagnostics["by_stratum"][primary]["generation_attempts"] += 1
         if primary not in quotas or len(selected[primary]) >= quotas[primary]:
             reject("quota_full_or_unrequested",primary)
             continue
-        # Reserve half of each boundary quota for each sign.
-        if primary.endswith("_boundary"):
-            name = primary.removesuffix("_boundary")
-            side = boundary_scores[name]>0
-            limit = (quotas[primary]+1)//2 if side else quotas[primary]//2
-            if sum((p["boundary_scores_ms"][name]>0) == side for p in selected[primary]) >= limit:
-                reject("boundary_side_full",primary)
-                continue
         contained = ((first.x1<=second.x1 and first.y1<=second.y1 and first.x2>=second.x2 and first.y2>=second.y2) or
                      (second.x1<=first.x1 and second.y1<=first.y1 and second.x2>=first.x2 and second.y2>=first.y2))
         horizontal = first.x2<=second.x1 or second.x2<=first.x1
@@ -300,7 +308,7 @@ def generate(config, calibration, output, regenerate=False):
     for pair in pairs:
         pair["bootstrap_stability"] = stability(artifact,pair["effective_areas"],config)
     distribution = dict(name="synthetic_reference_distribution",roi_dimensions="independent_uniform_integer_1_to_canvas",positions="uniform_feasible_top_left",conditioning="all_three_shapes_in_domain_and_unique_computational_key",trace=None)
-    payload = dict(schema_version=2, evaluation_design=evaluation_design,
+    payload = dict(schema_version=3, evaluation_design=evaluation_design,
                    aggregate_scope="reference_distribution" if representative else "unweighted_challenge_average",
                    reference_distribution=distribution if representative else None,
                    validation_declaration=validation_declaration(config),used_for_policy_development=False,
@@ -317,7 +325,7 @@ def load(path, config, calibration, adapter, image):
     payload = document["payload"]
     if document["sha256"] != canonical_hash(payload):
         raise ValueError("Pair specs hash mismatch")
-    if payload["schema_version"] not in {1,2} or payload["stride"] != adapter.stride or payload["canvas_hw"] != config.get("experiment_b", {}).get("canvas_hw", [640,640]):
+    if payload["schema_version"] not in {1,2,3} or payload["stride"] != adapter.stride or payload["canvas_hw"] != config.get("experiment_b", {}).get("canvas_hw", [640,640]):
         raise ValueError("Pair specs schema/stride/canvas mismatch")
     if payload["calibration_hash"] != file_sha256(calibration):
         raise ValueError("Pair specs calibration hash mismatch")
@@ -346,12 +354,16 @@ def load(path, config, calibration, adapter, image):
         areas = [h*w for h,w in shapes]
         if strict_lookup and not all(lookup.is_in_domain(*hw) for hw in shapes):
             raise ValueError("Missing lookup entry for validation shape")
-        primary,tags,gains,distance,boundary_scores = classify(shapes,models,payload["config"],lookup,declaration)
+        classified_primary,tags,gains,distance,boundary_scores = classify(shapes,models,payload["config"],lookup,declaration)
         if payload.get("evaluation_design") == "representative":
-            primary = "reference"
+            classified_primary = "reference"
+        stored_primary = specification["primary_stratum"]
+        primary_valid = (stored_primary == classified_primary if payload["schema_version"] < 3
+                         else stored_primary == "reference" if payload.get("evaluation_design") == "representative"
+                         else stored_primary in tags)
         if (list(key) != specification["computational_key"] or areas != specification["effective_areas"] or
             areas[2]-areas[0]-areas[1] != specification["delta_area"] or not specification["domain_result"] or
-            primary != specification["primary_stratum"] or tags != specification["stratum_tags"] or
+            not primary_valid or tags != specification["stratum_tags"] or
             [[r.height,r.width] for r in rectangles] != specification["requested_shapes"] or
             specification["calibration_hash"] != payload["calibration_hash"]):
             raise ValueError("Pair specification derived fields mismatch")
