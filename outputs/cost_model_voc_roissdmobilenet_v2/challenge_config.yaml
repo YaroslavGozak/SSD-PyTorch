@@ -4,7 +4,7 @@ model:
   model_config: config/imagenet-vid-roissd-mobilenet.yaml
   weights: trained_models/imagenet-vid-roissd-mobilenet-20260910/best_map.pt
   device: cpu
-  stride: 1
+  stride: 32
 experiment_a:
   schedule_seed: 20260918
   prewarm_passes: 2
