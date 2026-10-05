@@ -1,0 +1,13 @@
+frame_count: 50
+calibration_frames: 30
+pair_count: 500
+warmup: 30
+calibration_repetitions: 30
+repetitions: 30
+timing_mode: inference_only
+seed: 20261005
+canvas_hw: [640, 640]
+geometric_gamma: 1.4
+simple_iou: 0.01
+simple_distance: 40
+progress_interval_s: 15
