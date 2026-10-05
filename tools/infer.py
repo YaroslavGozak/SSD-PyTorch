@@ -14,6 +14,7 @@ from tools.helpers.pipeline import (
     load_model_and_dataset as pipeline_load_model_and_dataset,
     resolve_device,
 )
+from tools.train_samplers.roi_mixed_sampling import RoiBatchProcessor, build_stage_mode_configs
 
 device = resolve_device(None)
 print('Using device {}'.format(device))
@@ -275,6 +276,25 @@ def append_model_results_csv(
         writer.writerow(row)
 
 
+def prepare_mixed_sample(image_bgr, detections, stage, im_size):
+    """Use training ROI geometry and return matching inference/drawing inputs."""
+    image = torch.from_numpy(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float() / 255.0
+    h, w = image_bgr.shape[:2]
+    boxes = torch.tensor([det['bbox'] for det in detections], dtype=torch.float32).reshape(-1, 4)
+    boxes /= torch.tensor([w, h, w, h], dtype=torch.float32)
+    target = {'boxes': boxes, 'labels': torch.tensor([det['label'] for det in detections], dtype=torch.int64)}
+    modes = build_stage_mode_configs(stage, im_size)
+    roi_modes = [mode for mode in modes if mode.name != 'full']
+    mode = random.choices(roi_modes, weights=[mode.prob for mode in roi_modes], k=1)[0]
+    processor = RoiBatchProcessor(mode_configs=modes, im_size=im_size)
+    crop, target = processor.process_sample(image, target, mode.name, mode.out_size)
+    preview = cv2.cvtColor(crop.permute(1, 2, 0).mul(255).round().clamp(0, 255).byte().numpy(), cv2.COLOR_RGB2BGR)
+    mean = crop.new_tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+    std = crop.new_tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+    target['bboxes'] = target.pop('boxes')
+    return (crop - mean) / std, target, preview
+
+
 def infer(args):
     samples_path = args.results_path + '/samples' if args.results_path else 'samples'
     if not os.path.exists(samples_path):
@@ -292,8 +312,17 @@ def infer(args):
 
     num_samples = 5
     for i in tqdm(range(num_samples)):
-        dataset_idx = random.randint(0, len(dataset_dataset))
-        im_tensor, target, fname = dataset_dataset[dataset_idx]
+        dataset_idx = random.randrange(len(dataset_dataset))
+        sample_roi_stage = getattr(args, 'sample_roi_stage', None)
+        if sample_roi_stage is not None:
+            info = dataset_dataset.images_info[dataset_idx]
+            preview = cv2.imread(info['filename'])
+            im_tensor, target, preview = prepare_mixed_sample(
+                preview, info['detections'], sample_roi_stage, config['dataset_params']['im_size'],
+            )
+        else:
+            im_tensor, target, fname = dataset_dataset[dataset_idx]
+            preview = cv2.imread(fname)
         ssd_detections = run_detector(
             model,
             im_tensor.unsqueeze(0).float().to(device),
@@ -302,7 +331,7 @@ def infer(args):
             conf_threshold=conf_threshold,
         )
 
-        gt_im = cv2.imread(fname)
+        gt_im = preview.copy()
         h, w = gt_im.shape[:2]
         gt_im_copy = gt_im.copy()
         # Saving images with ground truth boxes
@@ -334,7 +363,7 @@ def infer(args):
         boxes = ssd_detections[0]['boxes']
         labels = ssd_detections[0]['labels']
         scores = ssd_detections[0]['scores']
-        im = cv2.imread(fname)
+        im = preview.copy()
         im_copy = im.copy()
 
         # Saving images with predicted boxes
@@ -579,13 +608,23 @@ def infer_and_evaluate(args):
     return output
 
 if __name__ == '__main__':
+    def parse_bool(value):
+        if isinstance(value, bool):
+            return value
+        normalized = str(value).strip().lower()
+        if normalized in ('true', '1', 'yes', 'y'):
+            return True
+        if normalized in ('false', '0', 'no', 'n'):
+            return False
+        raise argparse.ArgumentTypeError('Expected true or false')
+
     parser = argparse.ArgumentParser(description='Arguments for ssd inference')
     parser.add_argument('--config', dest='config_path',
                         default='config/voc.yaml', type=str)
     parser.add_argument('--evaluate', dest='evaluate',
-                        default=True, type=bool)
+                        default=True, type=parse_bool)
     parser.add_argument('--infer-samples', dest='infer_samples',
-                        default=True, type=bool)
+                        default=True, type=parse_bool)
     parser.add_argument('--results-path', dest='results_path',
                         default=None, type=str)
     parser.add_argument('--eval-mode', dest='eval_mode', choices=['default', 'pad-loop', 'fixed-size-loop'],

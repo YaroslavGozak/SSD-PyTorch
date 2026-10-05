@@ -36,9 +36,9 @@ train_params:
   lr_steps: [ 60, 80, 100, 115 ]
   lr_steps_stage2: [ 5, 15 ]
   lr_steps_stage3: [ 10, 15 ]
-  lr: 0.002
-  freeze_backbone_bn: false
-  freeze_extra_bn: false
+  lr: 0.00025
+  freeze_backbone_bn: true
+  freeze_extra_bn: true
   train_bn_affine: true
   log_steps : 100
   task_name: 'imagenet-vid-roissd-mobilenet-20260910'

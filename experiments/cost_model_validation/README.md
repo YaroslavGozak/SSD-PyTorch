@@ -1,5 +1,40 @@
 # Cost model validation
 
+## ROI-SSD fine-stride comparison
+
+The ROI-SSD and MobileNet configs use `model.stride: 4`, full-grid calibration,
+and strict lookup coverage within a 640 x 640 canvas. All six candidate policies
+remain enabled, with `shape_lookup_conservative` predeclared as primary.
+This tests 4-pixel input rounding, not unrestricted stride-1 inputs. The domain
+still excludes dimensions below 128, areas below 25,600, and aspect ratios
+outside [0.5, 2.0].
+
+Run fresh calibration and both validation designs on PC:
+
+```powershell
+python -m experiments.cost_model_validation.run_fresh_validation --config experiments/cost_model_validation/config.voc-roi-ssd-mobilenet.yaml --representative-config experiments/cost_model_validation/config.voc-roi-ssd-mobilenet.representative.yaml --output outputs/cost_model_voc_roissdmobilenet_stride4_640
+python -m experiments.cost_model_validation.run_fresh_validation --config experiments/cost_model_validation/config.voc-roi-ssd.yaml --representative-config experiments/cost_model_validation/config.voc-roi-ssd.representative.yaml --output outputs/cost_model_voc_roissd_stride4_640
+```
+
+For the stride-32 baseline, copy each challenge/representative config pair and
+change only `model.stride` to 32 in both copies. Run the same command with those
+copies and a separate output directory. Repeat at 16 or 8 if desired. Do not
+reuse calibration or frozen pair files across strides. When comparing with old
+640 x 640 runs, also check that runtime settings and evaluation designs match.
+Keep hardware and runtime settings identical across the comparison.
+
+The MobileNet Raspberry Pi challenge config has the same stride and domain.
+For both designs on Pi, copy the MobileNet representative config and replace
+its Windows runtime power-scheme field with `expected_cpu_governor: performance`,
+matching the Pi challenge config. Pass both paths explicitly to the runner.
+
+Report representative and challenge results separately, including policy regret
+and its gap to conservative lookup. Identical generator seeds do not guarantee
+matched rectangles across strides: domain rejection and challenge selection
+depend on rounding and fitted models. These commands compare rankings on each
+stride's generated sets; they do not implement a matched-pair causal comparison.
+Old YOLO pair exclusions are intentionally absent from these fresh ROI-SSD runs.
+
 The current YOLO26n CPU workflow uses schema v4: full ordered-shape lookup,
 separate representative/challenge validations, and compact artifacts. See
 [YOLO26N_CPU_V4.md](YOLO26N_CPU_V4.md) for commands and migration notes.

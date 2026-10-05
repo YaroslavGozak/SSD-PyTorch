@@ -50,6 +50,14 @@ def measured(adapter,image,hw,mode):
 
 
 class ShapeValidationTests(unittest.TestCase):
+    def test_pair_generation_rejects_calibration_stride_mismatch(self):
+        with tempfile.TemporaryDirectory() as folder:
+            calibration = Path(folder) / 'calibration.json'
+            calibration.write_text(json.dumps(fixture()), encoding='utf-8')
+            config = {'model': {'stride': 4}}
+            with self.assertRaisesRegex(ValueError, 'Calibration stride 32 differs from configured model.stride 4'):
+                generate(config, str(calibration), str(Path(folder) / 'pairs.json'))
+
     def test_lookup_boundary_scores_and_linear_conservative_disagreement(self):
         artifact=fixture()
         for entry in artifact["latency_models"]["shape_lookup"]["table"].values():

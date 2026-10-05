@@ -429,17 +429,34 @@ class VideoSequenceBenchmark:
                 'window_size': self.adaptive_tau_window_size,
             })
 
-    def run(self) -> Dict[str, Any]:
+    def run(self, prepared=None) -> Dict[str, Any]:
         run_start_time = time.perf_counter()
         args = argparse.Namespace(config_path=self._train_config_path)
-        model, dataset, data_loader, train_cfg = load_model_and_dataset(self.cfg["benchmark_vid_params"]["device"], args)
+        model, dataset, data_loader, train_cfg = prepared or load_model_and_dataset(self.cfg["benchmark_vid_params"]["device"], args)
+        from tools.benchmarks.video_artifacts import timed_batches, save_run
+        from tools.helpers.pipeline import run_model_inference
 
         conf_threshold = train_cfg["train_params"]["infer_conf_threshold"]
-        model.low_score_threshold = conf_threshold
+        # Experiment mode preserves the calibrated detector's internal threshold;
+        # the benchmark confidence threshold is applied after inference as before.
+        if not self.cfg.get("video_experiment"):
+            model.low_score_threshold = conf_threshold
 
         im_size_hw = ensure_im_size_tuple(train_cfg["dataset_params"]["im_size"])
         model_device = next(model.parameters()).device
         total_frames = len(data_loader)
+        experiment = self.cfg.get("video_experiment", {})
+        warmup = int(experiment.get("warmup", 0))
+        if warmup:
+            warm_tensor = next(iter(data_loader))[0].float().to(model_device)
+            with torch.no_grad():
+                for _ in range(warmup):
+                    run_model_inference(model, warm_tensor)
+            if model_device.type == "cuda":
+                torch.cuda.synchronize(model_device)
+            elif model_device.type == "mps":
+                torch.mps.synchronize()
+        frame_rows = []
 
         self.tracker.reset()
         next_frame_rois: List[List[int]] = []
@@ -454,7 +471,7 @@ class VideoSequenceBenchmark:
 
         frame_idx = 0
         with torch.no_grad():
-            for im_tensor, target, fname in data_loader:
+            for (im_tensor, target, fname), load_latency in timed_batches(data_loader):
                 frame_idx += 1
                 if self.verbose and frame_idx % max(1, total_frames // 10) == 0:
                     pct = frame_idx / total_frames * 100
@@ -465,9 +482,11 @@ class VideoSequenceBenchmark:
                     print(f"  {frame_idx}/{total_frames} ({pct:.0f}%)  {print_tau}")
 
                 fpath = os.path.abspath(fname[0] if isinstance(fname, (list, tuple)) else fname)
+                read_start = time.perf_counter()
                 frame_bgr = cv2.imread(fpath)
+                read_latency = time.perf_counter() - read_start
                 if frame_bgr is None:
-                    continue
+                    raise RuntimeError(f"Cannot read benchmark frame: {fpath}")
                 frame_h, frame_w = frame_bgr.shape[:2]
                 frame_area = frame_w * frame_h
 
@@ -578,8 +597,27 @@ class VideoSequenceBenchmark:
 
                 # GT ROI coverage
                 all_gt = [b for boxes in gt_d.values() for b in boxes]
-                search_rois = rois_used if not result.use_full_frame else [[0, 0, frame_w - 1, frame_h - 1]]
-                gt_coverages.append(_gt_roi_coverage(search_rois, all_gt, self.coverage_threshold))
+                search_rois = rois_used if not result.use_full_frame else [[0, 0, frame_w, frame_h]]
+                coverage = _gt_roi_coverage(search_rois, all_gt, self.coverage_threshold)
+                gt_coverages.append(coverage)
+                frame_rows.append(dict(
+                    path=fpath, video_id=video_id, frame_index=effective_frame_idx,
+                    width=frame_w, height=frame_h, full_frame=result.use_full_frame,
+                    tracker_reset=bool(is_first_frame or len(frame_rows) == 0 or frame_rows[-1]["video_id"] != video_id),
+                    total_latency_s=load_latency+read_latency+result.latency_s,
+                    pipeline_latency_s=result.latency_s, load_latency_s=load_latency+read_latency,
+                    inference_time_s=sum(sum(v) for v in result.roi_latencies_s.values()),
+                    inference_calls=sum(len(v) for v in result.roi_latencies_s.values()),
+                    tensor_pixels=sum(w*h*len(v) for (w,h),v in result.roi_latencies_s.items()),
+                    tensor_shapes=[dict(height=h,width=w,calls=len(v)) for (w,h),v in result.roi_latencies_s.items()],
+                    full_tensor_pixels=int(im_tensor.shape[-2]*im_tensor.shape[-1]),
+                    roi_count=len(rois_used), roi_count_pre=len(next_frame_rois_current_frame),
+                    rois=search_rois, merges=result.merge_count,
+                    gt_count=len(all_gt), gt_covered=round(coverage*len(all_gt)) if all_gt else 0,
+                    merge_time_s=result.merge_latency_s, crop_time_s=result.crop_latency_s,
+                    tracker_time_s=result.tracker_latency_s, postprocess_time_s=result.postprocess_latency_s,
+                    merge_decisions=result.merge_decisions,
+                    fallback_count=sum(bool(d.get("fallback_used")) for d in result.merge_decisions)))
 
         metrics = self._compute(
             predictions, ground_truths, difficulties,
@@ -587,8 +625,18 @@ class VideoSequenceBenchmark:
             area_ratios, roi_counts_pre, roi_counts_post, gt_coverages,
             frame_idx, train_cfg
         )
-        self._print(metrics, elapsed_s=time.perf_counter() - run_start_time)
+        if self.verbose:
+            self._print(metrics, elapsed_s=time.perf_counter() - run_start_time)
         self._save(metrics)
+        if experiment:
+            if not frame_rows:
+                raise ValueError("No frames processed")
+            metadata = dict(self.run_metadata)
+            if hasattr(self.merge_fn, "metadata"):
+                metadata["calibrated_merge"] = self.merge_fn.metadata()
+            metrics["artifacts"] = save_run(
+                self.output_dir, frame_rows, predictions, ground_truths, difficulties,
+                self.cfg, train_cfg, metadata)
         return metrics
 
     # ------------------------------------------------------------------ #
@@ -616,7 +664,7 @@ class VideoSequenceBenchmark:
         mAP95, aps95, detector_recall95, class_recalls95 = compute_map(predictions, ground_truths, iou_threshold=0.95, difficult=difficulties)
 
         def ms(arr): return np.array(arr) * 1000 if arr else np.array([float("nan")])
-        def smean(a): return float(np.nanmean(a)) if len(a) else float("nan")
+        def smean(a): return float(np.nanmean(a)) if len(a) and np.isfinite(a).any() else float("nan")
         def sperc(a, p): return float(np.nanpercentile(a, p)) if len(a) else float("nan")
 
         all_lat_ms = ms(lat_full + lat_roi)

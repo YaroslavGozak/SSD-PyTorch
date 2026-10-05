@@ -22,9 +22,11 @@ class YoloV8Adapter:
     def to(self, device: torch.device = None, **_kwargs):
         if device is not None:
             self.device = device
+            self._yolo.model.to(device)
         return self
 
     def eval(self):
+        self._yolo.model.eval()
         return self
 
     def parameters(self):
@@ -154,9 +156,7 @@ class DetectionLabelRemapAdapter:
         output = self.base_model(*args, **kwargs)
         if isinstance(output, tuple) and len(output) == 2:
             raw, detections = output
-            print(f"[DetectionLabelRemapAdapter] Raw detections: {detections}")
             remapped = self._remap_output(detections)
-            print(f"[DetectionLabelRemapAdapter] Remapped detections: {remapped}")
             return raw, remapped
         return self._remap_output(output)
 

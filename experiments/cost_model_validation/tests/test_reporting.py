@@ -122,7 +122,12 @@ class ReportingTests(unittest.TestCase):
                 writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
                 writer.writeheader()
                 writer.writerows(rows)
-            analyze_a(str(raw), str(directory), bootstrap_count=4)
+            with patch("sys.stderr") as progress_stream:
+                analyze_a(str(raw), str(directory), bootstrap_count=4, progress=True)
+            progress_text = "".join(call.args[0] for call in progress_stream.write.call_args_list)
+            self.assertIn("model bootstrap: 4/4", progress_text)
+            self.assertIn("shape lookup bootstrap: 5/5", progress_text)
+            self.assertIn("Complete", progress_text)
             exported = json.loads((directory / "linear_fit.json").read_text())["provenance"]
             self.assertTrue(exported["complete"])
             self.assertEqual(exported["weights_sha256"], file_sha256(weights))

@@ -178,10 +178,6 @@ def load_model_and_dataset(args):
     model_config = config['model_params']
     train_config = config['train_params']
 
-    dataset = VisDroneDataset('test',
-                     im_sets=dataset_config['test_im_sets'])
-    test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
-
     model = SSD(config=model_config,
                 num_classes=dataset_config['num_classes'])
     model.to(device=torch.device(device))
@@ -194,6 +190,9 @@ def load_model_and_dataset(args):
     model.load_state_dict(torch.load(os.path.join(train_config['task_name'],
                                                        train_config['ckpt_name']),
                                      map_location=device))
+    dataset = VisDroneDataset('test',
+                     im_sets=dataset_config['test_im_sets'])
+    test_dataset_loader = DataLoader(dataset, batch_size=1, shuffle=False)
     return model, dataset, test_dataset_loader, config
 
 

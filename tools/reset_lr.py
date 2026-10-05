@@ -32,10 +32,11 @@ def reset_learning_rate(config_path, stage=None):
             momentum=0.9,
         )
         lr_scheduler = MultiStepLR(optimizer, milestones=lr_steps, gamma=0.5)
+        epoch = -1
         
         # Handle both old format (state_dict only) and new format (full checkpoint)
         if isinstance(checkpoint, dict) and 'model' in checkpoint:
-            print(f'Checkpoint contains full state (model, optimizer, scheduler). Resetting learning rate to {lr} with steps {lr_steps} and epoch to 0.')
+            print(f'Checkpoint contains full state (model, optimizer, scheduler). Resetting learning rate to {lr} with steps {lr_steps} and epoch to {epoch}.')
             model.load_state_dict(checkpoint['model'])
         else:
             print('Checkpoint contains model state only (old format). Rewriting as full checkpoint with reset optimizer/scheduler.')
@@ -46,7 +47,7 @@ def reset_learning_rate(config_path, stage=None):
             'model': model.state_dict(),
             'optimizer': optimizer.state_dict(),
             'scheduler': lr_scheduler.state_dict(),
-            'epoch': 0,
+            'epoch': epoch,
         }
         checkpoint_stage = stage
         if checkpoint_stage is None and isinstance(checkpoint, dict):
@@ -55,7 +56,7 @@ def reset_learning_rate(config_path, stage=None):
             checkpoint_out['stage'] = int(checkpoint_stage)
         torch.save(checkpoint_out, model_checkpoint_path)
         torch.save(0, os.path.join(model_task_path, 'epoch.pth'))
-        print(f"Learning rate reset to {train_config['lr']} and epoch reset to 0 in checkpoint '{model_checkpoint_path}'.")
+        print(f"Learning rate reset to {train_config['lr']} and epoch reset to {epoch} in checkpoint '{model_checkpoint_path}'.")
         return True
 
     else:

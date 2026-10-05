@@ -262,7 +262,7 @@ class ImageNetVidDataset(Dataset):
         elif self.transform_name.startswith('fixed_padding_roi_crop_yolo_'):
             pad_value = int(self.transform_name.split('_')[-1])
             self.transforms = FixedPaddingRoiCropYOLOTestTransform(
-                300,
+                im_size,
                 self.imagenet_mean,
                 self.imagenet_std,
                 pad_x=pad_value,

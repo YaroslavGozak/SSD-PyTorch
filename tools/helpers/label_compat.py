@@ -62,7 +62,7 @@ def maybe_wrap_model_for_dataset(model, dataset, train_config, dataset_name: str
         print(f"No label remapping needed (model_label_space={model_label_space}, dataset_label_space={dataset_label_space})")
         return model
 
-    if (model_label_space, dataset_label_space) == ('voc', 'imagenet-vid'):
+    if model_label_space == 'voc' and dataset_label_space in ('imagenet-vid', 'yolo-imagenet-vid'):
         print(f"Wrapping model with VOC->VID label remap adapter (model_label_space={model_label_space}, dataset_label_space={dataset_label_space})")
         return DetectionLabelRemapAdapter(
             base_model=model,

@@ -6,18 +6,34 @@ from tools.helpers.pipeline import load_model, resolve_device
 from tools.infer import infer_and_evaluate
 from tools.reset_lr import reset_learning_rate
 from tools.train_samplers.roi_mixed_sampling import MixedBatchSampler, MixedCollateFn, RoiBatchProcessor
+from tools.train_samplers.mixed_sampling_stats import MixedSamplingStats, save_epoch_stats
 import torch
 import argparse
 import os
 import numpy as np
 import random
 import csv
+import copy
+import shutil
+import yaml
 from tqdm import tqdm
 from torch.utils.data.dataloader import DataLoader
 from torch.optim.lr_scheduler import MultiStepLR
 
 device = resolve_device(None)
 print('Using device {}'.format(device))
+
+
+def save_validation_checkpoints(checkpoint, directory, epoch_map, best_map):
+    """Keep a resumable latest checkpoint and a validation-selected best."""
+    if np.isfinite(epoch_map) and epoch_map > best_map:
+        best_map = float(epoch_map)
+        checkpoint['best_map'] = best_map
+        torch.save(checkpoint, os.path.join(directory, 'best_map.pt'))
+        print(f"Saved best mAP checkpoint: epoch {checkpoint['epoch'] + 1} mAP {best_map:.6f}")
+    checkpoint['best_map'] = best_map
+    torch.save(checkpoint, os.path.join(directory, 'last.pt'))
+    return best_map
 
 
 class ImageNetNormalize:
@@ -75,54 +91,8 @@ def train(args):
     if device.type == 'cuda':
         torch.cuda.manual_seed_all(seed)
 
-    if train_config.get('dataset', 'voc') == 'imagenet-vid':
-        train_dataset = ImageNetVidRawDataset(
-            split='train',
-            train_data_root=dataset_config['train_data_root'],
-            train_ann_root=dataset_config['train_ann_root'],
-            test_data_root=dataset_config['test_data_root'],
-            test_ann_root=dataset_config['test_ann_root'],
-            im_size=dataset_config.get('im_size', 300),
-            task=None,
-        )
-    elif str(train_config['dataset']) == 'yolo-imagenet-vid':
-        train_dataset = YoloImageNetVidRawDataset(
-                     'train',
-                     yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
-                     im_size=dataset_config['im_size'])
-    else:
-        train_dataset = VOCRawDataset(
-            split='train',
-            im_sets=dataset_config['train_im_sets'],
-            task=None,
-        )
-
-    batch_sampler = MixedBatchSampler(
-        dataset=train_dataset,
-        batch_size=train_config['batch_size'],
-        stage=train_config.get('roi_mixed_stage', 2),
-        drop_last=True,
-        shuffle=True,
-        seed=train_config['seed'],
-    )
-
     model_name = str(train_config['model'])
-    processor = RoiBatchProcessor(
-        image_only_transform=None,
-        normalize_transform=ImageNetNormalize(),
-    )
-
-    collate_fn = MixedCollateFn(processor, return_mode=True)
-    train_dataset_loader = DataLoader(
-        train_dataset,
-        batch_sampler=batch_sampler,
-        collate_fn=collate_fn,
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=False
-    )
-
-    # Instantiate model and load checkpoint if present.
+    # Instantiate the model before scanning the training dataset.
     model = load_model(
         config=config,
         dataset=None,
@@ -157,9 +127,25 @@ def train(args):
     model.train()
     
     model_task_path = os.path.join('trained_models', train_config['task_name'])
-    model_checkpoint_path = os.path.join(model_task_path, train_config['ckpt_name'])
+    initial_checkpoint_path = os.path.join(model_task_path, train_config['ckpt_name'])
+    model_checkpoint_path = os.path.join(model_task_path, 'last.pt')
+    if not os.path.isfile(model_checkpoint_path) and not os.path.isfile(initial_checkpoint_path):
+        raise FileNotFoundError(
+            f'No mixed-sampling checkpoint found. Checked {model_checkpoint_path} '
+            f'and {initial_checkpoint_path}'
+        )
     if not os.path.exists(model_task_path):
         os.makedirs(model_task_path, exist_ok=True)
+    if not os.path.exists(model_checkpoint_path) and os.path.exists(initial_checkpoint_path):
+        shutil.copy2(initial_checkpoint_path, model_checkpoint_path)
+    # Evaluation must load the current epoch, even when ckpt_name is best_map.pt.
+    evaluation_config = copy.deepcopy(config)
+    evaluation_config['train_params']['ckpt_name'] = 'last.pt'
+    evaluation_config_path = os.path.join(model_task_path, 'mixed_sampling_eval.yaml')
+    with open(evaluation_config_path, 'w', encoding='utf-8') as handle:
+        yaml.safe_dump(evaluation_config, handle, allow_unicode=False)
+    best_map = float('-inf')
+    checkpoint = None
 
     optimizer = torch.optim.SGD(lr=train_config['lr'],
                                 params=model.parameters(),
@@ -184,15 +170,21 @@ def train(args):
                     checkpoint_stage, roi_stage
                 )
             )
-            if not reset_learning_rate(args.config_path, stage=roi_stage):
+            if not reset_learning_rate(evaluation_config_path, stage=roi_stage):
                 raise RuntimeError('Unable to reset checkpoint training state')
             checkpoint = torch.load(model_checkpoint_path, map_location=device)
+            # The reset helper uses the base schedule; retain this stage's schedule.
+            checkpoint['scheduler'] = lr_scheduler.state_dict()
         
         # Handle both old format (state_dict only) and new format (full checkpoint)
         if isinstance(checkpoint, dict) and 'model' in checkpoint:
             model.load_state_dict(checkpoint['model'])
             optimizer.load_state_dict(checkpoint['optimizer'])
-            # lr_scheduler.load_state_dict(checkpoint['scheduler'])
+            best_map = float(checkpoint.get('best_map', float('-inf')))
+            if not np.isfinite(best_map):
+                best_map = float('-inf')
+            if 'scheduler' in checkpoint:
+                lr_scheduler.load_state_dict(checkpoint['scheduler'])
             print('Restored optimizer and scheduler state')
         else:
             # Old format - just model state_dict
@@ -201,6 +193,55 @@ def train(args):
 
     else:
         print('No checkpoint found, starting training from scratch')
+
+    if train_config.get('dataset', 'voc') == 'imagenet-vid':
+        train_dataset = ImageNetVidRawDataset(
+            split='train',
+            train_data_root=dataset_config['train_data_root'],
+            train_ann_root=dataset_config['train_ann_root'],
+            test_data_root=dataset_config['test_data_root'],
+            test_ann_root=dataset_config['test_ann_root'],
+            im_size=dataset_config.get('im_size', 300),
+            task=None,
+        )
+    elif str(train_config['dataset']) == 'yolo-imagenet-vid':
+        train_dataset = YoloImageNetVidRawDataset(
+                     'train',
+                     yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
+                     im_size=dataset_config['im_size'])
+    else:
+        train_dataset = VOCRawDataset(
+            split='train',
+            im_sets=dataset_config['train_im_sets'],
+            task=None,
+        )
+
+    batch_sampler = MixedBatchSampler(
+        dataset=train_dataset,
+        batch_size=train_config['batch_size'],
+        stage=train_config.get('roi_mixed_stage', 2),
+        drop_last=True,
+        shuffle=True,
+        seed=train_config['seed'],
+        im_size=dataset_config['im_size'],
+    )
+    print("Mixed-sampling output sizes:", {mode.name: mode.out_size for mode in batch_sampler.mode_configs})
+
+    processor = RoiBatchProcessor(
+        image_only_transform=None,
+        normalize_transform=ImageNetNormalize(),
+        mode_configs=batch_sampler.mode_configs,
+        im_size=dataset_config['im_size'],
+    )
+    collate_fn = MixedCollateFn(processor, return_mode=True, return_sampling_info=True)
+    train_dataset_loader = DataLoader(
+        train_dataset,
+        batch_sampler=batch_sampler,
+        collate_fn=collate_fn,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=False
+    )
 
     print(f"lr_scheduler.milestones: {lr_scheduler.milestones}")
     acc_steps = train_config['acc_steps']
@@ -212,7 +253,9 @@ def train(args):
 
     i_start = 0
     epoch_path = os.path.join(model_task_path, 'epoch.pth')
-    if os.path.exists(epoch_path):
+    if isinstance(checkpoint, dict) and 'epoch' in checkpoint:
+        i_start = int(checkpoint['epoch']) + 1
+    elif os.path.exists(epoch_path):
         print('Loading checkpoint epoch as one exists')
         i_start = int(torch.load(epoch_path)) + 1
     print('Starting training from epoch {}'.format(i_start))
@@ -222,7 +265,11 @@ def train(args):
         epoch_start_time = time.time()
         ssd_classification_losses = []
         ssd_localization_losses = []
-        for idx, (images, targets, mode) in enumerate(tqdm(train_dataset_loader, desc='Training epoch {}'.format(i+1) )):
+        sampling_stats = MixedSamplingStats(batch_sampler.mode_configs, dataset_config['im_size'])
+        for idx, (images, targets, mode, sampling_info) in enumerate(tqdm(train_dataset_loader, desc='Training epoch {}'.format(i+1) )):
+
+            sampling_stats.record(mode, images.shape[-1], len(targets),
+                                  object_mismatch=sampling_info['object_mismatch'])
 
             if idx % 50 == 0:
                 print(f"Batch mode: {mode}, image size: {tuple(images.shape)}")
@@ -289,6 +336,18 @@ def train(args):
         epoch_minutes = epoch_time / 60
         print('Finished epoch {}/{}'.format(i+1, num_epochs))
         print('Epoch execution time: {:.2f} minutes'.format(epoch_minutes))
+        sampling_rows = sampling_stats.rows(epoch=i + 1, stage=roi_stage)
+        sampling_stats_path = os.path.join(model_task_path, 'mixed_sampling_stats.csv')
+        save_epoch_stats(sampling_stats_path, sampling_rows)
+        overall_sampling = sampling_rows[0]
+        most_enlarged = max(sampling_rows[1:], key=lambda row: row['enlarged_batches'])
+        most_affected = ('{} px ({} batches)'.format(most_enlarged['required_size_px'],
+                         most_enlarged['enlarged_batches']) if most_enlarged['enlarged_batches'] else 'none')
+        print('Mixed sampling: {} / {} batches enlarged ({:.2f}%), including {} with oversized selected objects; most affected size: {}. Stats: {}'.format(
+            overall_sampling['enlarged_batches'], overall_sampling['batches'],
+            overall_sampling['enlargement_rate_pct'], overall_sampling['object_mismatch_batches'],
+            most_affected, sampling_stats_path,
+        ))
         # if isinstance(collate_fn, EpochAwareCollateFn):
         #     collate_fn.print_and_reset_stats(i)
         # else:
@@ -306,6 +365,7 @@ def train(args):
             'scheduler': lr_scheduler.state_dict(),
             'epoch': i,
             'stage': roi_stage,
+            'best_map': best_map,
         }
         torch.save(checkpoint, model_checkpoint_path)
         torch.save(i, os.path.join(model_task_path, 'epoch.pth'))
@@ -313,6 +373,7 @@ def train(args):
         # Per-epoch intermediate mAP on dataset with config transform.
         epoch_eval_results_path = os.path.join(model_task_path, 'epoch_{:04d}_default_eval_results'.format(i + 1))
         epoch_eval_args = argparse.Namespace(**vars(args))
+        epoch_eval_args.config_path = evaluation_config_path
         epoch_eval_args.infer_samples = False
         epoch_eval_args.evaluate = True
         epoch_eval_args.eval_mode = 'default'
@@ -332,6 +393,7 @@ def train(args):
                     epoch_map = float(evaluation.get('mAP', float('nan')))
                     epoch_recall = float(evaluation.get('mean_detector_recall', float('nan')))
 
+        best_map = save_validation_checkpoints(checkpoint, model_task_path, epoch_map, best_map)
         metrics_csv_path = os.path.join(model_task_path, 'training_metrics.csv')
         append_epoch_metrics_csv(
             metrics_csv_path,
@@ -345,7 +407,9 @@ def train(args):
     print('Done Training...')
     print('Evaluating...')
     final_eval_args = argparse.Namespace(**vars(args))
+    final_eval_args.config_path = evaluation_config_path
     final_eval_args.infer_samples = True
+    final_eval_args.sample_roi_stage = roi_stage
     final_eval_args.evaluate = True
     final_eval_args.eval_mode = args.final_eval_mode
     final_eval_args.results_path = os.path.join(model_task_path, 'final_{}_results'.format(args.final_eval_mode))

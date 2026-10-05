@@ -7,7 +7,6 @@ from torchvision.io import write_png
 from torchvision import tv_tensors
 from torchvision.transforms.v2 import functional as F
 
-from transformers.resize_longer_edge import ResizeLongerEdge
 
 
 class FixedPaddingRoiCropYOLOTestTransform:
@@ -15,10 +14,9 @@ class FixedPaddingRoiCropYOLOTestTransform:
     YOLO-oriented fixed-padding test transform.
 
     Pipeline:
-    1) Resize full image longer edge to 300
+    1) Resize full image to im_size x im_size
     2) Crop around first object with fixed padding
-    3) Resize crop longer edge to nearest stride multiple (default 32)
-    4) Make square (pad shorter side)
+    3) Pad crop to a square stride multiple without resizing its contents
     """
 
     def __init__(
@@ -32,7 +30,7 @@ class FixedPaddingRoiCropYOLOTestTransform:
         min_box_area=4.0,
         letterbox_fill=114,
     ):
-        self.base_resize = ResizeLongerEdge(size=im_size)
+        self.base_resize = torchvision.transforms.v2.Resize(size=(im_size, im_size), antialias=True)
         self.pad_x = float(pad_x)
         self.pad_y = float(pad_y)
         self.stride = int(stride)
@@ -47,10 +45,6 @@ class FixedPaddingRoiCropYOLOTestTransform:
 
     def _labels_getter(self, transform_input):
         return (transform_input[1]["labels"], transform_input[1]["difficult"])
-
-    def _nearest_stride(self, value):
-        v = max(1, int(round(float(value))))
-        return max(self.stride, int(round(v / self.stride) * self.stride))
 
     def _expand_to_square_within_image(self, x1, y1, x2, y2, image_w, image_h):
         """Expand ROI to a square by using available image margins first."""
@@ -156,28 +150,10 @@ class FixedPaddingRoiCropYOLOTestTransform:
 
         return image, new_target
 
-    def _resize_longer_to_stride(self, image, target):
-        _, h, w = F.get_dimensions(image)
-        longer = max(h, w)
-        snapped = self._nearest_stride(longer)
-
-        if longer == snapped:
-            return image, target
-
-        if h >= w:
-            new_h = snapped
-            new_w = max(1, int(round(w * snapped / float(h))))
-        else:
-            new_w = snapped
-            new_h = max(1, int(round(h * snapped / float(w))))
-
-        resize = torchvision.transforms.v2.Resize(size=(new_h, new_w), antialias=True)
-        return resize(image, target)
-
     def _pad_to_square(self, image, target):
         _, h, w = F.get_dimensions(image)
-        side = max(h, w)
-        if h == w:
+        side = max(self.stride, int(math.ceil(max(h, w) / self.stride) * self.stride))
+        if h == side and w == side:
             return image, target
 
         pad_h = side - h
@@ -250,11 +226,9 @@ class FixedPaddingRoiCropYOLOTestTransform:
 
     def _core(self, image, target):
         image, target = self.base_resize(image, target)
-        self._save_debug_image('01_resize300', image, target)
+        self._save_debug_image('01_resize_square', image, target)
         image, target = self._crop_first_with_padding(image, target)
         self._save_debug_image('02_crop_pad', image, target)
-        image, target = self._resize_longer_to_stride(image, target)
-        self._save_debug_image('03_stride32', image, target)
         image, target = self._pad_to_square(image, target)
         self._save_debug_image('04_square', image, target)
         return image, target

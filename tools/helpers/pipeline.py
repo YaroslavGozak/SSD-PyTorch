@@ -268,7 +268,8 @@ def load_model(
             yolo_device = resolve_device(model_device)
         else:
             yolo_device = resolve_device(train_config.get('device', 'cpu'))
-        model = YoloV8Adapter(weights_path=weights_path, device=yolo_device, use_predict_api=True)
+        model = YoloV8Adapter(weights_path=weights_path, device=yolo_device,
+                             use_predict_api=bool(train_config.get('yolo_use_predict_api', True)))
         print(f'Loaded YOLO model with weights: {weights_path}')
     else:
         raise Exception(f'Unknown model name {model_name!r}')
@@ -304,16 +305,18 @@ def load_model(
 
 
 def load_model_and_dataset(device, args, transform_name: Optional[str] = None):
-    """Load model and dataset from a training config path (args.config_path)."""
+    """Load weights before scanning the dataset, then apply dataset label mapping."""
     config = load_config(args.config_path)
     if device is None:
         cfg_device = config.get('benchmark_vid_params', {}).get('device')
         device = resolve_device(cfg_device)
     else:
         device = resolve_device(device)
+    model = load_model(config=config, dataset=None, load_checkpoint=True, model_device=device)
     dataset = load_dataset(config, split='test', transform_name=transform_name)
+    model = maybe_wrap_model_for_dataset(model, dataset, config['train_params'],
+                                         str(config['train_params']['dataset']))
     data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
-    model = load_model(config=config, dataset=dataset, load_checkpoint=True, model_device=device)
     model.to(device=device)
     model.eval()
 
@@ -675,6 +678,11 @@ class FrameResult:
     use_full_frame:    bool                   = True
     latency_s:         float                  = 0.0  # total inference + NMS + tracker update
     merge_latency_s:   float                  = 0.0  # ROI merge step only (0.0 for full-frame)
+    crop_latency_s: float = 0.0
+    postprocess_latency_s: float = 0.0
+    tracker_latency_s: float = 0.0
+    merge_count: int = 0
+    merge_decisions: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -719,7 +727,17 @@ def process_frame(
     all_detections: List[Dict[str, Any]] = []
     rois_used: List[List[int]] = []
     merge_latency_s = 0.0
+    crop_latency_s = 0.0
+    merge_count = 0
+    merge_decisions = []
 
+    def synchronize():
+        if model_device is not None and torch.device(model_device).type == "cuda":
+            torch.cuda.synchronize(model_device)
+        elif model_device is not None and torch.device(model_device).type == "mps":
+            torch.mps.synchronize()
+
+    synchronize()
     t0 = time.perf_counter()
 
     roi_latencies_s: Dict[Tuple[int, int], List[float]] = {}
@@ -727,6 +745,7 @@ def process_frame(
         td = time.perf_counter()
         full_tensor = im_tensor.float().to(model_device)
         _, model_batch_detections = run_model_inference(model, full_tensor)
+        synchronize()
         full_latency_s = time.perf_counter() - td
         full_h, full_w = int(full_tensor.shape[-2]), int(full_tensor.shape[-1])
         roi_latencies_s.setdefault((full_w, full_h), []).append(full_latency_s)
@@ -744,7 +763,19 @@ def process_frame(
             dst_size_wh=(model_w, model_h),
         )
         
-        clusters_model = merge_fn(model_space_rois, image_size=(model_w, model_h), tau=merge_tau)      
+        if hasattr(merge_fn, "policy"):
+            def effective_shape(rect):
+                original_roi = _convert_rois_between_spaces(
+                    [rect], (model_w, model_h), (frame_w, frame_h))[0]
+                crop_tensor, _ = convert_crop_to_input_tensor(
+                    im_tensor, original_roi, (frame_h, frame_w), roi_grid)
+                return tuple(crop_tensor.shape[-2:])
+            clusters_model = merge_fn(model_space_rois, image_size=(model_w, model_h),
+                                     tau=merge_tau, effective_shape=effective_shape)
+            merge_decisions = list(merge_fn.decisions)
+        else:
+            clusters_model = merge_fn(model_space_rois, image_size=(model_w, model_h), tau=merge_tau)
+        merge_count = max(0, len(model_space_rois) - len(clusters_model))
 
         clusters = _convert_rois_between_spaces(
             rois=clusters_model,
@@ -763,6 +794,7 @@ def process_frame(
             crop_h = ry2 - ry1
             if crop_w <= 0 or crop_h <= 0:
                 continue
+            crop_start = time.perf_counter()
             crop_tensor, snapped_roi = convert_crop_to_input_tensor(
                 im_tensor=im_tensor,
                 crop=roi_c,
@@ -770,12 +802,14 @@ def process_frame(
                 roi_grid=roi_grid,
             )
             sx1, sy1, sx2, sy2 = snapped_roi
+            crop_latency_s += time.perf_counter() - crop_start
             rois_used.append(snapped_roi)
 
             try:
                 td = time.perf_counter()
                 infer_tensor = crop_tensor.unsqueeze(0).to(model_device)
                 _, model_batch_detections = run_model_inference(model, infer_tensor)
+                synchronize()
                 infer_latency_s = time.perf_counter() - td
                 infer_h, infer_w = int(infer_tensor.shape[-2]), int(infer_tensor.shape[-1])
                 roi_latencies_s.setdefault((infer_w, infer_h), []).append(infer_latency_s)
@@ -792,6 +826,7 @@ def process_frame(
             )
 
     # NMS + confidence filter
+    post_start = time.perf_counter()
     merged = merge_detections_nms(all_detections, iou_threshold=nms_iou)
     final_detections: List[Dict[str, Any]] = []
     tracker_input: List[Dict[str, Any]] = []
@@ -816,7 +851,10 @@ def process_frame(
         det for det in tracker_input_before_dropout if id(det) not in kept_ids
     ]
 
+    postprocess_latency_s = time.perf_counter() - post_start
+    tracker_start = time.perf_counter()
     tracker_result = tracker.update(tracker_input, frame_shape=(frame_h, frame_w))
+    tracker_latency_s = time.perf_counter() - tracker_start
     latency_s = time.perf_counter() - t0
 
     return FrameResult(
@@ -828,4 +866,9 @@ def process_frame(
         use_full_frame=use_full_frame,
         latency_s=latency_s,
         merge_latency_s=merge_latency_s,
+        crop_latency_s=crop_latency_s,
+        postprocess_latency_s=postprocess_latency_s,
+        tracker_latency_s=tracker_latency_s,
+        merge_count=merge_count,
+        merge_decisions=merge_decisions,
     )

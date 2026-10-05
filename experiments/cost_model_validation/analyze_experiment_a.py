@@ -3,7 +3,9 @@
 import argparse
 import csv
 import json
-from collections import defaultdict
+import sys
+import time
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Dict
 
@@ -75,11 +77,34 @@ def _load_provenance(csv_path: str, metadata_path: str | None) -> Dict[str, Any]
     return provenance
 
 
-def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 2000, metadata_path: str | None = None):
+def _progress(stage: str, interval_s: float = 10.0):
+    started = time.monotonic()
+    last_report = started
+    print(f"[experiment_a analysis] {stage}: started", file=sys.stderr, flush=True)
+
+    def report(completed: int, total: int):
+        nonlocal last_report
+        now = time.monotonic()
+        if completed == total or now - last_report >= interval_s:
+            elapsed = now - started
+            eta = elapsed * (total - completed) / completed if completed else 0.0
+            print(f"[experiment_a analysis] {stage}: {completed}/{total} "
+                  f"({completed / total:.0%}); elapsed {elapsed:.1f}s; ETA {eta / 60:.1f} min",
+                  file=sys.stderr, flush=True)
+            last_report = now
+
+    return report
+
+
+def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 2000, metadata_path: str | None = None,
+            progress: bool = False):
     with open(path, newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
     if not rows:
         raise ValueError("Experiment A CSV is empty")
+    if progress:
+        print(f"[experiment_a analysis] Loaded {len(rows)} observations; fitting models",
+              file=sys.stderr, flush=True)
 
     area = np.asarray([float(row["effective_area"]) for row in rows])
     times = np.asarray([
@@ -88,8 +113,11 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
     ])
     shape_groups = defaultdict(list)
     area_groups = defaultdict(list)
-    for row, value in zip(rows, times):
-        shape_groups[(int(row["tensor_h"]), int(row["tensor_w"]))].append(float(value))
+    shape_positions = defaultdict(list)
+    for index, (row, value) in enumerate(zip(rows, times)):
+        shape = (int(row["tensor_h"]), int(row["tensor_w"]))
+        shape_groups[shape].append(float(value))
+        shape_positions[shape].append(int(row.get("global_position") or index))
         area_groups[int(row["effective_area"])].append(float(value))
 
     shape_rows = [
@@ -133,7 +161,7 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
     for shape in shape_rows:
         key = (shape["tensor_h"], shape["tensor_w"])
         shape.update(statistics(shape_groups[key], trim))
-        positions = [int(r.get("global_position") or i) for i,r in enumerate(rows) if (int(r["tensor_h"]),int(r["tensor_w"])) == key]
+        positions = shape_positions[key]
         shape.update(first_measurement_position=min(positions), last_measurement_position=max(positions))
     alternatives = {stat: {lev: fit_models(*design(shape_groups, stat, lev, trim), support)
                           for lev in ("shape_level", "area_level")} for stat in {"mean", statistic, "trimmed_mean"}}
@@ -141,7 +169,8 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
     if not primary["linear"]["valid"]:
         raise ValueError("Primary linear fit requires positive intercept and slope")
     k_t, c_t = primary["linear"]["coefficients"]["b0"], primary["linear"]["coefficients"]["b1"]
-    uncertainty = bootstrap_models(shape_groups, bootstrap_count, int(options.get("bootstrap_seed", 0)), statistic, level, trim, support)
+    uncertainty = bootstrap_models(shape_groups, bootstrap_count, int(options.get("bootstrap_seed", 0)), statistic, level, trim, support,
+                                   progress=_progress("model bootstrap") if progress else None)
     bootstrap_rows = [dict(bootstrap_id=i, K_t_s=r["linear"]["coefficients"].get("b0"),
                            c_t_s_per_pixel=r["linear"]["coefficients"].get("b1"),
                            tau_pixels=r["linear"]["coefficients"]["b0"]/r["linear"]["coefficients"]["b1"] if r["linear"]["valid"] else None,
@@ -207,7 +236,7 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
     summary.update(schema_version=4, primary_fit_selector=dict(statistic=statistic, level=level, trim_fraction_each_tail=trim),
                    alternative_fits=alternatives, bootstrap=uncertainty, schedule_hash=metadata.get("schedule_hash"),
                    raw_observations_reference=str(Path(path).resolve()), raw_observations_sha256=file_sha256(path), shape_statistics=shape_rows,
-                   unique_effective_areas=len(area_rows), area_multiplicity={str(a):sum(r["effective_area"] == a for r in shape_rows) for a in sorted(area_groups)},
+                   unique_effective_areas=len(area_rows), area_multiplicity={str(a):count for a,count in sorted(Counter(r["effective_area"] for r in shape_rows).items())},
                    quality_warnings=warnings, config=config)
     shape_models = alternatives[statistic]["shape_level"]
     area_models = alternatives[statistic]["area_level"]
@@ -253,8 +282,12 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
     summary["lookup_coverage"] = dict(expected_shapes=len(grid),measured_shapes=len(shape_groups),complete=complete)
     summary["shape_policy"] = dict(name="ceil_to_stride",stride=stride,numeric_dtype=summary["provenance"].get("dtype"))
     summary["policy_declaration"] = metadata.get("policy_declaration",policy_declaration(config))
-    summary["latency_models"]["shape_lookup"] = build_lookup(shape_groups,statistic,trim,bootstrap_count,int(options.get("bootstrap_seed",0)))
+    summary["latency_models"]["shape_lookup"] = build_lookup(
+        shape_groups, statistic, trim, bootstrap_count, int(options.get("bootstrap_seed", 0)),
+        progress=_progress("shape lookup bootstrap") if progress else None)
     if output_dir:
+        if progress:
+            print(f"[experiment_a analysis] Writing results to {output_dir}", file=sys.stderr, flush=True)
         output = Path(output_dir)
         output.mkdir(parents=True, exist_ok=True)
         _write_rows(output / "experiment_a_shape_summary.csv", shape_rows)
@@ -273,6 +306,8 @@ def analyze(path: str, output_dir: str | None = None, bootstrap_count: int = 200
             "c_t_ci": bootstrap_ci([row["c_t_s_per_pixel"] for row in bootstrap_rows]),
         })
     summary["bootstrap"] = {k:v for k,v in uncertainty.items() if k != "replicates"}
+    if progress:
+        print("[experiment_a analysis] Complete", file=sys.stderr, flush=True)
     return summary
 
 
@@ -283,7 +318,7 @@ def main():
     parser.add_argument("--bootstrap-count", type=int, default=2000)
     parser.add_argument("--metadata", help="Path to Experiment A metadata.json; defaults to metadata.json next to --input")
     args = parser.parse_args()
-    print(json.dumps(analyze(args.input, args.output, args.bootstrap_count, args.metadata), indent=2))
+    print(json.dumps(analyze(args.input, args.output, args.bootstrap_count, args.metadata, progress=True), indent=2))
 
 
 if __name__ == "__main__":

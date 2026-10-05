@@ -204,10 +204,17 @@ This works because `dataset/imagenet_vid.py` already walks the image tree and on
 `tools/infer.py` supports:
 * `--eval-mode default`: single evaluation pass using config transform.
 * `--eval-mode pad-loop`: multi-run padding sweep from `0..200` with step `10`.
+  The fixed-padding transforms first resize the full image to the configured `im_size` square, then crop around the first annotated object. The crop is not resized afterward; YOLO crops are padded to a square multiple of the model stride.
 
 During training, `tools/train.py` now performs:
 * intermediate mAP evaluation at the end of each epoch using `default` mode.
 * final post-training evaluation using `--final-eval-mode` (`default` or `pad-loop`).
+
+For mixed-sampling phases 2 and 3 (`tools.train_mixed_sampling`), each full image is first resized to the configured `im_size` square. ROI modes then take an unscaled square crop. Their scheduled sizes are minimums: the batch uses one larger crop size when needed to fit any selected object and its sampled padding. Other objects touched by a crop are included when at least the mode's `min_box_visibility` fraction of their box remains visible; they do not enlarge the crop.
+
+Each completed mixed-sampling epoch saves `trained_models/<task_name>/mixed_sampling_stats.csv`. The `ALL` row gives the overall enlargement rate; one row per mode shows the observed share of batches and samples using its requested size, how many stayed at exactly that size, the number and percentage enlarged, its rank by enlargement count, and how many grew to the full image size. `object_mismatch_batches` counts batches where a selected object's box alone exceeded the requested size; `padding_or_jitter_only_batches` counts other enlargements. `actual_size_counts` is a JSON map of actual square sizes to batch counts. The file also includes mean, 95th percentile and maximum actual size plus the extra pixels caused by enlargement. Resuming and repeating an epoch replaces that epoch's statistics.
+
+Model construction and checkpoint loading happen before dataset scanning in training and evaluation. Mixed-sampling training requires either `last.pt` in its task directory or the configured starting checkpoint and fails immediately if both are missing. Regular `tools.train` can still start from scratch when its checkpoint does not yet exist.
 
 ## Configuration
 * ```config/voc.yaml``` - Allows you to play with different components of SSD on voc dataset  

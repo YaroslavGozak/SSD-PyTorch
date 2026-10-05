@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import List, Tuple, Dict, Any, Optional
 import random
 import math
+from numbers import Integral
 
 import torch
 import torch.nn.functional as F
@@ -22,16 +23,25 @@ class BatchModeConfig:
     min_box_visibility: float = 0.3
 
 
-def build_stage_mode_configs(stage: int):
+def build_stage_mode_configs(stage: int, im_size: int = 300):
     """
-    Returns a list of BatchModeConfig for the requested stage.
-    Comments are in English on purpose.
+    Scale output sizes relative to the original 300-pixel full-frame schedule.
+
+    Round ROI sides to the nearest pixel (half up), with a minimum of one.
+    Padding is measured on the full image after its square resize; no stride
+    alignment is imposed.
     """
+    if isinstance(im_size, bool) or not isinstance(im_size, Integral) or im_size <= 0:
+        raise ValueError("Mixed sampling requires a positive integer dataset_params.im_size")
+
+    def scaled(size):
+        return max(1, (size * int(im_size) + 150) // 300)
+
     if stage == 2:
         return [
             BatchModeConfig(
                 name="full",
-                out_size=300,
+                out_size=scaled(300),
                 prob=0.50,
                 padding_px_range=(0, 0),
                 center_jitter_ratio=0.0,
@@ -39,7 +49,7 @@ def build_stage_mode_configs(stage: int):
             ),
             BatchModeConfig(
                 name="large_roi",
-                out_size=224,   # Start simple: keep all 300
+                out_size=scaled(224),
                 prob=0.20,
                 padding_px_range=(70, 120),
                 center_jitter_ratio=0.05,
@@ -47,7 +57,7 @@ def build_stage_mode_configs(stage: int):
             ),
             BatchModeConfig(
                 name="medium_roi",
-                out_size=160,
+                out_size=scaled(160),
                 prob=0.10,
                 padding_px_range=(10, 50),
                 center_jitter_ratio=0.10,
@@ -55,7 +65,7 @@ def build_stage_mode_configs(stage: int):
             ),
             BatchModeConfig(
                 name="tight_roi",
-                out_size=96,
+                out_size=scaled(96),
                 prob=0.10,
                 padding_px_range=(0, 30),
                 center_jitter_ratio=0.15,
@@ -64,7 +74,7 @@ def build_stage_mode_configs(stage: int):
             ),
             BatchModeConfig(
                 name="gt_roi",
-                out_size=64,
+                out_size=scaled(64),
                 prob=0.10,
                 padding_px_range=(0, 5),
                 center_jitter_ratio=0.05,
@@ -76,7 +86,7 @@ def build_stage_mode_configs(stage: int):
         return [
             BatchModeConfig(
                 name="full",
-                out_size=300,
+                out_size=scaled(300),
                 prob=0.30,
                 padding_px_range=(0, 0),
                 center_jitter_ratio=0.0,
@@ -84,7 +94,7 @@ def build_stage_mode_configs(stage: int):
             ),
             BatchModeConfig(
                 name="xlarge_roi",
-                out_size=224,
+                out_size=scaled(224),
                 prob=0.10,
                 padding_px_range=(80, 150),
                 center_jitter_ratio=0.05,
@@ -92,7 +102,7 @@ def build_stage_mode_configs(stage: int):
             ),
             BatchModeConfig(
                 name="large_roi",
-                out_size=160,
+                out_size=scaled(160),
                 prob=0.10,
                 padding_px_range=(30, 80),
                 center_jitter_ratio=0.10,
@@ -100,7 +110,7 @@ def build_stage_mode_configs(stage: int):
             ),
             BatchModeConfig(
                 name="medium_roi",
-                out_size=96,
+                out_size=scaled(96),
                 prob=0.20,
                 padding_px_range=(0, 30),
                 center_jitter_ratio=0.15,
@@ -109,7 +119,7 @@ def build_stage_mode_configs(stage: int):
             ),
             BatchModeConfig(
                 name="tight_roi",
-                out_size=64,
+                out_size=scaled(64),
                 prob=0.30,
                 padding_px_range=(1, 10),
                 center_jitter_ratio=0.05,
@@ -118,7 +128,7 @@ def build_stage_mode_configs(stage: int):
             ),
             BatchModeConfig(
                 name="gt_roi",
-                out_size=32,
+                out_size=scaled(32),
                 prob=0.30,
                 padding_px_range=(1, 10),
                 center_jitter_ratio=0.05,
@@ -150,6 +160,7 @@ class MixedBatchSampler(torch.utils.data.Sampler):
         drop_last: bool = True,
         shuffle: bool = True,
         seed: int = 42,
+        im_size: int = 300,
     ):
         self.dataset = dataset
         self.batch_size = batch_size
@@ -158,7 +169,7 @@ class MixedBatchSampler(torch.utils.data.Sampler):
         self.shuffle = shuffle
         self.seed = seed
 
-        self.mode_configs = build_stage_mode_configs(stage)
+        self.mode_configs = build_stage_mode_configs(stage, im_size=im_size)
         self.indices = list(range(len(dataset)))
 
         probs = [m.prob for m in self.mode_configs]
@@ -336,23 +347,143 @@ def make_roi_crop_box(
 
 class RoiBatchProcessor:
     """
-    Expects image tensors in CHW format.
-    Expects target['boxes'] in normalized [0,1] xyxy format.
-    Expects target['labels'] as int64.
+    Resize each full image to im_size square, then take unscaled square ROIs.
+    All images in a batch use the same ROI side length.
     """
 
     def __init__(
         self,
         image_only_transform=None,
         normalize_transform=None,
+        mode_configs=None,
+        im_size=None,
     ):
         self.image_only_transform = image_only_transform
         self.normalize_transform = normalize_transform
         self.mode_cfg_map = {}
 
-        for stage in [2, 3]:
-            for cfg in build_stage_mode_configs(stage):
-                self.mode_cfg_map[cfg.name] = cfg
+        modes = mode_configs if mode_configs is not None else build_stage_mode_configs(2)
+        for cfg in modes:
+            if cfg.name in self.mode_cfg_map:
+                raise ValueError(f"Duplicate sampling mode: {cfg.name}")
+            self.mode_cfg_map[cfg.name] = cfg
+        self.im_size = int(im_size if im_size is not None else self.mode_cfg_map['full'].out_size)
+        if self.im_size <= 0:
+            raise ValueError('im_size must be positive')
+
+    def _resize_frame(self, image):
+        image = image.float()
+        if image.numel() and image.max() > 1.0:
+            image = image / 255.0
+        return F.interpolate(
+            image.unsqueeze(0), size=(self.im_size, self.im_size),
+            mode='bilinear', align_corners=False,
+        ).squeeze(0)
+
+    def _finish(self, image, boxes_abs, labels, side):
+        target = {
+            'boxes': boxes_abs_to_norm(boxes_abs, side, side).clamp(0.0, 1.0),
+            'labels': labels,
+        }
+        if self.image_only_transform is not None:
+            image = self.image_only_transform(image)
+        if self.normalize_transform is not None:
+            image = self.normalize_transform(image)
+        return image, target
+
+    def _crop_origin(self, bounds, preferred_center, side):
+        # Keep all boxes already included in bounds while staying inside the frame.
+        x1, y1, x2, y2 = bounds
+        cx, cy = preferred_center
+        def axis_start(low, high, center):
+            minimum = max(0, int(math.ceil(high - side)))
+            maximum = min(self.im_size - side, int(math.floor(low)))
+            desired = int(round(center - side / 2))
+            return max(minimum, min(desired, maximum))
+        return axis_start(x1, x2, cx), axis_start(y1, y2, cy)
+
+    def _prepare_roi(self, image, target, mode_name):
+        boxes = boxes_norm_to_abs(target['boxes'], self.im_size, self.im_size)
+        if boxes.numel() == 0:
+            return {'image': image, 'target': target, 'boxes': boxes,
+                    'bounds': None, 'center': (self.im_size / 2, self.im_size / 2)}
+
+        cfg = self.mode_cfg_map[mode_name]
+        reference_idx = choose_reference_box(boxes)
+        reference = boxes[reference_idx]
+        perturbed = perturb_box_xyxy(
+            reference, self.im_size, self.im_size,
+            cfg.center_jitter_ratio, cfg.scale_jitter_ratio,
+        )
+        pad = random.randint(*cfg.padding_px_range)
+        bounds = [
+            max(0.0, min(reference[0].item(), perturbed[0].item()) - pad),
+            max(0.0, min(reference[1].item(), perturbed[1].item()) - pad),
+            min(float(self.im_size), max(reference[2].item(), perturbed[2].item()) + pad),
+            min(float(self.im_size), max(reference[3].item(), perturbed[3].item()) + pad),
+        ]
+        center = ((perturbed[0].item() + perturbed[2].item()) / 2,
+                  (perturbed[1].item() + perturbed[3].item()) / 2)
+        return {'image': image, 'target': target, 'boxes': boxes,
+                'bounds': bounds, 'center': center, 'reference_idx': reference_idx,
+                'reference_box': reference}
+
+    def process_batch(self, batch, mode_name, out_size, return_sampling_info=False):
+        prepared = []
+        for sample in batch:
+            image = self._resize_frame(sample['image'])
+            if mode_name == 'full':
+                prepared.append({'image': image, 'target': sample['target']})
+            else:
+                prepared.append(self._prepare_roi(image, sample['target'], mode_name))
+
+        if mode_name == 'full':
+            processed = [self._finish(item['image'],
+                                      boxes_norm_to_abs(item['target']['boxes'], self.im_size, self.im_size),
+                                      item['target']['labels'], self.im_size)
+                         for item in prepared]
+            info = {'object_mismatch': False}
+            return (processed, info) if return_sampling_info else processed
+
+        # The scheduled side is a minimum. A single larger side is used by
+        # every sample so tensors remain stackable without rescaling crops.
+        side = min(self.im_size, int(out_size))
+        for item in prepared:
+            if item['bounds'] is not None:
+                x1, y1, x2, y2 = item['bounds']
+                # Integer crop origins need one extra pixel in some cases even
+                # when the floating-point box width rounds up to the target.
+                side = max(side, math.ceil(x2) - math.floor(x1),
+                           math.ceil(y2) - math.floor(y1))
+        side = min(side, self.im_size)
+        object_mismatch = False
+        for item in prepared:
+            reference = item.get('reference_box')
+            if reference is not None:
+                ref_x1, ref_y1, ref_x2, ref_y2 = reference.tolist()
+                required_for_object = max(math.ceil(ref_x2) - math.floor(ref_x1),
+                                          math.ceil(ref_y2) - math.floor(ref_y1))
+                object_mismatch |= required_for_object > out_size
+
+        processed = []
+        for item in prepared:
+            if item['bounds'] is None:
+                left = top = (self.im_size - side) // 2
+            else:
+                left, top = self._crop_origin(item['bounds'], item['center'], side)
+            crop = item['image'][:, top:top + side, left:left + side]
+            boxes = item['boxes']
+            clipped = clip_boxes_xyxy(boxes, left, top, left + side, top + side)
+            cfg = self.mode_cfg_map[mode_name]
+            keep = filter_boxes_by_visibility(boxes, clipped, cfg.min_box_visibility)
+            if item['bounds'] is not None:
+                keep[item['reference_idx']] = True
+            boxes = clipped[keep].clone()
+            boxes[:, [0, 2]] -= left
+            boxes[:, [1, 3]] -= top
+            processed.append(self._finish(crop, boxes, item['target']['labels'][keep], side))
+        info = {'object_mismatch': object_mismatch}
+        return (processed, info) if return_sampling_info else processed
 
     def process_sample(
         self,
@@ -361,142 +492,9 @@ class RoiBatchProcessor:
         mode_name: str,
         out_size: int,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        if image.dtype != torch.float32:
-            image = image.float()
-
-        if image.max() > 1.0:
-            image = image / 255.0
-
-        _, img_h, img_w = image.shape
-
-        boxes_norm = target["boxes"]
-        labels = target["labels"]
-
-        if boxes_norm.numel() == 0:
-            # No GT: fallback to full-frame resize
-            return self._process_full(image, target, out_size)
-
-        if mode_name == "full":
-            return self._process_full(image, target, out_size)
-
-        cfg = self.mode_cfg_map[mode_name]
-        boxes_abs = boxes_norm_to_abs(boxes_norm, img_w, img_h)
-
-        ref_idx = choose_reference_box(boxes_abs)
-        ref_box = boxes_abs[ref_idx]
-        ref_box = perturb_box_xyxy(
-            ref_box,
-            img_w=img_w,
-            img_h=img_h,
-            center_jitter_ratio=cfg.center_jitter_ratio,
-            scale_jitter_ratio=cfg.scale_jitter_ratio,
-        )
-
-        crop_x1, crop_y1, crop_x2, crop_y2 = make_roi_crop_box(
-            ref_box,
-            img_w=img_w,
-            img_h=img_h,
-            padding_px_range=cfg.padding_px_range,
-        )
-
-        crop = image[:, crop_y1:crop_y2, crop_x1:crop_x2]
-
-        boxes_before_clip = boxes_abs.clone()
-        boxes_after_clip = clip_boxes_xyxy(
-            boxes_abs,
-            x1=float(crop_x1),
-            y1=float(crop_y1),
-            x2=float(crop_x2),
-            y2=float(crop_y2),
-        )
-
-        keep = filter_boxes_by_visibility(
-            boxes_before_clip=boxes_before_clip,
-            boxes_after_clip=boxes_after_clip,
-            min_visibility=cfg.min_box_visibility,
-            min_size_px=2.0,
-        )
-
-        # Always keep reference object if it still has valid area after clipping
-        ref_area = box_area_xyxy(boxes_after_clip[ref_idx:ref_idx + 1])[0]
-        if ref_area > 0:
-            keep[ref_idx] = True
-
-        boxes_after_clip = boxes_after_clip[keep]
-        labels_after_clip = labels[keep]
-
-        # Fallback if crop became invalid after filtering
-        if boxes_after_clip.numel() == 0:
-            return self._process_full(image, target, out_size)
-
-        # Remap to crop-local coordinates
-        boxes_after_clip[:, [0, 2]] -= crop_x1
-        boxes_after_clip[:, [1, 3]] -= crop_y1
-
-        crop_h = crop_y2 - crop_y1
-        crop_w = crop_x2 - crop_x1
-
-        # Resize crop
-        crop = F.interpolate(
-            crop.unsqueeze(0),
-            size=(out_size, out_size),
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
-
-        sx = out_size / max(crop_w, 1)
-        sy = out_size / max(crop_h, 1)
-
-        boxes_after_clip[:, [0, 2]] *= sx
-        boxes_after_clip[:, [1, 3]] *= sy
-
-        boxes_out = boxes_abs_to_norm(boxes_after_clip, out_size, out_size).clamp(0.0, 1.0)
-
-        new_target = {
-            "boxes": boxes_out,
-            "labels": labels_after_clip,
-        }
-
-        if self.image_only_transform is not None:
-            crop = self.image_only_transform(crop)
-
-        if self.normalize_transform is not None:
-            crop = self.normalize_transform(crop)
-
-        return crop, new_target
-
-    def _process_full(
-        self,
-        image: torch.Tensor,
-        target: Dict[str, torch.Tensor],
-        out_size: int,
-    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        _, img_h, img_w = image.shape
-
-        image_resized = F.interpolate(
-            image.unsqueeze(0),
-            size=(out_size, out_size),
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
-
-        boxes_abs = boxes_norm_to_abs(target["boxes"], img_w, img_h)
-        boxes_abs[:, [0, 2]] *= out_size / max(img_w, 1)
-        boxes_abs[:, [1, 3]] *= out_size / max(img_h, 1)
-        boxes_out = boxes_abs_to_norm(boxes_abs, out_size, out_size).clamp(0.0, 1.0)
-
-        new_target = {
-            "boxes": boxes_out,
-            "labels": target["labels"],
-        }
-
-        if self.image_only_transform is not None:
-            image_resized = self.image_only_transform(image_resized)
-
-        if self.normalize_transform is not None:
-            image_resized = self.normalize_transform(image_resized)
-
-        return image_resized, new_target
+        return self.process_batch(
+            [{'image': image, 'target': target}], mode_name, out_size,
+        )[0]
 
 
 # =========================================================
@@ -504,9 +502,10 @@ class RoiBatchProcessor:
 # =========================================================
 
 class MixedCollateFn:
-    def __init__(self, processor, return_mode=False):
+    def __init__(self, processor, return_mode=False, return_sampling_info=False):
         self.processor = processor
         self.return_mode = return_mode
+        self.return_sampling_info = return_sampling_info
 
     def __call__(self, batch):
         assert len(batch) > 0
@@ -514,25 +513,21 @@ class MixedCollateFn:
         mode = batch[0]["mode"]
         out_size = batch[0]["out_size"]
 
-        processed_images = []
-        processed_targets = []
-
         for sample in batch:
             assert sample["mode"] == mode
             assert sample["out_size"] == out_size
 
-            img, tgt = self.processor.process_sample(
-                image=sample["image"],
-                target=sample["target"],
-                mode_name=sample["mode"],
-                out_size=sample["out_size"],
-            )
-            processed_images.append(img)
-            processed_targets.append(tgt)
+        result = self.processor.process_batch(
+            batch, mode, out_size, return_sampling_info=self.return_sampling_info,
+        )
+        processed, sampling_info = result if self.return_sampling_info else (result, None)
+        processed_images, processed_targets = zip(*processed)
 
         images_tensor = torch.stack(processed_images, dim=0)
 
         if self.return_mode:
+            if self.return_sampling_info:
+                return images_tensor, processed_targets, mode, sampling_info
             return images_tensor, processed_targets, mode
 
         return images_tensor, processed_targets

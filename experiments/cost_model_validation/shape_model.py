@@ -50,11 +50,11 @@ class ShapeLookupLatencyModel:
                 and self.envelope.contains(tensor_h,tensor_w))
 
 
-def build_lookup(groups, statistic, trim, count, seed, confidence=.95):
+def build_lookup(groups, statistic, trim, count, seed, confidence=.95, progress=None):
     rng = np.random.default_rng(seed)
     table = {}
     alpha = (1-confidence)/2
-    for (h,w),values in sorted(groups.items()):
+    for index, ((h,w),values) in enumerate(sorted(groups.items()), start=1):
         values = np.asarray(values)
         samples = rng.choice(values,(count,len(values)),replace=True)
         if statistic == "trimmed_mean":
@@ -69,6 +69,8 @@ def build_lookup(groups, statistic, trim, count, seed, confidence=.95):
         table[f"{h}x{w}"] = dict(point_s=statistics(values,trim)[statistic+"_s"],
                                  standard_error_s=float(draws.std(ddof=1)) if count>1 else None,
                                  ci_s=np.quantile(draws,[alpha,1-alpha]).tolist(), repetitions=len(values))
+        if progress is not None:
+            progress(index, len(groups))
     return dict(table=table,statistic=statistic,trim_fraction_each_tail=trim,
                 uncertainty_method="within_shape_statistic_bootstrap",confidence_level=confidence,count=count,seed=seed)
 
@@ -102,9 +104,9 @@ class MergePolicy:
         self.fallback_counts = Counter()
         self.z = NormalDist().inv_cdf(self.declaration["confidence_level"])
 
-    def predict(self, shapes, name=None, strict=True):
+    def predict(self, shapes, name=None, strict=True, exact_shapes=False):
         name = name or self.declaration["primary"]
-        shapes = [stride_rounded_shape(*hw,self.stride) for hw in shapes]
+        shapes = [tuple(map(int, hw)) if exact_shapes else stride_rounded_shape(*hw,self.stride) for hw in shapes]
         margin = self.declaration["decision_margin_s"]
         if name in {"shape_lookup","shape_lookup_conservative"}:
             if self.lookup is None or not all(self.lookup.is_in_domain(*hw) for hw in shapes):
@@ -139,6 +141,9 @@ class MergePolicy:
         names = {"linear_tau":"linear","quadratic_direct_cost":"quadratic","piecewise_direct_cost":"piecewise"}
         model = self.area_models[names[name]]
         if not all(model.is_in_domain(*hw) for hw in shapes):
+            if not strict and self.declaration.get("fallback") == "separate":
+                self.fallback_counts["separate"] += 1
+                return dict(predicted_merge=False, predicted_gain_s=None, fallback_used="separate")
             raise ValueError("Merge shape outside calibration domain")
         return decide_merge(model,*shapes)
 

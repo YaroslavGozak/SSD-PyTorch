@@ -111,9 +111,8 @@ class VOCDataset(Dataset):
             self.transforms = NoResizeTransform(self.im_mean, self.imagenet_mean, self.imagenet_std).transforms
         elif self.transform_name.startswith('fixed_padding_roi_crop_yolo_'):
             pad_value = int(self.transform_name.split('_')[-1])
-            # YOLO path uses full-image longer-edge resize to 300, then ROI crop.
             self.transforms = FixedPaddingRoiCropYOLOTestTransform(
-                300,
+                im_size,
                 self.imagenet_mean,
                 self.imagenet_std,
                 pad_x=pad_value,

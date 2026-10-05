@@ -85,27 +85,6 @@ def train(args):
         torch.cuda.manual_seed_all(seed)
 
     print(f'train config', train_config)
-    dataset = load_dataset(config, split='train')
-    
-    _fill = tuple(a + b for a, b in zip([123.0, 117.0, 104.0], (20, 20, 15)))  # correct colour
-    if dataset_config['transform_name'] == 'no_resize_transform':
-        collate_fn = EpochAwareCollateFn(
-            num_epochs=train_config['num_epochs'],
-            fill=_fill,
-        )
-    else:
-        collate_fn = collate_function
-
-    train_dataset_loader = DataLoader(dataset,
-                               batch_size=train_config['batch_size'],
-                               shuffle=True,
-                               collate_fn=collate_fn,
-                               num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
-                               pin_memory=True,  # Add this for faster GPU transfer
-                               persistent_workers=True, # Keep workers alive between epochs
-                               prefetch_factor=2  # Prefetch 2 batches per worker
-                               ) 
-
     model = load_model(
         config=config,
         dataset=None,
@@ -175,6 +154,27 @@ def train(args):
 
     else:
         print('No checkpoint found, starting training from scratch')
+
+    dataset = load_dataset(config, split='train')
+    _fill = tuple(a + b for a, b in zip([123.0, 117.0, 104.0], (20, 20, 15)))  # correct colour
+    if dataset_config['transform_name'] == 'no_resize_transform':
+        collate_fn = EpochAwareCollateFn(
+            num_epochs=train_config['num_epochs'],
+            fill=_fill,
+        )
+    else:
+        collate_fn = collate_function
+
+    train_dataset_loader = DataLoader(dataset,
+                               batch_size=train_config['batch_size'],
+                               shuffle=True,
+                               collate_fn=collate_fn,
+                               num_workers=4,  # 0 - 1 process, 4 or 8 - number of processes
+                               pin_memory=True,  # Add this for faster GPU transfer
+                               persistent_workers=True, # Keep workers alive between epochs
+                               prefetch_factor=2  # Prefetch 2 batches per worker
+                               )
+
     acc_steps = train_config['acc_steps']
     num_epochs = train_config['num_epochs']
     steps = 0

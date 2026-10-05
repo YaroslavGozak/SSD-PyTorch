@@ -22,6 +22,17 @@ PRIORITY = ["shape_lookup_conservative_boundary", "shape_lookup_boundary",
 DEFAULT_STRATA = ["model_disagreement", "piecewise_boundary", "quadratic_boundary", "linear_boundary", "broad_random"]
 
 
+def validate_calibration_stride(artifact, requested_stride):
+    recorded_stride = artifact.get("shape_policy", {}).get("stride")
+    if recorded_stride is None:
+        recorded_stride = artifact.get("provenance", {}).get("model_stride")
+    if recorded_stride is not None and int(recorded_stride) != int(requested_stride):
+        raise ValueError(
+            f"Calibration stride {recorded_stride} differs from configured model.stride "
+            f"{requested_stride}; use a matching config or regenerate calibration for that stride"
+        )
+
+
 def stability(artifact, areas, config):
     result = {}
     settings = config.get("decision_stability", {})
@@ -202,11 +213,12 @@ def generate(config, calibration, output, regenerate=False):
     if target.exists() and not regenerate:
         raise ValueError("Pair specs already exist; use --regenerate-pairs explicitly")
     artifact = load_calibration(calibration,bootstrap=True)
+    stride = int(config.get("model", {}).get("stride", 32))
+    validate_calibration_stride(artifact, stride)
     models = load_latency_models(artifact)
     options = config.get("experiment_b", {})
     seed = int(options.get("generator_seed", config.get("seed", 0)))
     rng = random.Random(seed)
-    stride = int(config.get("model", {}).get("stride", 32))
     canvas = list(map(int, options.get("canvas_hw", [640,640])))
     count = int(options.get("pair_count", 500))
     if count <= 0:
@@ -330,6 +342,7 @@ def load(path, config, calibration, adapter, image):
     if payload["calibration_hash"] != file_sha256(calibration):
         raise ValueError("Pair specs calibration hash mismatch")
     artifact = load_calibration(calibration)
+    validate_calibration_stride(artifact, adapter.stride)
     models = load_latency_models(artifact)
     strict_lookup = config.get("experiment_b",{}).get("strict_lookup",False) or config.get("publication_run",False)
     lookup_data = artifact.get("latency_models",{}).get("shape_lookup")

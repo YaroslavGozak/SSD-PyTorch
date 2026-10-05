@@ -88,14 +88,16 @@ def fit_models(x, y, support=2):
     return result
 
 
-def bootstrap_models(groups, count, seed, statistic, level, trim, support=2, sampler=None):
+def bootstrap_models(groups, count, seed, statistic, level, trim, support=2, sampler=None, progress=None):
     if count < 1:
         raise ValueError("bootstrap count must be positive")
     rng = np.random.default_rng(seed)
     replicates = []
-    for _ in range(count):
+    for index in range(count):
         sampled = sampler(rng) if sampler else {key: rng.choice(values, len(values), replace=True) for key, values in sorted(groups.items())}
         replicates.append(fit_models(*design(sampled, statistic, level, trim), support))
+        if progress is not None:
+            progress(index + 1, count)
     summaries = {}
     for name in ("linear", "quadratic", "piecewise"):
         valid = [r[name] for r in replicates if r[name]["valid"]]

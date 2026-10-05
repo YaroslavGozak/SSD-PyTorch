@@ -146,6 +146,15 @@ class BenchmarkFramework:
         bench_params = self.config['benchmark_params']
         model_config = bench_params['model']
         dataset_config = bench_params['dataset']
+        model_name = model_config['name']
+        checkpoint_path = model_config['checkpoint_path']
+        if model_name == 'yolo':
+            # YOLO does not need the dataset's class count to load its weights.
+            self.model = YoloV8Adapter(weights_path=checkpoint_path, device=self.device)
+        else:
+            if not os.path.isfile(checkpoint_path):
+                raise FileNotFoundError(f'Model checkpoint not found: {checkpoint_path}')
+            checkpoint = torch.load(checkpoint_path, map_location='cpu')
         
         # Parse im_size (can be int or [h, w])
         im_size_val = dataset_config['im_size']
@@ -187,8 +196,6 @@ class BenchmarkFramework:
         print(f"Loaded {dataset_name} dataset: {len(self.dataset)} images")
         
         # Load model
-        model_name = model_config['name']
-        checkpoint_path = model_config['checkpoint_path']
         num_classes = len(self.idx2label)
         
         # Try to load training config for model parameters
@@ -210,7 +217,7 @@ class BenchmarkFramework:
         elif model_name == 'ssd_mobilenet':
             self.model = SSDMobileNet(config=model_config_params, num_classes=num_classes)
         elif model_name == 'yolo':
-            self.model = YoloV8Adapter(weights_path=checkpoint_path, device=self.device)
+            pass  # Loaded before dataset construction.
         else:
             raise ValueError(f"Unknown model: {model_name}")
         
@@ -220,16 +227,13 @@ class BenchmarkFramework:
         # Load checkpoint
         if model_name == 'yolo':
             print(f"Loaded YOLO weights: {checkpoint_path}")
-        elif os.path.exists(checkpoint_path):
-            checkpoint = torch.load(checkpoint_path, map_location=self.device)
+        else:
             if isinstance(checkpoint, dict) and 'model' in checkpoint:
                 self.model.load_state_dict(checkpoint['model'])
                 print(f"Loaded model from full checkpoint format: {checkpoint_path}")
             else:
                 self.model.load_state_dict(checkpoint)
                 print(f"Loaded model weights: {checkpoint_path}")
-        else:
-            print(f"Warning: Checkpoint not found at {checkpoint_path}")
 
     
     def _find_training_config(self) -> Dict[str, Any]:
