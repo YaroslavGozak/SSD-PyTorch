@@ -1,0 +1,76 @@
+dataset_params:
+  filter_voc_overlap: false
+  im_size: 320
+  num_classes: 31
+  transform_name: ssd
+  yolo_dataset_yaml: D:\ImageNet-VID\ImageNet\data\ImageNet2015\imagenet_vid_yolo_sampled\imagenet_vid.yaml
+model_params:
+  aspect_ratios:
+  - - 1.0
+    - 2.0
+    - 0.5
+  - - 1.0
+    - 2.0
+    - 3.0
+    - 0.5
+    - 0.333
+  - - 1.0
+    - 2.0
+    - 3.0
+    - 0.5
+    - 0.333
+  - - 1.0
+    - 2.0
+    - 3.0
+    - 0.5
+    - 0.333
+  - - 1.0
+    - 2.0
+    - 0.5
+  - - 1.0
+    - 2.0
+    - 0.5
+  detections_per_img: 200
+  im_channels: 3
+  iou_threshold: 0.5
+  low_score_threshold: 0.01
+  neg_pos_ratio: 3
+  nms_threshold: 0.45
+  pre_nms_topK: 400
+  scales:
+  - 0.1
+  - 0.2
+  - 0.375
+  - 0.55
+  - 0.725
+  - 0.9
+train_params:
+  acc_steps: 3
+  batch_size: 20
+  ckpt_name: last.pt
+  dataset: yolo-imagenet-vid
+  freeze_backbone_bn: true
+  freeze_extra_bn: true
+  infer_conf_threshold: 0.5
+  log_steps: 100
+  lr: 0.00025
+  lr_steps:
+  - 60
+  - 80
+  - 100
+  - 115
+  lr_steps_stage2:
+  - 5
+  - 15
+  lr_steps_stage3:
+  - 10
+  - 15
+  model: roissd-mobilenet
+  model_label_space: yolo-imagenet-vid
+  num_epochs: 130
+  num_epochs_stage2: 30
+  num_epochs_stage3: 30
+  roi_mixed_stage: 3
+  seed: 856245
+  task_name: imagenet-vid-roissd-mobilenet-20260910/20261001-phase3-preserved-forms
+  train_bn_affine: true

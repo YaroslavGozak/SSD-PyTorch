@@ -1,3 +1,5 @@
+# Fine-stride validation: ceil inputs to 4 pixels within a 640 x 640 canvas.
+# For a comparable baseline, copy this config and change only model.stride to 32.
 seed: 20260918
 model:
   backend: roissd
@@ -76,7 +78,7 @@ experiment_b:
     - 320
   - - 320
     - 320
-  generator_seed: 2026091803
+  generator_seed: 2026092603
   strata_quotas:
     broad_random: 0.125
     linear_boundary: 0.125
@@ -101,9 +103,7 @@ experiment_b:
   within_session_drift_threshold: 0.1
   calibration_shift_threshold: 0.1
   random_generation_attempts: 10000
-  prior_pair_specs:
-  - outputs/cost_model_voc_yolo26n_v6/pair_specs.json
-  - outputs/cost_model_voc_yolo26n_v8/challenge/pair_specs.json
+  prior_pair_specs: []
 decision_stability:
   stable_separate_max_probability: 0.1
   stable_merge_min_probability: 0.9
