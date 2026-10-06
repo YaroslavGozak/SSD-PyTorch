@@ -62,6 +62,22 @@ class RoiSSDAdapter:
     def postprocess(self, raw_output):
         return raw_output
 
+    def enable_execution_logging(self):
+        self.model.record_execution_trace = True
+
+    def execution_metadata(self):
+        """Describe the last successful forward; no tensor reads or device transfers."""
+        depth, shapes = self.model.last_execution_trace
+        names = (("conv_to_672", "features_stage2") if isinstance(self.model, RoiSSDMobileNet)
+                 else ("conv4_3_scaled", "conv5_3_fc")) + (
+                     "conv8_2", "conv9_2", "conv10_2", "conv11_2")
+        return dict(active_depth=depth, active_head_count=len(shapes),
+                    active_head_indices=list(range(len(shapes))),
+                    feature_maps=[dict(head_index=i, name=names[i], nchw=list(shape),
+                                       classification_head=f"cls_heads.{i}",
+                                       regression_head=f"bbox_reg_heads.{i}")
+                                  for i, shape in enumerate(shapes)])
+
     def preprocessing_metadata(self):
         return {"input": "RGB uint8", "layout": "NCHW", "dtype": "float32", "batch_size": 1,
                 "normalization": "divide_by_255_then_imagenet", "normalization_mean": list(self.IMAGENET_MEAN),

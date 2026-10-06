@@ -724,6 +724,8 @@ class RoiSSD(nn.Module):
             bbox_reg_deltas.append(bbox_reg_feat_i)
 
         # Concat cls logits and bbox regression predictions for all feature maps
+        if getattr(self, "record_execution_trace", False):
+            self.last_execution_trace = (max_depth, tuple(tuple(feature.shape) for feature in outputs))
         cls_logits = torch.cat(cls_logits, dim=1)  # (B, 8732, num_classes)
         bbox_reg_deltas = torch.cat(bbox_reg_deltas, dim=1)  # (B, 8732, 4)
 

@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import hashlib
 import json
 import logging
 import random
@@ -24,6 +25,7 @@ from tools.helpers.pipeline import load_dataset
 
 from .core import (DEFAULT_SHAPES, DEFAULT_SIDES, decide, generate_pairs,
                    nearest_shape_cost, pair_geometry, policy_decisions, summarize)
+from .replay import canonical_hash, frame_key, resolve_frames, validate_pairs
 
 
 LOG = logging.getLogger(__name__)
@@ -81,7 +83,13 @@ def _latency(adapter, crop, mode):
     value = result.inference_ms if mode == "inference_only" else result.detector_call_ms
     if not np.isfinite(value) or value <= 0:
         raise RuntimeError(f"Invalid measured latency: {value}")
-    return prepared.tensor_hw, value
+    trace = adapter.execution_metadata() if hasattr(adapter, "execution_metadata") else None
+    execution = dict(execution_trace_status="observed" if trace is not None else "not_applicable",
+                     active_depth=trace["active_depth"] if trace else "",
+                     active_head_count=trace["active_head_count"] if trace else "",
+                     active_head_indices=json.dumps(trace["active_head_indices"]) if trace else "",
+                     feature_maps=json.dumps(trace["feature_maps"], separators=(",", ":")) if trace else "")
+    return prepared.tensor_hw, value, execution
 
 
 def _model_settings(config, config_path, device, stride):
@@ -121,10 +129,10 @@ def _profile(adapter, frames, options):
             raise ValueError(f"Calibration shape {shape} exceeds canvas {frame.shape[:2]}")
         x = rng.randrange(frame.shape[1]-w+1)
         y = rng.randrange(frame.shape[0]-h+1)
-        actual_hw, latency = _latency(adapter, frame[y:y+h,x:x+w].copy(), options["timing_mode"])
+        actual_hw, latency, execution = _latency(adapter, frame[y:y+h,x:x+w].copy(), options["timing_mode"])
         samples.setdefault(actual_hw, []).append(latency)
         raw.append(dict(requested_w=w, requested_h=h, tensor_h=actual_hw[0], tensor_w=actual_hw[1],
-                        repetition=rep, latency_ms=latency))
+                        repetition=rep, latency_ms=latency, **execution))
         last_reported = _progress("Calibration", index + 1, len(jobs), started,
                                   last_reported, options["progress_interval_s"])
     if len(samples) < 3:
@@ -143,8 +151,7 @@ def _profile(adapter, frames, options):
 def _pair_definitions(options, tau, pairs_path=None):
     if pairs_path:
         payload = json.loads(Path(pairs_path).read_text(encoding="utf-8"))
-        if tuple(payload["canvas_hw"]) != tuple(options["canvas_hw"]):
-            raise ValueError("Replay pair canvas differs from configured canvas")
+        validate_pairs(payload, options["canvas_hw"])
         return payload["pairs"], payload.get("generation_skips", {})
     generated, skips = generate_pairs(options["canvas_hw"], options["pair_count"],
                                       options["seed"], options["shapes"], options["sides"], tau)
@@ -171,21 +178,26 @@ def _measure_pair(adapter, frame, rectangles, options, seed, pair_number=None, p
         rng.shuffle(pair_order)
         slots = ("separate", "merged") if separate_first else ("merged", "separate")
         values = {}
+        execution_fields = {}
         for slot in slots:
             if slot == "separate":
                 for index in pair_order:
-                    actual, latency = _latency(adapter, crops[index], options["timing_mode"])
+                    actual, latency, execution = _latency(adapter, crops[index], options["timing_mode"])
                     if actual != shapes[index]:
                         raise RuntimeError("Network tensor shape changed within one pair")
                     values[index] = latency
+                    execution_fields.update({f"r{index+1}_{key}": value for key, value in execution.items()})
             else:
-                actual, latency = _latency(adapter, crops[2], options["timing_mode"])
+                actual, latency, execution = _latency(adapter, crops[2], options["timing_mode"])
                 if actual != shapes[2]:
                     raise RuntimeError("Merged network tensor shape changed")
                 values[2] = latency
+                execution_fields.update({f"merged_{key}": value for key, value in execution.items()})
         observed.append(dict(repetition=repetition, order="separate_first" if separate_first else "merged_first",
+                             separate_call_order=json.dumps([f"r{i+1}" for i in pair_order]),
                              r1_ms=values[0], r2_ms=values[1], separate_ms=values[0]+values[1],
-                             merged_ms=values[2], delta_ms=values[0]+values[1]-values[2]))
+                             merged_ms=values[2], delta_ms=values[0]+values[1]-values[2],
+                             **{key: execution_fields[key] for key in sorted(execution_fields)}))
         if pair_number is not None:
             last_reported = _progress(f"Pair {pair_number}/{pair_total}", repetition + 1,
                                       options["repetitions"], started, last_reported,
@@ -235,6 +247,16 @@ def run(config_path, output_dir, experiment_config=None, replay_pairs=None):
     if experiment_config:
         import yaml
         options.update(yaml.safe_load(Path(experiment_config).read_text(encoding="utf-8")) or {})
+    replay_payload = None
+    if replay_pairs:
+        replay_payload = json.loads(Path(replay_pairs).read_text(encoding="utf-8"))
+        validate_pairs(replay_payload, options["canvas_hw"])
+        options["pair_count"] = len(replay_payload["pairs"])
+        if replay_payload.get("frame_manifest"):
+            options["calibration_frames"] = len(replay_payload["frame_manifest"]["calibration"])
+            options["frame_count"] = len(replay_payload["frame_manifest"]["evaluation"])
+        else:
+            LOG.warning("Legacy pairs file: replay fixes geometry only; frame selection uses current seed/settings")
     if options["timing_mode"] not in ("inference_only","detector_call"):
         raise ValueError("timing_mode must be inference_only or detector_call")
     if min(options["frame_count"],options["calibration_frames"],options["repetitions"],options["calibration_repetitions"]) < 1:
@@ -264,6 +286,8 @@ def run(config_path, output_dir, experiment_config=None, replay_pairs=None):
     LOG.info("Loading %s adapter on %s (stride %d)", model_settings["backend"],
              device, model_settings["stride"])
     adapter = build_adapter({"model": model_settings})
+    if hasattr(adapter, "enable_execution_logging"):
+        adapter.enable_execution_logging()
     if str(adapter.device) != "cpu":
         raise RuntimeError("Adapter is not running on CPU")
     LOG.info("Model ready in %.1fs", time.monotonic() - stage_started)
@@ -274,16 +298,33 @@ def run(config_path, output_dir, experiment_config=None, replay_pairs=None):
     if len(dataset) < needed:
         raise ValueError(f"Dataset has {len(dataset)} frames; {needed} distinct frames required")
     rng = random.Random(options["seed"])
-    indices = rng.sample(range(len(dataset)), needed)
+    indices = (resolve_frames(dataset.images_info, replay_payload["frame_manifest"])
+               if replay_payload and replay_payload.get("frame_manifest")
+               else rng.sample(range(len(dataset)), needed))
     LOG.info("Dataset indexed: %d frames; selected %d distinct frames", len(dataset), needed)
     frames = []
+    frame_records = []
+    expected_frames = ([item for group in ("calibration", "evaluation")
+                        for item in replay_payload["frame_manifest"][group]]
+                       if replay_payload and replay_payload.get("frame_manifest") else None)
     last_reported = time.monotonic()
     for position, index in enumerate(indices, start=1):
         frames.append(_frame(dataset,index,options["canvas_hw"]))
+        record = dict(frame_key=frame_key(frames[-1][2]),
+                      source_sha256=file_sha256(Path(frames[-1][2])),
+                      canvas_sha256=hashlib.sha256(frames[-1][0].tobytes()).hexdigest())
+        if expected_frames and record != expected_frames[position-1]:
+            raise ValueError(f"Replay frame content differs: {record['frame_key']}")
+        frame_records.append(record)
         last_reported = _progress("Frame loading", position, needed, stage_started,
                                   last_reported, options["progress_interval_s"])
     calibration_frames = frames[:options["calibration_frames"]]
     evaluation_frames = frames[options["calibration_frames"]:]
+    frame_manifest = dict(calibration=frame_records[:options["calibration_frames"]],
+                          evaluation=frame_records[options["calibration_frames"]:])
+    resolve_frames(dataset.images_info, frame_manifest)
+    evaluation_by_key = {record["frame_key"]: frame for record, frame in
+                         zip(frame_manifest["evaluation"], evaluation_frames)}
     LOG.info("Frames ready in %.1fs: %d calibration, %d evaluation",
              time.monotonic() - stage_started, len(calibration_frames), len(evaluation_frames))
     out = Path(output_dir)
@@ -307,14 +348,28 @@ def run(config_path, output_dir, experiment_config=None, replay_pairs=None):
     LOG.info("Stage 6/7: %s rectangle pairs", "replaying" if replay_pairs else "generating")
     pairs, skips = _pair_definitions(options,tau,replay_pairs)
     if not pairs: raise ValueError("No valid pairs were generated")
-    boundary_counts = {region: sum(pair["boundary_region"] == region for pair in pairs)
-                       for region in ("below", "near", "above")}
+    for index, pair in enumerate(pairs):
+        if not replay_payload or not replay_payload.get("frame_manifest"):
+            pair["frame_key"] = frame_manifest["evaluation"][index % len(evaluation_frames)]["frame_key"]
+    pair_payload = dict(schema_version=2, canvas_hw=options["canvas_hw"],
+                        seed=replay_payload.get("seed", options["seed"]) if replay_payload else options["seed"],
+                        sampling_tau_pixels=replay_payload.get("sampling_tau_pixels") if replay_payload else tau,
+                        generation_skips=skips, frame_manifest=frame_manifest, pairs=pairs)
+    geometry_hash = validate_pairs(pair_payload, options["canvas_hw"])
+    pair_payload["pairs_geometry_sha256"] = geometry_hash
+    workload_hash = canonical_hash(dict(geometry_sha256=geometry_hash, frame_manifest=frame_manifest,
+                                       assignments=[(pair["pair_id"], pair["frame_key"]) for pair in pairs]))
+    # Boundary labels in the portable pairs belong to the generating run's calibration.
+    current_regions = []
+    for pair in pairs:
+        ratio = pair_geometry(Rectangle(*pair["r1"]), Rectangle(*pair["r2"]))["area_extra"] / tau
+        current_regions.append("near" if .8 <= ratio <= 1.2 else "below" if ratio < .8 else "above")
+    boundary_counts = {region: current_regions.count(region) for region in ("below", "near", "above")}
     if min(boundary_counts.values()) == 0:
         LOG.warning("Affine boundary coverage is incomplete: %s", boundary_counts)
     LOG.info("Pair set ready: %d pairs; boundary regions=%s; skipped placements=%s",
              len(pairs), boundary_counts, skips)
-    write_json(out/"pairs.json",dict(canvas_hw=options["canvas_hw"],seed=options["seed"],
-                                     generation_skips=skips,pairs=pairs))
+    write_json(out/"pairs.json",pair_payload)
     for row in calibration_raw: append_csv(out/"calibration_raw.csv",row,list(row))
     write_json(out/"calibration.json",dict(K_s=k,c_s_per_pixel=c,tau_pixels=tau,
                                             R2=fit.r2,MAE_s=fit.mae,RMSE_s=fit.rmse,
@@ -328,6 +383,11 @@ def run(config_path, output_dir, experiment_config=None, replay_pairs=None):
                     preprocessing=adapter.preprocessing_metadata(),generation_skips=skips,
                     pair_count=len(pairs),boundary_counts=boundary_counts,
                     checkpoint_sha256=checkpoint_hash,
+                    pairs_geometry_sha256=geometry_hash, workload_sha256=workload_hash,
+                    frame_manifest=frame_manifest,
+                    execution_logging=dict(source="successful forward feature tensor shapes",
+                        enabled=hasattr(adapter, "execution_metadata"),
+                        timing_overhead="Shape tuple capture inside forward; serialization and file writes outside timing"),
                     calibration=dict(K_s=k,c_s_per_pixel=c,tau_pixels=tau),
                     replay_source=str(replay_pairs) if replay_pairs else None)
     write_json(out/"metadata.json",metadata)
@@ -340,7 +400,7 @@ def run(config_path, output_dir, experiment_config=None, replay_pairs=None):
     for index, pair in enumerate(pairs):
         first, second = Rectangle(*pair["r1"]), Rectangle(*pair["r2"])
         merged = union_rectangle(first,second)
-        frame, original_hw, path = evaluation_frames[index%len(evaluation_frames)]
+        frame, original_hw, path = evaluation_by_key[pair["frame_key"]]
         if any(r.x1<0 or r.y1<0 or r.x2>frame.shape[1] or r.y2>frame.shape[0] for r in (first,second,merged)):
             raise ValueError(f"Replay pair {index} exceeds frame canvas")
         shapes, component, separate_ms, merged_ms, observations = _measure_pair(
@@ -356,9 +416,13 @@ def run(config_path, output_dir, experiment_config=None, replay_pairs=None):
                                      simple_distance=options["simple_distance"])
         # Oracle uses the paired separate total rather than a sum of component medians.
         decisions["oracle"] = merged_ms < separate_ms
-        row = dict(pair_id=pair["pair_id"],frame_id=path,original_frame_h=original_hw[0],
+        row = dict(pair_id=pair["pair_id"],frame_id=path,frame_key=pair["frame_key"],
+                   frame_canvas_sha256=next(r["canvas_sha256"] for r in frame_manifest["evaluation"]
+                                            if r["frame_key"] == pair["frame_key"]),
+                   original_frame_h=original_hw[0],
                    original_frame_w=original_hw[1],frame_h=frame.shape[0],frame_w=frame.shape[1],
-                   geometry_type=pair["geometry_type"],boundary_region=pair["boundary_region"],
+                   geometry_type=pair["geometry_type"],boundary_region=current_regions[index],
+                   source_boundary_region=pair["boundary_region"],
                    **pair_geometry(first,second),actual_r1_ms=component[0],actual_r2_ms=component[1],
                    actual_separate_ms=separate_ms,actual_merged_ms=merged_ms,
                    actual_delta_ms=separate_ms-merged_ms,
@@ -369,6 +433,8 @@ def run(config_path, output_dir, experiment_config=None, replay_pairs=None):
         for i,label in enumerate(("r1","r2","merged")):
             row[f"{label}_tensor_h"],row[f"{label}_tensor_w"] = shapes[i]
             row[f"{label}_lookup_h"],row[f"{label}_lookup_w"] = lookup_values[i][1]
+            for key in ("execution_trace_status", "active_depth", "active_head_count", "active_head_indices", "feature_maps"):
+                row[f"{label}_{key}"] = observations[0][f"{label}_{key}"]
         for name,value in decisions.items():
             row[f"{name}_decision"] = value
             row[f"{name}_correct"] = value == decisions["oracle"]
@@ -418,7 +484,7 @@ def main():
     parser.add_argument("--config",required=True,help="Existing repository model/dataset YAML")
     parser.add_argument("--output",required=True)
     parser.add_argument("--experiment-config",help="Optional YAML mapping overriding experiment defaults")
-    parser.add_argument("--pairs",help="Replay pairs.json produced by another run")
+    parser.add_argument("--pairs",help="Replay geometry and frame manifest from another run's pairs.json")
     args = parser.parse_args()
     run(args.config,args.output,args.experiment_config,args.pairs)
 

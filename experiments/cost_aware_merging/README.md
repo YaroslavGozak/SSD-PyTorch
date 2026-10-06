@@ -51,22 +51,56 @@ merged rectangles up to the default canvas. Override `calibration_shapes` when
 changing the canvas. The nearest profiled tensor shape in log height/width
 space supplies a lookup estimate when there is no exact entry.
 
-`--pairs <previous-run>/pairs.json` replays the same rectangles on another
-machine. Both runs must use the same canvas. Dataset frames are selected from
-the configured split with the seed; use identical dataset/configuration and
-seed to match frame content. Calibration and evaluation use disjoint frames
-and separate timing calls. The oracle comes only from evaluation timings.
+`--pairs <previous-run>/pairs.json` replays the same rectangles across models
+and platforms. Both runs must use the same canvas. New pairs files also record
+the calibration/evaluation frame manifest, source and resized-canvas SHA-256
+hashes, and each pair's evaluation frame assignment. Replay resolves frames by
+`parent-directory/filename`, independent of dataset root, OS path separators,
+dataset order, and the current seed. The configured dataset/split must contain
+those frames; missing, ambiguous, or changed content stops the run. Frame and
+pair counts come from the replay file. Repetitions and calibration timings
+remain local to the current run. Calibration and evaluation use disjoint frames;
+the oracle comes only from evaluation timings.
+
+Generate the pair set once, then copy its `pairs.json` to every target machine:
+
+```powershell
+python -m experiments.cost_aware_merging.run --config config/imagenet-vid-roissd.yaml --experiment-config experiments/cost_aware_merging/config.yaml --output outputs/merge_vgg_cpu
+python -m experiments.cost_aware_merging.run --config config/imagenet-vid-roissd-mobilenet.yaml --experiment-config experiments/cost_aware_merging/config.yaml --pairs outputs/merge_vgg_cpu/pairs.json --output outputs/merge_mobilenet_cpu
+# On Pi 5, use its model/dataset config and the copied pairs.json:
+python -m experiments.cost_aware_merging.run --config config/raspberry/imagenet-vid-roissd-mobilenet.yaml --experiment-config experiments/cost_aware_merging/config.yaml --pairs pairs.json --output outputs/merge_mobilenet_pi5
+```
+
+Metadata records `pairs_geometry_sha256` and `workload_sha256`; matching workload
+hashes certify the same geometry, frame content, and assignments. Sampling uses
+the generating run's fitted tau and is frozen on replay. `source_boundary_region`
+preserves its labels; `boundary_region` uses the current run's fitted tau.
+Legacy pairs files remain supported for geometry replay but do not guarantee
+identical frame content; the runner logs a warning.
+
+Compare runs after transferring their output directories to the same machine:
+
+```powershell
+python -m experiments.cost_aware_merging.compare_runs outputs/merge_mobilenet_cpu outputs/merge_mobilenet_pi5 --output outputs/merge_hardware_flips
+```
+
+This checks matching geometry, frame content, pair coverage, and timing boundary,
+then writes `pair_flips.csv` and `comparison.json` with oracle decisions and
+latency differences (`separate - merged`). Same checkpoint and preprocessing
+comparisons are marked `hardware_candidate`; other comparisons are marked
+`cross_model_or_preprocessing`. Flips are observed median sign changes; repeat
+runs to distinguish hardware effects from timing noise, especially near zero.
 
 Outputs:
 
 | File | Contents |
 | --- | --- |
 | `metadata.json` | Resolved config, paths, platform, frame IDs, model settings, timing boundary, preprocessing, seed |
-| `calibration_raw.csv` | Independent profile timings and requested/actual shapes |
+| `calibration_raw.csv` | Independent profile timings, requested/actual shapes, active heads and feature maps |
 | `calibration.json` | Affine K, c, τ, fit metrics and shape lookup |
-| `pairs.json` | Portable rectangle definitions |
-| `pair_observations.csv` | Every timed separate/merged repetition and randomized order |
-| `pairs_raw.csv` | Pair geometry, actual/predicted latencies, decisions and correctness |
+| `pairs.json` | Portable rectangle definitions, frame assignments, frame manifest, geometry hash |
+| `pair_observations.csv` | Every timed repetition, exact separate-call order, and execution trace for each r1/r2/merged invocation |
+| `pairs_raw.csv` | Pair geometry, actual/predicted latencies, decisions, correctness, frame content hash, and first-repetition execution traces |
 | `summary.csv`, `summary.json` | Decision confusion matrices and effective latency by policy |
 | `equal_area_shapes.json` | Same-area shapes and measured latency spread |
 | `*.png` | Boundary, prediction, policy and shape heatmap plots |
@@ -78,6 +112,25 @@ merger is called with configurable IoU and center-distance thresholds. The
 geometric-area policy uses the repository's `simple_roi_merge_v2` with its
 configurable area ratio. All cost predictions are calibrated on the current
 machine, and neither estimator reads pair evaluation latencies.
+
+ROI-SSD execution logging is enabled automatically for both VGG16 and MobileNet.
+The `r1_`, `r2_`, and `merged_` columns include `active_depth`, `active_head_count`,
+`active_head_indices` (zero-based JSON list), and `feature_maps` (JSON list of
+feature names, NCHW shapes, and classification/regression head paths). Depth is
+the selected number of feature-map stages, not the backbone's convolution count.
+These are captured from features actually consumed by the heads in each forward,
+using the stride-rounded tensor. Each feature stage has a classification and a
+regression head; `active_head_count` counts stages. Both models select depth
+using the minimum tensor side: <=32: 1, <=64: 2, <=96: 3, <=140: 4, <=268: 5,
+otherwise 6. Thus a large bounding-area increase may still leave depth unchanged
+if the shorter side stays small.
+
+The timed forward includes a small shape-tuple capture; JSON serialization and
+file writes happen after timing. No tensor copies or diagnostic extra forwards
+are used. `pair_observations.csv` contains each repetition's actual trace;
+`pairs_raw.csv` copies the first repetition's trace alongside median timings.
+Other model backends record `execution_trace_status=not_applicable` and empty
+ROI-SSD fields. Old timings cannot reconstruct actual invocation traces.
 
 For a pair, `geometric_area` merges exactly when
 `merged_area / (r1_area + r2_area) <= geometric_gamma` (default 1.4).
