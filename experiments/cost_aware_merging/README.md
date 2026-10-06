@@ -79,6 +79,24 @@ geometric-area policy uses the repository's `simple_roi_merge_v2` with its
 configurable area ratio. All cost predictions are calibrated on the current
 machine, and neither estimator reads pair evaluation latencies.
 
+For a pair, `geometric_area` merges exactly when
+`merged_area / (r1_area + r2_area) <= geometric_gamma` (default 1.4).
+`pairs_raw.csv` records this ratio as `geometric_area_ratio`.
+
+Runs made before the `simple_roi_merge_v2` correction incorrectly reported
+every geometric pair decision as false: merged clusters were appended inside
+the search loop, producing duplicate output boxes. The merger now emits each
+completed cluster once and updates its bounding area after each merge.
+Recompute the baseline using existing measured timings with:
+
+```powershell
+python -m experiments.cost_aware_merging.reanalyze_geometric outputs/cost_aware_roissd_mobilenet_pi5
+```
+
+This writes corrected pair decisions, summaries, and source hashes under
+`geometric_corrected/`. Original results and plots remain historical; use the
+corrected summaries for comparisons. No new calibration or inference is needed.
+
 Run lightweight logic tests with:
 
 ```powershell

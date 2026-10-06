@@ -6,9 +6,42 @@ from experiments.cost_aware_merging.core import (DEFAULT_SHAPES, decide, generat
                                                  nearest_shape_cost, pair_geometry,
                                                  policy_decisions, summarize)
 from experiments.cost_aware_merging.run import _progress
+from tools.mergers.simple2 import simple_roi_merge_v2
 
 
 class GeometryTests(unittest.TestCase):
+    def test_geometric_merger_returns_each_cluster_once(self):
+        first = (0, 0, 32, 32)
+        self.assertEqual(simple_roi_merge_v2([]), [])
+        self.assertEqual(simple_roi_merge_v2([first]), [first])
+        self.assertEqual(simple_roi_merge_v2([first, (32, 0, 64, 32)]),
+                         [(0, 0, 64, 32)])
+        self.assertEqual(simple_roi_merge_v2([first, (128, 0, 160, 32)]),
+                         [first, (128, 0, 160, 32)])
+
+    def test_geometric_merger_updates_area_and_revisits_candidates(self):
+        # The distant box fails initially, then fits after the touching box grows the cluster.
+        boxes = [(0, 0, 32, 32), (64, 0, 96, 32), (32, 0, 64, 32)]
+        self.assertEqual(simple_roi_merge_v2(boxes, area_ratio_max=1), [(0, 0, 96, 32)])
+
+    def test_geometric_policy_threshold_and_generated_pairs(self):
+        first, second = Rectangle(0, 0, 10, 10), Rectangle(18, 0, 28, 10)
+        for gamma, expected in ((1.39, False), (1.4, True), (1.41, True)):
+            decisions = policy_decisions(first, second, (5, 3, 3), (5, 3, 3),
+                                         (5, 3, 3), gamma=gamma)
+            self.assertEqual(decisions["geometric_area"], expected)
+        pairs, _ = generate_pairs((640, 640), 500, 20261005, tau=10000)
+        labels = []
+        for (first, second), _, _ in pairs:
+            geometry = pair_geometry(first, second)
+            expected = geometry["merged_area"] / (first.area + second.area) <= 1.4
+            actual = policy_decisions(first, second, (5, 3, 3), (5, 3, 3),
+                                      (5, 3, 3))["geometric_area"]
+            self.assertEqual(actual, expected)
+            labels.append(actual)
+        self.assertTrue(any(labels))
+        self.assertFalse(all(labels))
+
     def test_progress_reports_counts_and_time_estimate(self):
         with self.assertLogs("experiments.cost_aware_merging.run", level="INFO") as captured, \
              patch("experiments.cost_aware_merging.run.time.monotonic", return_value=12):

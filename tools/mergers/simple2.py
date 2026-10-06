@@ -2,6 +2,7 @@ from tools.mergers.merger_helper import bbox_union, area
 
 
 def simple_roi_merge_v2(rois, area_ratio_max: float = 1.4):
+    """Merge when bounding area / (current bounding area + candidate area) fits."""
     boxes = list(rois)
     N = len(boxes)
     used = [False] * len(boxes)
@@ -41,7 +42,8 @@ def simple_roi_merge_v2(rois, area_ratio_max: float = 1.4):
                 if ratio <= area_ratio_max:
                     # beneficial to merge
                     cluster_box = bbox_union(cluster_box, boxes[j])
+                    cur_area = u_area
                     used[j] = True
                     merged_any = True
-            merged.append(cluster_box)
+        merged.append(cluster_box)
     return merged

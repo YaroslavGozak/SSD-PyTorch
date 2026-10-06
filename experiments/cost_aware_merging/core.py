@@ -32,6 +32,7 @@ def pair_geometry(first, second):
     overlap_h = max(0, min(first.y2, second.y2) - max(first.y1, second.y1))
     overlap = overlap_w * overlap_h
     return {**rect_values("r1", first), **rect_values("r2", second),
+            "geometric_area_ratio": merged.area / (first.area + second.area),
             **rect_values("merged", merged), "area_extra": merged.area - first.area - second.area,
             "gap_x": max(0, second.x1-first.x2, first.x1-second.x2),
             "gap_y": max(0, second.y1-first.y2, first.y1-second.y2),
