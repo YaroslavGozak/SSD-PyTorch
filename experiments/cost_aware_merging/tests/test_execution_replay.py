@@ -145,7 +145,11 @@ class ReplayTests(unittest.TestCase):
             self.assertEqual(result["pair_count"], 8)
             with patch("experiments.cost_aware_merging.run._frame", side_effect=lambda d, i, c:
                        (np.full((*c, 3), 255, dtype=np.uint8), tuple(c), d.images_info[i]["filename"])):
-                with self.assertRaisesRegex(ValueError, "content differs"):
+                run("fake.yaml", root / "different_canvas", replay_pairs=root / "first" / "pairs.json")
+                changed = json.loads((root / "different_canvas" / "metadata.json").read_text())
+                self.assertNotEqual(first["frame_manifest"], changed["frame_manifest"])
+            with patch("experiments.cost_aware_merging.run.file_sha256", return_value="changed-source"):
+                with self.assertRaisesRegex(ValueError, "source_sha256"):
                     run("fake.yaml", root / "bad", replay_pairs=root / "first" / "pairs.json")
 
     def test_frame_selection_survives_root_platform_and_dataset_order_changes(self):

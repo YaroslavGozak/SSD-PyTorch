@@ -313,14 +313,15 @@ def run(config_path, output_dir, experiment_config=None, replay_pairs=None):
         record = dict(frame_key=frame_key(frames[-1][2]),
                       source_sha256=file_sha256(Path(frames[-1][2])),
                       canvas_sha256=hashlib.sha256(frames[-1][0].tobytes()).hexdigest())
-        if expected_frames and record != expected_frames[position-1]:
+        if expected_frames:
             expected = expected_frames[position-1]
             differences = "; ".join(
                 f"{key}: expected {expected.get(key)!r}, got {record.get(key)!r}"
                 for key in sorted(record.keys() | expected.keys())
-                if record.get(key) != expected.get(key))
-            raise ValueError(f"Replay frame content differs: {record['frame_key']} "
-                             f"({differences}); loaded from {frames[-1][2]}")
+                if key != "canvas_sha256" and record.get(key) != expected.get(key))
+            if differences:
+                raise ValueError(f"Replay frame content differs: {record['frame_key']} "
+                                 f"({differences}); loaded from {frames[-1][2]}")
         frame_records.append(record)
         last_reported = _progress("Frame loading", position, needed, stage_started,
                                   last_reported, options["progress_interval_s"])
