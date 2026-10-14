@@ -266,7 +266,7 @@ def train(args):
         ssd_classification_losses = []
         ssd_localization_losses = []
         sampling_stats = MixedSamplingStats(batch_sampler.mode_configs, dataset_config['im_size'])
-        for idx, (images, targets, mode, sampling_info) in enumerate(tqdm(train_dataset_loader, desc='Training epoch {}'.format(i+1) )):
+        for idx, (images, targets, mode, sampling_info) in enumerate(tqdm(train_dataset_loader, desc=f'[Stage {roi_stage}] Training epoch {i+1}/{num_epochs}')):
 
             sampling_stats.record(mode, images.shape[-1], len(targets),
                                   object_mismatch=sampling_info['object_mismatch'])

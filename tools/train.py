@@ -193,7 +193,7 @@ def train(args):
         epoch_start_time = time.time()
         ssd_classification_losses = []
         ssd_localization_losses = []
-        for idx, (ims, targets, _) in enumerate(tqdm(train_dataset_loader, desc='Training epoch {}'.format(i+1) )):
+        for idx, (ims, targets, _) in enumerate(tqdm(train_dataset_loader, desc=f'[Stage 1] Training epoch {i+1}/{num_epochs}')):
 
             # Asynchronous GPU transfer for faster throughput
             for target in targets:
