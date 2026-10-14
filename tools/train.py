@@ -1,4 +1,5 @@
 from tools.helpers.config_reader import load_config
+from tools.helpers.training_metrics import append_epoch_metrics_csv
 from tools.helpers.pipeline import load_dataset, load_model, resolve_device
 from tools.infer import infer_and_evaluate
 from tools.multiscale_collate import EpochAwareCollateFn
@@ -19,38 +20,6 @@ print('Using device {}'.format(device))
 
 def collate_function(data):
     return tuple(zip(*data))
-
-
-def append_epoch_metrics_csv(
-    csv_file_path,
-    *,
-    epoch,
-    classification_loss,
-    detection_loss,
-    learning_rate,
-    mean_ap,
-    mean_detector_recall,
-):
-    file_exists = os.path.exists(csv_file_path)
-    with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
-        if not file_exists:
-            writer.writerow([
-                'epoch',
-                'classification_loss',
-                'detection_loss',
-                'learning_rate',
-                'mAP',
-                'mean_detector_recall',
-            ])
-        writer.writerow([
-            int(epoch),
-            float(classification_loss),
-            float(detection_loss),
-            float(learning_rate),
-            float(mean_ap),
-            float(mean_detector_recall),
-        ])
 
 
 def load_best_epoch_metrics(csv_file_path):
@@ -330,6 +299,7 @@ def train(args):
         append_epoch_metrics_csv(
             metrics_csv_path,
             epoch=i + 1,
+            stage=1,
             classification_loss=np.mean(ssd_classification_losses),
             detection_loss=np.mean(ssd_localization_losses),
             learning_rate=lr_scheduler.get_last_lr()[0],

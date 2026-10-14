@@ -2,6 +2,7 @@ from dataset.imagenet_vid_raw import ImageNetVidRawDataset
 from dataset.voc_raw import VOCRawDataset
 from dataset.yolo_imagenet_vid import YoloImageNetVidRawDataset
 from tools.helpers.config_reader import load_config
+from tools.helpers.training_metrics import append_epoch_metrics_csv
 from tools.helpers.pipeline import load_model, resolve_device
 from tools.infer import infer_and_evaluate
 from tools.reset_lr import reset_learning_rate
@@ -12,7 +13,6 @@ import argparse
 import os
 import numpy as np
 import random
-import csv
 import copy
 import shutil
 import yaml
@@ -41,38 +41,6 @@ class ImageNetNormalize:
         mean = torch.tensor([0.485, 0.456, 0.406], dtype=img.dtype, device=img.device).view(3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225], dtype=img.dtype, device=img.device).view(3, 1, 1)
         return (img - mean) / std
-
-
-def append_epoch_metrics_csv(
-    csv_file_path,
-    *,
-    epoch,
-    classification_loss,
-    detection_loss,
-    learning_rate,
-    mean_ap,
-    mean_detector_recall,
-):
-    file_exists = os.path.exists(csv_file_path)
-    with open(csv_file_path, 'a', newline='', encoding='utf-8') as csvfile:
-        writer = csv.writer(csvfile)
-        if not file_exists:
-            writer.writerow([
-                'epoch',
-                'classification_loss',
-                'detection_loss',
-                'learning_rate',
-                'mAP',
-                'mean_detector_recall',
-            ])
-        writer.writerow([
-            int(epoch),
-            float(classification_loss),
-            float(detection_loss),
-            float(learning_rate),
-            float(mean_ap),
-            float(mean_detector_recall),
-        ])
 
 
 def train(args):
@@ -398,6 +366,7 @@ def train(args):
         append_epoch_metrics_csv(
             metrics_csv_path,
             epoch=i + 1,
+            stage=roi_stage,
             classification_loss=np.mean(ssd_classification_losses),
             detection_loss=np.mean(ssd_localization_losses),
             learning_rate=lr_scheduler.get_last_lr()[0],
