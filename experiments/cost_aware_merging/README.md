@@ -84,6 +84,15 @@ Compare runs after transferring their output directories to the same machine:
 python -m experiments.cost_aware_merging.compare_runs outputs/merge_mobilenet_cpu outputs/merge_mobilenet_pi5 --output outputs/merge_hardware_flips
 ```
 
+By default comparison requires identical decoded/resized canvas pixels. If the
+same source images produce different pixels on another platform, the error
+shows both frame keys, canvas hashes, and source file hashes. When source hashes
+match, pass `--allow-canvas-mismatch` to compare existing timings explicitly.
+The report records `canvas_mismatch_pair_count` and marks the comparison
+`hardware_with_input_difference` (or `cross_model_with_input_difference`).
+These flips may include preprocessing effects. This option cannot override
+different frame identities, missing source hashes, or different source files.
+
 This checks matching geometry, frame content, pair coverage, and timing boundary,
 then writes `pair_flips.csv` and `comparison.json` with oracle decisions and
 latency differences (`separate - merged`). Same checkpoint and preprocessing

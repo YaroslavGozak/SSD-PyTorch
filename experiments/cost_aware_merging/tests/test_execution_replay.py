@@ -198,3 +198,21 @@ class ReplayTests(unittest.TestCase):
             path.write_text(path.read_text().replace("content", "different"))
             with self.assertRaisesRegex(ValueError, "different frame"):
                 compare(root / "cpu", root / "pi", root / "rejected")
+            with self.assertRaisesRegex(ValueError, "matching source SHA-256"):
+                compare(root / "cpu", root / "pi", root / "rejected", allow_canvas_mismatch=True)
+            for name in ("cpu", "pi"):
+                metadata_path = root / name / "metadata.json"
+                metadata = json.loads(metadata_path.read_text())
+                metadata["frame_manifest"] = dict(evaluation=[dict(
+                    frame_key="video/frame.JPEG", source_sha256="same-source")])
+                metadata_path.write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "Source files match"):
+                compare(root / "cpu", root / "pi", root / "rejected")
+            with redirect_stdout(io.StringIO()):
+                summary = compare(root / "cpu", root / "pi", root / "allowed", allow_canvas_mismatch=True)
+            self.assertEqual(summary["canvas_mismatch_pair_count"], 1)
+            self.assertEqual(summary["comparison_kind"], "hardware_with_input_difference")
+            metadata["frame_manifest"]["evaluation"][0]["source_sha256"] = "other-source"
+            (root / "pi" / "metadata.json").write_text(json.dumps(metadata))
+            with self.assertRaisesRegex(ValueError, "different frame"):
+                compare(root / "cpu", root / "pi", root / "rejected", allow_canvas_mismatch=True)
