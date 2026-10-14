@@ -73,7 +73,7 @@ train_params:
   num_epochs: 100
   num_epochs_stage2: 20
   num_epochs_stage3: 20
-  roi_mixed_stage: 2
+  roi_mixed_stage: 3
   seed: 20261002
   task_name: imagenet-vid-roissd-20261002
   train_bn_affine: true
