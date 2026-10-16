@@ -425,7 +425,7 @@ def _evaluate_single_transform(
         os.environ.pop('YOLO_ROI_DEBUG_DIR', None)
 
     model, voc, test_dataset, config = load_model_and_dataset(args, transform_name=transform_name)
-    model_task_path = os.path.join('trained_models', config['train_params']['task_name'])
+    model_task_path = getattr(args, 'summary_path', None) or os.path.join('trained_models', config['train_params']['task_name'])
 
     print('Results will be appended to {}'.format(summary_csv_name))
 
@@ -627,6 +627,8 @@ if __name__ == '__main__':
                         default=True, type=parse_bool)
     parser.add_argument('--results-path', dest='results_path',
                         default=None, type=str)
+    parser.add_argument('--summary-path', default=None, type=str,
+                        help='Override the directory for evaluation summary CSV files')
     parser.add_argument('--eval-mode', dest='eval_mode', choices=['default', 'pad-loop', 'fixed-size-loop'],
                         default='default', type=str)
     args = parser.parse_args()

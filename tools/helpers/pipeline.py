@@ -245,7 +245,7 @@ def load_model(
         model = torchvision.models.detection.ssd300_vgg16(weights=torchvision.models.detection.SSD300_VGG16_Weights.DEFAULT)
     elif model_name == 'roissd':
         base_model = RoiSSD(config=config['model_params'], num_classes=model_num_classes)
-        model = RoiSSDPenalized(base_model, penalty=0.05) if use_penalized_roissd else base_model
+        model = RoiSSDPenalized(base_model, penalty=0.05) if (use_penalized_roissd or train_config.get('penalized_roissd', False)) else base_model
     elif model_name == 'roissd-mobilenet':
         model = RoiSSDMobileNet(config=config['model_params'], num_classes=model_num_classes)
     elif model_name == 'yolo':
