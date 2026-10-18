@@ -5,10 +5,21 @@ Then: python -m tools.batch_infer --resume
 Optional --config-map YAML maps root-relative checkpoint or directory paths to
 config YAML paths. The most specific matching entry wins. Auto-resolution is
 limited to the repository's known model layouts; ambiguous models are reported.
+
+Known VOC/VID datasets reuse weights and annotation metadata within each sweep;
+--no-reuse restores per-setting loading. Data loading remains single-process
+and batch size remains one unless explicitly changed. For opt-in throughput:
+  python -m tools.batch_infer --num-workers 2 --pin-memory --fixed-size-batch-size 4
+Larger batches report amortized detector time per image, not single-image latency.
+Worker processes can change the random crop sequence. Use a separate --output
+when comparing execution settings. Resume preserves completed results even when
+worker count, pinning, batch size, or model reuse changes.
 """
 import argparse
 import copy
+import csv
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -18,18 +29,71 @@ import traceback
 import torch
 import yaml
 from tools.helpers.config_reader import load_config
+from tools.helpers.evaluation_results import read_completed_results
 
 ROOT = Path(__file__).resolve().parents[1]
 MODES = ('pad-loop', 'fixed-size-loop')
 
 
 def mode_completed(marker, identity):
-    """Use the mode's own snapshot, independently of the shared config file."""
+    """Match checkpoint/config while allowing execution settings to change."""
     try:
-        return json.loads(marker.read_text(encoding='utf-8')) == identity
+        saved = json.loads(marker.read_text(encoding='utf-8'))
+        if not isinstance(saved, dict):
+            return False
+        return ({key: value for key, value in saved.items() if key != 'execution'} ==
+                {key: value for key, value in identity.items() if key != 'execution'})
     except (OSError, ValueError):
         # Missing or interrupted marker writes must cause a fresh evaluation.
         return False
+
+
+def sweep_summary(mode, model):
+    if mode == 'pad-loop':
+        prefix = 'fixed_padding_roi_crop_yolo_' if model == 'yolo' else 'fixed_padding_roi_crop_'
+        return 'results.csv', {prefix + str(pad) for pad in range(0, 201, 10)}
+    prefix = 'fixed_size_yolo_' if model == 'yolo' else 'fixed_size_'
+    return 'fixed_size_results.csv', {f'{prefix}{h}x{w}' for h in range(32, 321, 32)
+                                    for w in range(32, 321, 32)}
+
+
+def recover_summary_rows(destination, mode, identity, config_text):
+    """Adopt legacy CSVs only with matching saved config and checkpoint age."""
+    config = yaml.safe_load(identity['config'])
+    name, expected = sweep_summary(mode, config['train_params']['model'])
+    summary = destination/mode/name
+    if not summary.exists():
+        return []
+    markers = [destination/f'{mode}.{kind}.json' for kind in ('progress', 'complete')]
+    marker = next((path for path in markers if path.exists()), None)
+    if marker is not None:
+        if not mode_completed(marker, identity):
+            return []
+    else:
+        try:
+            if yaml.safe_load(config_text or '') != config:
+                return []
+        except yaml.YAMLError:
+            return []
+        if summary.stat().st_mtime_ns < identity['mtime_ns']:
+            return []
+    train = config['train_params']
+    return [row for row in read_completed_results(summary)
+            if row['evaluated_dataset'] in expected and all(
+                row.get(key) == str(train.get(key, ''))
+                for key in ('task_name', 'model', 'dataset', 'ckpt_name'))]
+
+
+def write_recovered_summary(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix('.csv.tmp')
+    with temporary.open('w', newline='', encoding='utf-8') as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+        stream.flush()
+        os.fsync(stream.fileno())
+    temporary.replace(path)
 
 
 def inspect_checkpoint(path):
@@ -116,9 +180,25 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, default=ROOT/'outputs/batch_infer')
     parser.add_argument('--config-map', type=Path)
     parser.add_argument('--dry-run', action='store_true', help='Discover and write configs without running inference')
-    parser.add_argument('--resume', action='store_true', help='Skip modes with a successful completion marker')
+    parser.add_argument('--resume', action='store_true',
+                        help='Skip completed modes/settings even if execution options changed')
+    parser.add_argument('--resume-from', type=Path, action='append', default=[],
+                        help='Additional batch output folder to recover matching CSV results from (repeatable)')
+    parser.add_argument('--reverse', action='store_true',
+                        help='Evaluate checkpoints in reverse sorted path order')
     parser.add_argument('--match', default='*', help='Glob filter on checkpoint paths relative to models root')
+    parser.add_argument('--num-workers', type=int, default=0,
+                        help='Data-loading workers per evaluation (default: 0)')
+    parser.add_argument('--pin-memory', action='store_true')
+    parser.add_argument('--fixed-size-batch-size', type=int, default=1,
+                        help='Opt-in batching for fixed-size sweep only')
+    parser.add_argument('--no-reuse', action='store_true',
+                        help='Reload models and datasets for every sweep setting')
     args = parser.parse_args(argv)
+    if args.num_workers < 0 or args.fixed_size_batch_size < 1:
+        parser.error('workers must be nonnegative and batch size must be positive')
+    if args.resume_from and not args.resume:
+        parser.error('--resume-from requires --resume')
     models_root, output = args.models_root.resolve(), args.output.resolve()
     if not models_root.is_relative_to(ROOT/'trained_models'):
         parser.error('--models-root must be within this repository\'s trained_models directory')
@@ -127,6 +207,8 @@ def main(argv=None):
     checkpoints = sorted(p for p in models_root.rglob('*')
                          if p.suffix.lower() in {'.pt', '.pth'} and p.name != 'epoch.pth'
                          and p.relative_to(models_root).match(args.match))
+    if args.reverse:
+        checkpoints.reverse()
     output.mkdir(parents=True, exist_ok=True)
     report = []
     for index, checkpoint in enumerate(checkpoints, 1):
@@ -144,28 +226,74 @@ def main(argv=None):
                 train['yolo_weights'] = str(checkpoint)
             config_path = destination/'config.yaml'
             config_text = yaml.safe_dump(cfg, sort_keys=False)
+            previous_config = config_path.read_text(encoding='utf-8') if config_path.exists() else None
             config_path.write_text(config_text, encoding='utf-8')
             entry.update(config=str(config_path), config_source=source)
             identity = {'path': str(checkpoint), 'size': checkpoint.stat().st_size,
                         'mtime_ns': checkpoint.stat().st_mtime_ns, 'config': config_text}
+            # Retain execution metadata for reference; it does not invalidate resume.
+            if args.num_workers or args.pin_memory or args.fixed_size_batch_size != 1 or args.no_reuse:
+                identity['execution'] = {'num_workers': args.num_workers,
+                                         'pin_memory': args.pin_memory,
+                                         'fixed_size_batch_size': args.fixed_size_batch_size,
+                                         'reuse': not args.no_reuse}
             for mode in MODES:
                 marker = destination/f'{mode}.complete.json'
                 if args.resume and mode_completed(marker, identity):
                     entry['modes'][mode] = 'SKIPPED_COMPLETED'
                     print('  '+mode+': SKIPPED_COMPLETED', flush=True)
                     continue
+                recovered = {}
+                if args.resume:
+                    # Prefer current output rows; additional sources fill gaps only.
+                    sources = [(destination, previous_config)]
+                    for source_root in args.resume_from:
+                        source_dir = source_root.resolve()/relative
+                        if source_dir == destination:
+                            continue
+                        saved_config = source_dir/'config.yaml'
+                        sources.append((source_dir, saved_config.read_text(encoding='utf-8')
+                                        if saved_config.exists() else None))
+                    for source_dir, saved_config in sources:
+                        for row in recover_summary_rows(source_dir, mode, identity, saved_config):
+                            recovered.setdefault(row['evaluated_dataset'], row)
+                summary_name, expected = sweep_summary(mode, train['model'])
+                if recovered:
+                    print(f'  {mode}: found {len(recovered)}/{len(expected)} completed settings', flush=True)
+                    if not args.dry_run:
+                        write_recovered_summary(destination/mode/summary_name, list(recovered.values()))
+                    if recovered.keys() >= expected:
+                        entry['modes'][mode] = 'SKIPPED_COMPLETED'
+                        if not args.dry_run:
+                            temporary_marker = marker.with_suffix('.json.tmp')
+                            temporary_marker.write_text(json.dumps(identity, indent=2), encoding='utf-8')
+                            temporary_marker.replace(marker)
+                        continue
                 command = [sys.executable, '-u', '-m', 'tools.infer', '--config', str(config_path),
                            '--evaluate', 'true', '--infer-samples', 'false', '--eval-mode', mode,
                            '--results-path', str(destination/mode), '--summary-path', str(destination/mode)]
+                command += ['--num-workers', str(args.num_workers)]
+                command.append('--resume-evaluation')
+                if args.pin_memory:
+                    command.append('--pin-memory')
+                if args.no_reuse:
+                    command.append('--no-reuse')
+                if mode == 'fixed-size-loop':
+                    command += ['--eval-batch-size', str(args.fixed_size_batch_size)]
                 print('  '+subprocess.list2cmdline(command), flush=True)
                 if args.dry_run:
                     entry['modes'][mode] = 'PLANNED'
                     continue
                 marker.unlink(missing_ok=True)
-                # A failed/interrupted mode may have appended partial results.
-                # Restart its summaries rather than duplicating those rows.
-                for name in ('results.csv', 'fixed_size_results.csv'):
-                    (destination/mode/name).unlink(missing_ok=True)
+                progress_marker = destination/f'{mode}.progress.json'
+                if not (args.resume and mode_completed(progress_marker, identity)):
+                    # Clear incompatible summaries before recording the new identity.
+                    if not recovered:
+                        for name in ('results.csv', 'fixed_size_results.csv'):
+                            (destination/mode/name).unlink(missing_ok=True)
+                    temporary_progress = progress_marker.with_suffix('.json.tmp')
+                    temporary_progress.write_text(json.dumps(identity, indent=2), encoding='utf-8')
+                    temporary_progress.replace(progress_marker)
                 with (destination/f'{mode}.log').open('w', encoding='utf-8') as log:
                     with subprocess.Popen(
                         command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

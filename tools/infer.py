@@ -1,10 +1,13 @@
 import torch
+import copy
+from torch.utils.data import DataLoader
 import argparse
 import os
 import time
 import yaml
 import random
 import csv
+from tools.helpers.evaluation_results import read_completed_results
 from typing import Any, Dict, List
 from tqdm import tqdm
 import numpy as np
@@ -219,7 +222,7 @@ def run_detector(model, im_tensor, target, model_name='ssd', conf_threshold=None
         return detections
 
     try:
-        _, detections = model(im_tensor, [target])
+        _, detections = model(im_tensor, target if isinstance(target, list) else [target])
     except Exception:
         try:
             _, detections = model(im_tensor, None)
@@ -237,6 +240,7 @@ def append_model_results_csv(
     mean_latency_ms,
     mean_fps,
     output_csv_name='results.csv',
+    replace_existing=False,
 ):
     """Append one validation summary row to a model-level summary CSV file."""
     if not os.path.exists(model_task_path):
@@ -268,6 +272,20 @@ def append_model_results_csv(
         'mean_latency_ms',
         'mean_fps',
     ]
+
+    if replace_existing:
+        rows = [old for old in read_completed_results(results_csv_path)
+                if old['evaluated_dataset'] != evaluated_dataset]
+        temporary_path = results_csv_path + '.tmp'
+        with open(temporary_path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+            writer.writerow(row)
+            csvfile.flush()
+            os.fsync(csvfile.fileno())
+        os.replace(temporary_path, results_csv_path)
+        return
 
     with open(results_csv_path, 'a', newline='', encoding='utf-8') as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
@@ -395,6 +413,53 @@ def infer(args):
     print('Done Detecting...')
 
 
+def evaluation_collate(samples):
+    """Stack equal-size inputs while keeping variable-length targets separate."""
+    images, targets, filenames = zip(*samples)
+    return torch.stack(images), list(targets), list(filenames)
+
+
+def evaluation_resources(args, transform_name, resources):
+    """Reuse only known datasets whose sweep transforms have identical semantics."""
+    from dataset.voc import VOCDataset
+    from dataset.imagenet_vid import ImageNetVidDataset
+    from dataset.yolo_imagenet_vid import YoloImageNetVidDataset
+    from dataset.transforms.fixed_size_test_transform import FixedSizeTestTransform
+    from dataset.transforms.fixed_padding_roi_crop_test_transform import FixedPaddingRoiCropTestTransform
+    from dataset.transforms.fixed_padding_roi_crop_yolo_test_transform import FixedPaddingRoiCropYOLOTestTransform
+
+    if resources and type(resources[1]) in (VOCDataset, ImageNetVidDataset, YoloImageNetVidDataset):
+        model, original, _, config = resources
+        dataset = copy.copy(original)
+        if transform_name.startswith(('fixed_size_', 'fixed_size_yolo_')):
+            yolo = transform_name.startswith('fixed_size_yolo_')
+            prefix = 'fixed_size_yolo_' if yolo else 'fixed_size_'
+            h, w = map(int, transform_name[len(prefix):].split('x'))
+            transform = FixedSizeTestTransform(h, w, dataset.imagenet_mean,
+                                               dataset.imagenet_std, normalize=not yolo)
+        elif transform_name.startswith(('fixed_padding_roi_crop_', 'fixed_padding_roi_crop_yolo_')):
+            cls = (FixedPaddingRoiCropYOLOTestTransform if
+                   transform_name.startswith('fixed_padding_roi_crop_yolo_') else
+                   FixedPaddingRoiCropTestTransform)
+            pad = int(transform_name.rsplit('_', 1)[1])
+            transform = cls(dataset.im_size, dataset.imagenet_mean,
+                            dataset.imagenet_std, pad_x=pad, pad_y=pad)
+        else:
+            return evaluation_resources(args, transform_name, None)
+        dataset.transform_name = transform_name
+        dataset.transforms = transform.transforms
+    else:
+        model, dataset, _, config = load_model_and_dataset(args, transform_name)
+    batch_size = getattr(args, 'eval_batch_size', 1)
+    if batch_size > 1 and not transform_name.startswith(('fixed_size_', 'fixed_size_yolo_')):
+        raise ValueError('Evaluation batches > 1 require a fixed-size transform')
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
+                        num_workers=getattr(args, 'num_workers', 0),
+                        pin_memory=getattr(args, 'pin_memory', False),
+                        collate_fn=evaluation_collate)
+    return model, dataset, loader, config
+
+
 def _evaluate_single_transform(
     args,
     *,
@@ -403,7 +468,22 @@ def _evaluate_single_transform(
     model_name: str,
     yolo_debug_suffix: str = '',
     summary_csv_name: str = 'results.csv',
+    resources=None,
 ) -> Dict[str, Any]:
+    resume = getattr(args, 'resume_evaluation', False)
+    if resume:
+        # The batch launcher validates checkpoint/config/execution identity
+        # before enabling reuse of this mode's summary rows.
+        summary_path = getattr(args, 'summary_path', None)
+        if not summary_path:
+            raise ValueError('--resume-evaluation requires --summary-path')
+        for row in read_completed_results(os.path.join(summary_path, summary_csv_name)):
+            if row['evaluated_dataset'] == evaluated_dataset:
+                print('Skipping completed evaluation: {}'.format(evaluated_dataset), flush=True)
+                return dict(evaluated_dataset=evaluated_dataset, transform_name=transform_name,
+                            results_path=summary_csv_name, status='SKIPPED_COMPLETED',
+                            **{key: float(row[key]) for key in
+                               ('mAP', 'mean_detector_recall', 'mean_latency_ms', 'mean_fps')})
     is_yolo = model_name == 'yolo'
 
     # Only fixed-padding YOLO transform emits debug artifacts.
@@ -424,7 +504,10 @@ def _evaluate_single_transform(
     else:
         os.environ.pop('YOLO_ROI_DEBUG_DIR', None)
 
-    model, voc, test_dataset, config = load_model_and_dataset(args, transform_name=transform_name)
+    loaded = evaluation_resources(args, transform_name, resources)
+    model, voc, test_dataset, config = loaded
+    if resources is not None and not resources:
+        resources.extend(loaded)
     model_task_path = getattr(args, 'summary_path', None) or os.path.join('trained_models', config['train_params']['task_name'])
 
     print('Results will be appended to {}'.format(summary_csv_name))
@@ -433,51 +516,39 @@ def _evaluate_single_transform(
     preds = []
     difficults = []
     latencies_s: List[float] = []
-    for im_tensor, target, fname in tqdm(test_dataset):
-        im_tensor = im_tensor.float().to(device)
-        target_bboxes = target['bboxes'].float()[0].to(device)
-        target_labels = target['labels'].long()[0].to(device)
-        difficult = target['difficult'].long()[0].to(device)
+    for im_tensor, targets, filenames in tqdm(test_dataset):
+        im_tensor = im_tensor.float().to(
+            device, non_blocking=bool(getattr(args, 'pin_memory', False)))
         conf_threshold = config['train_params'].get('infer_conf_threshold', None)
         t0 = time.perf_counter()
         ssd_detections = run_detector(
-            model,
-            im_tensor,
-            target,
-            model_name=model_name,
-            conf_threshold=conf_threshold,
+            model, im_tensor, targets[0] if len(targets) == 1 else targets,
+            model_name=model_name, conf_threshold=conf_threshold,
         )
-        latencies_s.append(time.perf_counter() - t0)
-
-        boxes = ssd_detections[0]['boxes']
-        labels = ssd_detections[0]['labels']
-        scores = ssd_detections[0]['scores']
-
-        pred_boxes = {}
-        gt_boxes = {}
-        difficult_boxes = {}
-
-        for label_name in voc.label2idx:
-            pred_boxes[label_name] = []
-            gt_boxes[label_name] = []
-            difficult_boxes[label_name] = []
-
-        for idx, box in enumerate(boxes):
-            x1, y1, x2, y2 = box.detach().cpu().numpy()
-            label = labels[idx].detach().cpu().item()
-            score = scores[idx].detach().cpu().item()
-            label_name = voc.idx2label[label]
-            pred_boxes[label_name].append([x1, y1, x2, y2, score])
-        for idx, box in enumerate(target_bboxes):
-            x1, y1, x2, y2 = box.detach().cpu().numpy()
-            label = target_labels[idx].detach().cpu().item()
-            label_name = voc.idx2label[label]
-            gt_boxes[label_name].append([x1, y1, x2, y2])
-            difficult_boxes[label_name].append(difficult[idx].detach().cpu().item())
-
-        gts.append(gt_boxes)
-        preds.append(pred_boxes)
-        difficults.append(difficult_boxes)
+        elapsed = time.perf_counter() - t0
+        latencies_s.extend([elapsed / len(targets)] * len(targets))
+        if len(ssd_detections) != len(targets):
+            raise RuntimeError('Detector returned a different number of results than input images')
+        for detection, target in zip(ssd_detections, targets):
+            # One transfer per tensor, rather than one per box/scalar.
+            boxes = detection['boxes'].detach().cpu().numpy()
+            labels = detection['labels'].detach().cpu().tolist()
+            scores = detection['scores'].detach().cpu().tolist()
+            pred_boxes = {name: [] for name in voc.label2idx}
+            gt_boxes = {name: [] for name in voc.label2idx}
+            difficult_boxes = {name: [] for name in voc.label2idx}
+            for box, label, score in zip(boxes, labels, scores):
+                pred_boxes[voc.idx2label[label]].append([*box, score])
+            # Ground truth stays on the CPU throughout metric preparation.
+            for box, label, difficult in zip(target['bboxes'].float().numpy(),
+                                             target['labels'].long().tolist(),
+                                             target['difficult'].long().tolist()):
+                name = voc.idx2label[label]
+                gt_boxes[name].append(list(box))
+                difficult_boxes[name].append(difficult)
+            gts.append(gt_boxes)
+            preds.append(pred_boxes)
+            difficults.append(difficult_boxes)
 
     mean_ap, all_aps, mean_recall, all_recalls = compute_map(preds, gts, method='area', difficult=difficults)
     mean_latency_s = float(np.mean(latencies_s)) if latencies_s else float('nan')
@@ -503,6 +574,7 @@ def _evaluate_single_transform(
         mean_latency_ms=mean_latency_ms,
         mean_fps=mean_fps,
         output_csv_name=summary_csv_name,
+        replace_existing=resume,
     )
     print('Appended summary to {}'.format(os.path.join(model_task_path, summary_csv_name)))
 
@@ -540,6 +612,7 @@ def evaluate_map_pad_loop(args) -> Dict[str, Any]:
     model_name = str(cfg_preview['train_params']['model'])
     is_yolo = model_name == 'yolo'
 
+    resources = [] if not getattr(args, 'no_reuse', False) else None
     runs: List[Dict[str, Any]] = []
     for pad in range(0, 201, 10):
         print('Evaluating mAP with padding {}...'.format(pad))
@@ -553,6 +626,7 @@ def evaluate_map_pad_loop(args) -> Dict[str, Any]:
             evaluated_dataset=transform_name,
             model_name=model_name,
             yolo_debug_suffix='pad_{}'.format(pad),
+            resources=resources,
         ))
     return {'mode': 'pad-loop', 'runs': runs}
 
@@ -563,6 +637,7 @@ def evaluate_map_fixed_size_loop(args) -> Dict[str, Any]:
     model_name = str(cfg_preview['train_params']['model'])
     is_yolo = model_name == 'yolo'
 
+    resources = [] if not getattr(args, 'no_reuse', False) else None
     runs: List[Dict[str, Any]] = []
     for h in range(32, 321, 32):
         for w in range(32, 321, 32):
@@ -578,6 +653,7 @@ def evaluate_map_fixed_size_loop(args) -> Dict[str, Any]:
                 model_name=model_name,
                 yolo_debug_suffix='size_{}x{}'.format(h, w),
                 summary_csv_name='fixed_size_results.csv',
+                resources=resources,
             ))
     return {'mode': 'fixed-size-loop', 'runs': runs}
 
@@ -629,8 +705,18 @@ if __name__ == '__main__':
                         default=None, type=str)
     parser.add_argument('--summary-path', default=None, type=str,
                         help='Override the directory for evaluation summary CSV files')
+    parser.add_argument('--resume-evaluation', action='store_true',
+                        help='Reuse completed summary rows; batch_infer validates their run identity')
+    parser.add_argument('--num-workers', type=int, default=0)
+    parser.add_argument('--pin-memory', action='store_true')
+    parser.add_argument('--eval-batch-size', type=int, default=1,
+                        help='Fixed-size evaluations only; latency is amortized per image')
+    parser.add_argument('--no-reuse', action='store_true',
+                        help='Reload models and datasets for each sweep setting')
     parser.add_argument('--eval-mode', dest='eval_mode', choices=['default', 'pad-loop', 'fixed-size-loop'],
                         default='default', type=str)
     args = parser.parse_args()
+    if args.num_workers < 0 or args.eval_batch_size < 1:
+        parser.error('workers must be nonnegative and batch size must be positive')
 
     infer_and_evaluate(args)

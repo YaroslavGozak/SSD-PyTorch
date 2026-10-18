@@ -27,7 +27,37 @@ Per-transform artifacts live alongside each mode's CSV. `batch_report.json`
 records failures and resolved config sources. Failed modes do not prevent other
 modes/checkpoints from running; the launcher exits nonzero if any fail.
 `--resume` skips successfully completed modes when checkpoint size, modification
-time and generated config still match. An interrupted mode restarts its CSV.
+time and generated config still match. Within an interrupted mode, completed
+padding values or height/width pairs are skipped; the interrupted setting runs
+again from the beginning. Summary rows are committed atomically after metrics
+finish, preventing partial rows and duplicate results on resume.
+Per-mode `.progress.json` files bind these rows to the checkpoint and generated
+config. With `--resume`, changing worker count, pinning, fixed-size batch size,
+or model reuse preserves completed models, methods, and individual sweep values.
+Only unfinished values use the new execution settings. Existing markers from
+earlier versions are supported even if their execution settings differ.
+Changed checkpoints/configs or runs without `--resume` start fresh.
+To continue an existing output folder with six workers:
+
+```powershell
+.venv/Scripts/python.exe -m tools.batch_infer --resume --num-workers 6 --output outputs/batch_infer
+```
+
+Results can therefore contain measurements from different execution settings.
+Use a separate output folder when comparing timing across those settings.
+Older CSVs without markers are adopted when the saved config matches, their rows
+identify the same model/checkpoint/dataset, and the checkpoint is no newer than
+the CSV. Existing identity markers take precedence; mismatched results are not
+adopted. A complete CSV skips the entire sweep even without a completion marker.
+Use repeatable `--resume-from` options to recover missing values from other batch
+output folders. Current output rows take precedence, and source files stay intact:
+
+```powershell
+.venv/Scripts/python.exe -m tools.batch_infer --resume --resume-from outputs/batch_infer_v2 --num-workers 6 --pin-memory --fixed-size-batch-size 6
+```
+
+Add `--dry-run` to preview the number of recoverable values without importing rows
+or starting inference.
 
 Saved run snapshots take precedence over inferred repository defaults. SSD head
 dimensions establish class counts; known run names distinguish SSD from ROI-SSD
