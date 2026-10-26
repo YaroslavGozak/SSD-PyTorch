@@ -1,0 +1,80 @@
+dataset_params:
+  yolo_dataset_yaml: D:\ImageNet-VID\ImageNet\data\ImageNet2015\imagenet_vid_yolo_sampled\imagenet_vid.yaml
+  filter_voc_overlap: false
+  transform_name: ssd
+  num_classes: 31
+  im_size: 320
+train_params:
+  dataset: yolo-imagenet-vid
+  infer_conf_threshold: 0.5
+  model: roissd
+  model_label_space: yolo-imagenet-vid
+  roi_mixed_stage: 3
+  seed: 20261002
+  acc_steps: 3
+  num_epochs: 100
+  num_epochs_stage2: 20
+  num_epochs_stage3: 20
+  batch_size: 16
+  lr_steps:
+  - 40
+  - 50
+  - 60
+  - 70
+  - 80
+  - 90
+  lr_steps_stage2:
+  - 5
+  - 15
+  lr_steps_stage3:
+  - 10
+  - 15
+  lr: 0.001
+  freeze_backbone_bn: false
+  freeze_extra_bn: false
+  train_bn_affine: true
+  log_steps: 100
+  task_name: best-imagenet-vid-roissd
+  ckpt_name: imagenet26022026stage3.pt
+  model_num_classes: 31
+  penalized_roissd: false
+model_params:
+  im_channels: 3
+  aspect_ratios:
+  - - 1.0
+    - 2.0
+    - 0.5
+  - - 1.0
+    - 2.0
+    - 3.0
+    - 0.5
+    - 0.333
+  - - 1.0
+    - 2.0
+    - 3.0
+    - 0.5
+    - 0.333
+  - - 1.0
+    - 2.0
+    - 3.0
+    - 0.5
+    - 0.333
+  - - 1.0
+    - 2.0
+    - 0.5
+  - - 1.0
+    - 2.0
+    - 0.5
+  scales:
+  - 0.1
+  - 0.2
+  - 0.375
+  - 0.55
+  - 0.725
+  - 0.9
+  iou_threshold: 0.5
+  low_score_threshold: 0.01
+  neg_pos_ratio: 3
+  pre_nms_topK: 400
+  detections_per_img: 200
+  nms_threshold: 0.45

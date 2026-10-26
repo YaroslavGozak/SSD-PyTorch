@@ -1,0 +1,12 @@
+# Checkpoints/configs are resolved exclusively from the stage-1 role manifest.
+stage1_manifest: final_experiments/FINAL_EXPERIMENTS_MANIFEST.md
+role_manifest: final_experiments/audit/model_role_recommendations.json
+dataset_audit: final_experiments/audit/dataset_audit.json
+source_subset: final_experiments/audit/canonical_validation.jsonl
+seed: 20261023
+confidence: 0.5
+nms_iou: 0.45
+max_detections: 200
+sizes: [96, 100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 148, 152, 156, 160]
+rectangular_probes: [[96, 160], [128, 160], [160, 192]]
+output: final_experiments/diagnostics_128

@@ -1,5 +1,59 @@
 # Stage 1 model and dataset audit
 
+<!-- checkpoint-role-recommendations:start -->
+## Updated individual models and same-family pairs (2026-10-23)
+
+**This section supersedes the original single-checkpoint recommendation for ROI processing.** The canonical full-frame results below remain historical evidence for that role. Penalized ROI-SSD candidates are excluded at the user's request.
+
+Saved batch results currently cover **51 checkpoints; 48 have both complete sweeps**. Partial or conflicting sweeps, penalized wrappers, legacy class spaces, and other datasets are excluded from the ROI shortlist. Only non-penalized 31-output models on the sampled 30-foreground-class VID schema support the recommendations below.
+
+### Individual best models by role
+
+There is no established universal winner for both roles. Full-frame specialists come from the original 256-frame canonical evaluation at confidence 0.01. ROI specialists come from the saved 5,064-frame crop sweeps at configured confidence 0.5. These scores measure different protocols and must not be compared directly.
+
+| Family | Role | Checkpoint | Evidence |
+|---|---|---|---|
+| ROI-SSD | Best full-frame candidate in canonical shortlist | [imagenet-vid-roissd-20261002/best_map_stage2.pt](../../trained_models/imagenet-vid-roissd-20261002/best_map_stage2.pt) | mAP50 85.01%; mAP50:95 56.92%. [Canonical results](canonical_results.json) |
+| ROI-SSD | Recommended individual ROI checkpoint | [best-imagenet-vid-roissd/imagenet26022026stage3.pt](../../trained_models/best-imagenet-vid-roissd/imagenet26022026stage3.pt) | Mean padding mAP50 64.17%; mean fixed-size mAP50 33.40%. [Padding CSV](../../outputs/batch_infer/best-imagenet-vid-roissd/imagenet26022026stage3.pt/pad-loop/results.csv); [size CSV](../../outputs/batch_infer/best-imagenet-vid-roissd/imagenet26022026stage3.pt/fixed-size-loop/fixed_size_results.csv) |
+| ROI-SSD-MobileNet | Best full-frame candidate in canonical shortlist | [best-imagenet-vid-roissd-mobilenet/20261001-phase2-preserved-forms/best_map.pt](../../trained_models/best-imagenet-vid-roissd-mobilenet/20261001-phase2-preserved-forms/best_map.pt) | mAP50 83.61%; mAP50:95 52.64%. [Canonical results](canonical_results.json) |
+| ROI-SSD-MobileNet | Recommended individual ROI checkpoint | [best-imagenet-vid-roissd-mobilenet/20260928-phase2-bn-freeze/best_map.pt](../../trained_models/best-imagenet-vid-roissd-mobilenet/20260928-phase2-bn-freeze/best_map.pt) | Mean padding mAP50 51.53%; mean fixed-size mAP50 24.72%. [Padding CSV](../../outputs/batch_infer/best-imagenet-vid-roissd-mobilenet/20260928-phase2-bn-freeze/best_map.pt/pad-loop/results.csv); [size CSV](../../outputs/batch_infer/best-imagenet-vid-roissd-mobilenet/20260928-phase2-bn-freeze/best_map.pt/fixed-size-loop/fixed_size_results.csv) |
+
+The ROI averages are descriptive: padding averages all 21 settings from 0 to 200 px; fixed-size averages all 100 height/width combinations from 32 to 320 px in 32-pixel steps. They are not a pooled mAP and do not represent deployment-frequency weights.
+
+### What changed relative to the original selection
+
+| Family | Previous full-frame selection: mean padding / size mAP50 | Recommended ROI specialist: mean padding / size mAP50 |
+|---|---:|---:|
+| ROI-SSD | 53.93% / 18.40% | 64.17% / 33.40% |
+| ROI-SSD-MobileNet | 43.55% / 13.21% | 51.53% / 24.72% |
+
+### MobileNet alternatives
+
+- For smaller crops, retain [best-imagenet-vid-roissd-mobilenet/20260928-best-phase3/best_map.pt](../../trained_models/best-imagenet-vid-roissd-mobilenet/20260928-best-phase3/best_map.pt): at 128x128 its mAP50 is 46.82%, versus 40.76% for the recommended phase-2 checkpoint. Across the 25 shapes with both sides <=160 px, its mean is 6.56%, versus 5.64%. [Size CSV](../../outputs/batch_infer/best-imagenet-vid-roissd-mobilenet/20260928-best-phase3/best_map.pt/fixed-size-loop/fixed_size_results.csv).
+- The phase2-bn-freeze `last.pt` has a slightly higher fixed-size mean (24.85%) than `best_map.pt` (24.72%), but lower padding mean (49.88% versus 51.53%). This does not establish a universal winner or statistical significance; the recommended checkpoint favors padding robustness, with the phase-3 alternative retained for small crops.
+
+### Recommended pairs
+
+| Family | Full-frame / discovery / fallback | ROI processing between full-frame calls |
+|---|---|---|
+| ROI-SSD | [imagenet-vid-roissd-20261002/best_map_stage2.pt](../../trained_models/imagenet-vid-roissd-20261002/best_map_stage2.pt) | [best-imagenet-vid-roissd/imagenet26022026stage3.pt](../../trained_models/best-imagenet-vid-roissd/imagenet26022026stage3.pt) |
+| ROI-SSD-MobileNet | [best-imagenet-vid-roissd-mobilenet/20261001-phase2-preserved-forms/best_map.pt](../../trained_models/best-imagenet-vid-roissd-mobilenet/20261001-phase2-preserved-forms/best_map.pt) | [best-imagenet-vid-roissd-mobilenet/20260928-phase2-bn-freeze/best_map.pt](../../trained_models/best-imagenet-vid-roissd-mobilenet/20260928-phase2-bn-freeze/best_map.pt) |
+
+Each pair uses two checkpoints from the same architecture family, the same foreground class order, and SSD background index 0. Both outputs must be converted into the same source-frame coordinates and update the same tracker. Full-frame calls initialize detection, discover objects, and handle fallback; ROI calls process intervening frames. This is role switching, not prediction averaging.
+
+**Pair status: recommended for validation, not yet demonstrated superior end to end.** Compare full-frame/full-frame, ROI/ROI, full-frame/ROI, and the reversed pair on identical videos, tracker settings, ROI generation, full-frame schedule and fallback rules. Measure mAP, recall, end-to-end latency, full-frame invocation rate, and peak memory with both checkpoints resident. No pair accuracy or Pi memory/latency is inferred from separate crop tests.
+
+Explicit role paths and evidence: [machine-readable role recommendations](model_role_recommendations.json). Original full-frame configs remain unchanged. ROI configs linked there are the saved batch configs (confidence 0.5), not a claim that a mixed pipeline has been implemented.
+
+### Remaining limitations
+
+- Full-frame winners were selected among three canonical candidates per family, not every checkpoint on full frames. The later ROI sweeps do not expand that full-frame comparison.
+- Near ties can reflect crop jitter because fixed-size crops use randomness without a frozen per-image geometry manifest. Use shared deterministic crops before resolving small differences.
+- The updated YOLO adapter fixes preprocessing and prediction-setting propagation, but corrected sweeps must finish before a new YOLO ranking is published. YOLO is outside the two-family paired recommendation here.
+- Penalized checkpoints are excluded; no rerun or ranking of those intermediate experiments is required.
+- Existing dataset limitations still apply: 30 schema classes, only 27 with supplied GT, and validation reused for selection rather than an untouched test split.
+
+<!-- checkpoint-role-recommendations:end -->
 ## Result
 Three checkpoints selected using fresh canonical evaluation; see [manifest](../FINAL_EXPERIMENTS_MANIFEST.md). All nine candidate checkpoints loaded and passed real-image CPU and decoded-output checks. Models, training configs and external datasets were not changed.
 

@@ -1,0 +1,77 @@
+﻿python.exe : test_persisted_pairs_require_same_inputs_and_adjacent_depths 
+(test_all_thresholds.AllThresholdTests.test_persisted_pairs_require_same_inputs_and_adjacent_depths) ... ok
+At line:2 char:15
++ ... estOutput = & .\.venv\Scripts\python.exe -m unittest discover -s expe ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (test_persisted_..._depths) ... ok:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+test_plan_covers_every_square_and_rectangular_neighbor 
+(test_all_thresholds.AllThresholdTests.test_plan_covers_every_square_and_rectangular_neighbor) ... ok
+test_rounding_is_nearest_pixel_not_stride_or_bankers 
+(test_all_thresholds.AllThresholdTests.test_rounding_is_nearest_pixel_not_stride_or_bankers) ... ok
+test_slot_guard_resets_each_forward_and_restores_on_mismatch 
+(test_all_thresholds.AllThresholdTests.test_slot_guard_resets_each_forward_and_restores_on_mismatch) ... ok
+test_controls_reject_metric_and_structure_changes 
+(test_depth_boundary.BoundaryTests.test_controls_reject_metric_and_structure_changes) ... ok
+test_exact_requested_shapes_include_both_orientations 
+(test_depth_boundary.BoundaryTests.test_exact_requested_shapes_include_both_orientations) ... ok
+test_pair_deltas_use_depth_not_row_order (test_depth_boundary.BoundaryTests.test_pair_deltas_use_depth_not_row_order) 
+... ok
+test_crops_are_reproducible_despite_intervening_rng_calls 
+(test_diagnostics.DiagnosticTests.test_crops_are_reproducible_despite_intervening_rng_calls) ... ok
+test_geometry_counts_clipping_without_losing_reference 
+(test_diagnostics.DiagnosticTests.test_geometry_counts_clipping_without_losing_reference) ... ok
+test_matching_is_independent_of_confidence_and_tracks_forced_matches 
+(test_diagnostics.DiagnosticTests.test_matching_is_independent_of_confidence_and_tracks_forced_matches) ... ok
+test_observer_stops_mismatched_forward_and_restores_hooks 
+(test_diagnostics.DiagnosticTests.test_observer_stops_mismatched_forward_and_restores_hooks) ... ok
+test_reference_centers_use_both_rectangular_dimensions 
+(test_diagnostics.DiagnosticTests.test_reference_centers_use_both_rectangular_dimensions) ... ok
+test_slots_are_box_counts_not_tensor_elements 
+(test_diagnostics.DiagnosticTests.test_slots_are_box_counts_not_tensor_elements) ... ok
+test_all_requested_shapes_are_unique (test_feature_map_policy.FeaturePolicyTests.test_all_requested_shapes_are_unique) 
+... ok
+test_legacy_is_fixed_independent_of_current_source_thresholds 
+(test_feature_map_policy.FeaturePolicyTests.test_legacy_is_fixed_independent_of_current_source_thresholds) ... ok
+test_localization_is_class_correct_and_one_to_one_like_evaluator 
+(test_feature_map_policy.FeaturePolicyTests.test_localization_is_class_correct_and_one_to_one_like_evaluator) ... ok
+test_pair_distinguishes_single_and_repeated_coarse_heads 
+(test_feature_map_policy.FeaturePolicyTests.test_pair_distinguishes_single_and_repeated_coarse_heads) ... ok
+test_per_gt_geometry_uses_actual_rectangular_dimensions 
+(test_feature_map_policy.FeaturePolicyTests.test_per_gt_geometry_uses_actual_rectangular_dimensions) ... ok
+test_ratio_bins_are_half_open_and_recall_uses_all_gt 
+(test_feature_map_policy.FeaturePolicyTests.test_ratio_bins_are_half_open_and_recall_uses_all_gt) ... ok
+test_reference_uses_declared_tolerance_and_recall_gain 
+(test_feature_map_policy.FeaturePolicyTests.test_reference_uses_declared_tolerance_and_recall_gain) ... ok
+test_subsets_and_undefined_statistics_do_not_silently_impute 
+(test_feature_map_policy.FeaturePolicyTests.test_subsets_and_undefined_statistics_do_not_silently_impute) ... ok
+test_baseline_check_rejects_metric_and_gt_drift 
+(test_forced_depth.ForcedDepthTests.test_baseline_check_rejects_metric_and_gt_drift) ... ok
+test_current_does_not_override_policy (test_forced_depth.ForcedDepthTests.test_current_does_not_override_policy) ... ok
+test_forced_depth_is_restored_after_success_and_exception 
+(test_forced_depth.ForcedDepthTests.test_forced_depth_is_restored_after_success_and_exception) ... ok
+test_invalid_depth_does_not_change_architecture 
+(test_forced_depth.ForcedDepthTests.test_invalid_depth_does_not_change_architecture) ... ok
+test_only_spatial_failures_are_feasibility_results 
+(test_forced_depth.ForcedDepthTests.test_only_spatial_failures_are_feasibility_results) ... ok
+test_actual_next_block_geometry_and_invalid_size 
+(test_runtime_depth_policy.RuntimeDepthPolicyTests.test_actual_next_block_geometry_and_invalid_size) ... ok
+test_blocks_beyond_first_1x1_are_not_executed 
+(test_runtime_depth_policy.RuntimeDepthPolicyTests.test_blocks_beyond_first_1x1_are_not_executed) ... ok
+test_dynamic_policy_tracks_actual_square_and_rectangle_shapes 
+(test_runtime_depth_policy.RuntimeDepthPolicyTests.test_dynamic_policy_tracks_actual_square_and_rectangle_shapes) ... 
+ok
+test_feature_iterator_advances_one_block_after_each_level 
+(test_runtime_depth_policy.RuntimeDepthPolicyTests.test_feature_iterator_advances_one_block_after_each_level) ... ok
+test_legacy_threshold_helper_is_removed 
+(test_runtime_depth_policy.RuntimeDepthPolicyTests.test_legacy_threshold_helper_is_removed) ... ok
+test_runtime_policy_is_fixed_to_until_1x1 
+(test_runtime_depth_policy.RuntimeDepthPolicyTests.test_runtime_policy_is_fixed_to_until_1x1) ... ok
+test_runtime_trace_is_optional_and_contains_policy_fields 
+(test_runtime_depth_policy.RuntimeDepthPolicyTests.test_runtime_trace_is_optional_and_contains_policy_fields) ... ok
+
+----------------------------------------------------------------------
+Ran 33 tests in 0.054s
+
+OK
