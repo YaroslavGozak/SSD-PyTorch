@@ -17,6 +17,7 @@ worker count, pinning, batch size, or model reuse changes.
 """
 import argparse
 import copy
+import hashlib
 import csv
 import json
 import os
@@ -231,6 +232,10 @@ def main(argv=None):
             entry.update(config=str(config_path), config_source=source)
             identity = {'path': str(checkpoint), 'size': checkpoint.stat().st_size,
                         'mtime_ns': checkpoint.stat().st_mtime_ns, 'config': config_text}
+            if train['model'] == 'yolo':
+                identity['adapter_sha256'] = hashlib.sha256(
+                    (ROOT/'model/model_adapters.py').read_bytes()
+                ).hexdigest()
             # Retain execution metadata for reference; it does not invalidate resume.
             if args.num_workers or args.pin_memory or args.fixed_size_batch_size != 1 or args.no_reuse:
                 identity['execution'] = {'num_workers': args.num_workers,

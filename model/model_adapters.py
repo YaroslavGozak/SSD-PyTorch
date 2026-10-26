@@ -5,9 +5,15 @@ import torch
 
 
 class YoloV8Adapter:
-    """YOLO wrapper that returns normalized detections in project format."""
+    """Return normalized xyxy boxes and one-based project labels.
 
-    def __init__(self, weights_path: str, device: torch.device, use_predict_api: bool = True):
+    Input is RGB NCHW. ``imagenet`` reverses mean/std normalization;
+    ``none`` accepts [0,1] pixels directly. Never infer this from pixel ranges.
+    """
+
+    def __init__(self, weights_path: str, device: torch.device, use_predict_api: bool = True,
+                 input_normalization: str = "imagenet", conf_threshold: float = 0.25,
+                 iou_threshold: float = 0.45, max_detections: int = 300):
         try:
             from ultralytics import YOLO
         except ImportError as e:
@@ -17,6 +23,12 @@ class YoloV8Adapter:
         self._yolo = YOLO(weights_path)
         self.device = device
         self.use_predict_api = use_predict_api
+        if input_normalization not in ("imagenet", "none"):
+            raise ValueError("input_normalization must be imagenet or none")
+        self.input_normalization = input_normalization
+        self.conf_threshold = float(conf_threshold)
+        self.iou_threshold = float(iou_threshold)
+        self.max_detections = int(max_detections)
         print(f"[YOLO] Using {'predict API' if use_predict_api else 'raw model output'} mode for inference")
 
     def to(self, device: torch.device = None, **_kwargs):
@@ -32,15 +44,29 @@ class YoloV8Adapter:
     def parameters(self):
         return self._yolo.model.parameters()
 
-    def __call__(self, images: torch.Tensor, _targets=None):
-        mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32, device=images.device).view(1, 3, 1, 1)
-        images_01 = (images.float() * std + mean).clamp(0.0, 1.0)
+    def __call__(self, images: torch.Tensor, _targets=None, *,
+                 conf_threshold=None, iou_threshold=None, max_detections=None,
+                 input_normalization=None):
+        normalization = self.input_normalization if input_normalization is None else input_normalization
+        images_01 = images.float()
+        if normalization == 'imagenet':
+            mean = images_01.new_tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
+            std = images_01.new_tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
+            images_01 = images_01 * std + mean
+        elif normalization != 'none':
+            raise ValueError('input_normalization must be imagenet or none')
+        images_01 = images_01.clamp(0.0, 1.0)
+        conf_threshold = self.conf_threshold if conf_threshold is None else float(conf_threshold)
+        iou_threshold = self.iou_threshold if iou_threshold is None else float(iou_threshold)
+        max_detections = self.max_detections if max_detections is None else int(max_detections)
 
         device_arg = str(self.device) if self.device is not None else None
 
         if self.use_predict_api:
-            results = self._yolo.predict(source=images_01, verbose=False, device=device_arg)
+            results = self._yolo.predict(
+                source=images_01, verbose=False, device=device_arg,
+                conf=conf_threshold, iou=iou_threshold, max_det=max_detections,
+            )
 
             _, _, h, w = images.shape
             out = []
@@ -70,20 +96,18 @@ class YoloV8Adapter:
             pred = pred[0]
 
         if isinstance(pred, torch.Tensor) and pred.ndim == 3 and pred.shape[-1] == 6:
-            batch = pred
+            batch = [det[det[:, 4] >= conf_threshold][:max_detections] for det in pred]
         else:
             from ultralytics.utils.ops import non_max_suppression
 
-            nms_list = non_max_suppression(pred, conf_thres=0.25, iou_thres=0.45, max_det=300)
+            nms_list = non_max_suppression(pred, conf_thres=conf_threshold, iou_thres=iou_threshold, max_det=max_detections)
             batch = []
             for det in nms_list:
                 if det is None or det.numel() == 0:
                     batch.append(torch.empty((0, 6), device=images.device))
                 else:
                     batch.append(det[:, :6])
-            batch = torch.stack([
-                det if det.ndim == 2 else det.view(0, 6) for det in batch
-            ], dim=0)
+            # Keep a list: different batch elements can have different detection counts.
 
         _, _, h, w = images.shape
         out = []

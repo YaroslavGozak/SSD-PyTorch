@@ -269,7 +269,11 @@ def load_model(
         else:
             yolo_device = resolve_device(train_config.get('device', 'cpu'))
         model = YoloV8Adapter(weights_path=weights_path, device=yolo_device,
-                             use_predict_api=bool(train_config.get('yolo_use_predict_api', True)))
+                             use_predict_api=bool(train_config.get('yolo_use_predict_api', True)),
+                             input_normalization=train_config.get('yolo_input_normalization', 'imagenet'),
+                             conf_threshold=train_config.get('infer_conf_threshold', 0.25),
+                             iou_threshold=train_config.get('yolo_iou_threshold', config.get('model_params', {}).get('nms_threshold', 0.45)),
+                             max_detections=train_config.get('yolo_max_detections', config.get('model_params', {}).get('detections_per_img', 300)))
         print(f'Loaded YOLO model with weights: {weights_path}')
     else:
         raise Exception(f'Unknown model name {model_name!r}')

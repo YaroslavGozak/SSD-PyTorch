@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 from tqdm import tqdm
 import numpy as np
 import cv2
-from model.model_adapters import DetectionLabelRemapAdapter, YoloV8Adapter
+from model.model_adapters import DetectionLabelRemapAdapter, YoloV8Adapter, unwrap_model
 from tools.helpers.pipeline import (
     load_model_and_dataset as pipeline_load_model_and_dataset,
     resolve_device,
@@ -185,6 +185,13 @@ def load_model_and_dataset(args, transform_name=None):
         args=args,
         transform_name=transform_name,
     )
+    base_model = unwrap_model(model)
+    if isinstance(base_model, YoloV8Adapter):
+        active_transform = transform_name or config['dataset_params'].get('transform_name', 'ssd')
+        if active_transform.startswith(('fixed_size_yolo_', 'fixed_padding_roi_crop_yolo_')):
+            base_model.input_normalization = 'none'
+        else:
+            base_model.input_normalization = config['train_params'].get('yolo_input_normalization', 'imagenet')
     if hasattr(model, 'low_score_threshold'):
         model.low_score_threshold = float(config['train_params'].get('infer_conf_threshold', 0.05))
     return model, dataset, test_dataset_loader, config
@@ -193,7 +200,7 @@ def load_model_and_dataset(args, transform_name=None):
 def run_detector(model, im_tensor, target, model_name='ssd', conf_threshold=None):
     if model_name == 'yolo':
         if isinstance(model, (YoloV8Adapter, DetectionLabelRemapAdapter)):
-            _, detections = model(im_tensor)
+            _, detections = model(im_tensor, conf_threshold=conf_threshold)
             return detections
         predict_kwargs = {'source': im_tensor, 'verbose': False}
         if conf_threshold is not None:
