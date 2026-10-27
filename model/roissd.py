@@ -377,11 +377,13 @@ class RoiSSD(nn.Module):
         and then post nms filtering and return the detected boxes,
         their labels and their scores
     """
-    def __init__(self, config, num_classes=21):
+    def __init__(self, config, num_classes=21, record_execution_trace=False):
         super().__init__()
+        self.record_execution_trace = record_execution_trace
+        self.last_execution_trace = None
         self.aspect_ratios = config['aspect_ratios']
 
-        self.scales = config['scales']
+        self.scales = list(config['scales'])
         self.scales.append(1.0)
 
         self.num_classes = num_classes
@@ -636,6 +638,119 @@ class RoiSSD(nn.Module):
             L_R = 6      # full pyramid
         return L_R
 
+    def get_runtime_log(self):
+        if self.last_execution_trace is None:
+            return None
+        return dict(self.last_execution_trace)
+    
+    @staticmethod
+    def _next_feature_spatial_shape(block, input_shape):
+        height, width = input_shape
+        spatial_shape = (height, width)
+        for conv in (layer for layer in block.modules()
+                     if isinstance(layer, (nn.Conv2d, nn.MaxPool2d))):
+            output = []
+            pair = lambda value: value if isinstance(value, tuple) else (value, value)
+            padding = pair(conv.padding)
+            kernel = pair(conv.kernel_size)
+            stride = pair(conv.stride if conv.stride is not None else conv.kernel_size)
+            dilation = pair(conv.dilation)
+            for size, kernel, stride, dilation, pad in zip(
+                    spatial_shape, kernel, stride, dilation, padding):
+                if conv.padding == 'same':
+                    output.append((size + stride - 1) // stride)
+                else:
+                    numerator = size + 2 * pad - dilation * (kernel - 1) - 1
+                    if isinstance(conv, nn.MaxPool2d) and conv.ceil_mode:
+                        result = (numerator + stride - 1) // stride + 1
+                        if (result - 1) * stride >= size + pad:
+                            result -= 1
+                    else:
+                        result = numerator // stride + 1
+                    output.append(result)
+            spatial_shape = tuple(output)
+        return spatial_shape
+    
+    def _iter_feature_levels(self, x):
+        conv4_3 = self.features(x)
+        if not torch.isfinite(conv4_3).all():
+            raise RuntimeError('Non-finite VGG16 conv4_3 features')
+        # Only the first head consumes L2-normalized/scaled conv4_3. The
+        # conv5/fc branch must retain the original backbone activations.
+        first_feature = self.scale_weight.view(1, -1, 1, 1) * torch.nn.functional.normalize(
+            conv4_3, p=2, dim=1, eps=1e-12)
+
+        outputs = []
+        blocks = (
+            self.conv5_3_fc,
+            self.conv8_2,
+            self.conv9_2,
+            self.conv10_2,
+            self.conv11_2,
+        )
+        feature = first_feature
+        level = 0
+        while True:
+            outputs.append(feature)
+            yield level, feature
+            if tuple(feature.shape[-2:]) == (1, 1):
+                break
+            if level == len(blocks):
+                break
+
+            block = blocks[level]
+            block_input = conv4_3 if level == 0 else feature
+            predicted_shape = self._next_feature_spatial_shape(
+                block, tuple(block_input.shape[-2:]))
+            if min(predicted_shape) <= 0:
+                break
+            feature = block(block_input)
+            actual_shape = tuple(feature.shape[-2:])
+            if actual_shape != predicted_shape:
+                raise RuntimeError(
+                    f'Feature block geometry mismatch at level {level + 2}: '
+                    f'predicted {predicted_shape}, received {actual_shape}')
+            level += 1
+
+        selected_depth = len(outputs)
+        if selected_depth <= len(blocks):
+            next_block = blocks[selected_depth - 1]
+            next_input = conv4_3 if selected_depth == 1 else outputs[-1]
+            next_feature_shape = self._next_feature_spatial_shape(
+                next_block, tuple(next_input.shape[-2:]))
+            next_head_feasible = min(next_feature_shape) > 0
+            stopped_at_1x1 = tuple(outputs[-1].shape[-2:]) == (1, 1)
+            next_head_status = (
+                'STOPPED_AT_1X1' if stopped_at_1x1 else
+                'FEASIBLE' if next_head_feasible else 'INFEASIBLE')
+        else:
+            next_feature_shape = None
+            next_head_feasible = False
+            stopped_at_1x1 = tuple(outputs[-1].shape[-2:]) == (1, 1)
+            next_head_status = 'STOPPED_AT_1X1' if stopped_at_1x1 else 'PYRAMID_EXHAUSTED'
+
+        if self.record_execution_trace:
+            spatial_shapes = [list(item.shape[-2:]) for item in outputs]
+            self.last_execution_trace = {
+                'depth_policy': 'until_1x1',
+                'selected_L_R': selected_depth,
+                'active_heads': list(range(selected_depth)),
+                'feature_shapes': spatial_shapes,
+                'feature_tensor_shapes': [list(item.shape) for item in outputs],
+                'final_feature_shape': spatial_shapes[-1],
+                'next_feature_shape': (list(next_feature_shape)
+                                       if next_feature_shape is not None else None),
+                'next_head_feasible': next_head_feasible,
+                'next_head_status': next_head_status,
+                'stopped_at_1x1': stopped_at_1x1,
+            }
+        else:
+            self.last_execution_trace = None
+
+    def _build_feature_levels(self, x):
+        outputs = [feature for _, feature in self._iter_feature_levels(x)]
+        return outputs, len(outputs)
+
     def forward(self, x, targets=None, ignore_regions=None):
         # Check input
         if torch.isnan(x).any() or torch.isinf(x).any():
@@ -645,59 +760,13 @@ class RoiSSD(nn.Module):
             raise RuntimeError("Invalid input to model")
         
         w_r, h_r = x.shape[3], x.shape[2]
-        min_r = min(w_r, h_r)
-        max_depth = self.get_max_feature_layer_by_roi_size(min_r)
-        # Call everything till conv4_3 layers first
-        conv_4_3_out = self.features(x)
+        outputs = []
 
-        # Check conv4_3 output before normalization
-        if torch.isnan(conv_4_3_out).any() or torch.isinf(conv_4_3_out).any():
-            print("NaN/Inf in conv_4_3_out BEFORE normalization!")
-            print(f"  Range: [{conv_4_3_out.min().item():.6f}, {conv_4_3_out.max().item():.6f}]")
-            visualize_image_with_boxes(x, targets, save_path='debug_backbone_nan.png')
-            raise RuntimeError("NaN in backbone features")
-
-        # Scale conv4_3 output using learnt norm scale
-        # Add epsilon and clamping to prevent NaN
-        conv_4_3_out_norm = torch.nn.functional.normalize(conv_4_3_out, p=2, dim=1, eps=1e-12)
-        
-        # Check for NaN/Inf after normalization
-        if torch.isnan(conv_4_3_out_norm).any() or torch.isinf(conv_4_3_out_norm).any():
-            print("NaN/Inf detected after normalization!")
-            print(f"  conv_4_3_out range: [{conv_4_3_out.min().item():.6f}, {conv_4_3_out.max().item():.6f}]")
-            print(f"  conv_4_3_out contains NaN: {torch.isnan(conv_4_3_out).any()}")
-            print(f"  conv_4_3_out contains Inf: {torch.isinf(conv_4_3_out).any()}")
-            # Replace NaN/Inf with zeros
-            conv_4_3_out_norm = torch.where(
-                torch.isnan(conv_4_3_out_norm) | torch.isinf(conv_4_3_out_norm),
-                torch.zeros_like(conv_4_3_out_norm),
-                conv_4_3_out_norm
-            )
-        
-        conv_4_3_out_scaled = self.scale_weight.view(1, -1, 1, 1) * conv_4_3_out_norm
-
-        outputs = [conv_4_3_out_scaled]
-
-        if max_depth >= 2:
-            conv_5_3_fc_out = self.conv5_3_fc(conv_4_3_out)
-            outputs.append(conv_5_3_fc_out)
-        if max_depth >= 3:
-            conv8_2_out = self.conv8_2(conv_5_3_fc_out)
-            outputs.append(conv8_2_out)
-        if max_depth >= 4:
-            conv9_2_out = self.conv9_2(conv8_2_out)
-            outputs.append(conv9_2_out)
-        if max_depth >= 5:
-            conv10_2_out = self.conv10_2(conv9_2_out)
-            outputs.append(conv10_2_out)
-        if max_depth >= 6:
-            conv11_2_out = self.conv11_2(conv10_2_out)
-            outputs.append(conv11_2_out)
-
-        # Classification and bbox regression for all feature maps
+        # Compute each level and its prediction heads before advancing deeper.
         cls_logits = []
         bbox_reg_deltas = []
-        for i, features in enumerate(outputs):
+        for i, features in self._iter_feature_levels(x):
+            outputs.append(features)
             # Debug: Check for NaN in features before prediction heads
             if torch.isnan(features).any():
                 print(f"NaN detected in features at layer {i}!")
@@ -706,6 +775,15 @@ class RoiSSD(nn.Module):
             
             cls_feat_i = self.cls_heads[i](features)
             bbox_reg_feat_i = self.bbox_reg_heads[i](features)
+            anchors_per_location = len(self.aspect_ratios[i]) + 1
+            if cls_feat_i.shape[0] != features.shape[0] or cls_feat_i.shape[-2:] != features.shape[-2:]:
+                raise RuntimeError(f'Classification head {i} changed the feature-map geometry')
+            if bbox_reg_feat_i.shape[0] != features.shape[0] or bbox_reg_feat_i.shape[-2:] != features.shape[-2:]:
+                raise RuntimeError(f'Localization head {i} changed the feature-map geometry')
+            if cls_feat_i.shape[1] != anchors_per_location * self.num_classes:
+                raise RuntimeError(f'Classification head {i} emitted an unexpected number of slots')
+            if bbox_reg_feat_i.shape[1] != anchors_per_location * 4:
+                raise RuntimeError(f'Localization head {i} emitted an unexpected number of slots')
 
             # Cls output from (B, A * num_classes, H, W) to (B, HWA, num_classes).
             N, _, H, W = cls_feat_i.shape
@@ -714,6 +792,9 @@ class RoiSSD(nn.Module):
             cls_feat_i = cls_feat_i.permute(0, 3, 4, 1, 2)  # (B, H, W, A, num_classes)
             cls_feat_i = cls_feat_i.reshape(N, -1, self.num_classes)
             # (B, HWA, num_classes)
+            expected_slots = H * W * anchors_per_location
+            if cls_feat_i.shape[1] != expected_slots:
+                raise RuntimeError(f'Classification head {i} emitted an unexpected slot count')
             cls_logits.append(cls_feat_i)
 
             # Permute bbox reg output from (B, A * 4, H, W) to (B, HWA, 4).
@@ -721,18 +802,37 @@ class RoiSSD(nn.Module):
             bbox_reg_feat_i = bbox_reg_feat_i.view(N, -1, 4, H, W)  # (B, A, 4, H, W)
             bbox_reg_feat_i = bbox_reg_feat_i.permute(0, 3, 4, 1, 2)  # (B, H, W, A, 4)
             bbox_reg_feat_i = bbox_reg_feat_i.reshape(N, -1, 4)  # Size=(B, HWA, 4)
+            if bbox_reg_feat_i.shape[1] != expected_slots:
+                raise RuntimeError(f'Localization head {i} emitted an unexpected slot count')
             bbox_reg_deltas.append(bbox_reg_feat_i)
 
         # Concat cls logits and bbox regression predictions for all feature maps
-        if getattr(self, "record_execution_trace", False):
-            self.last_execution_trace = (max_depth, tuple(tuple(feature.shape) for feature in outputs))
         cls_logits = torch.cat(cls_logits, dim=1)  # (B, 8732, num_classes)
         bbox_reg_deltas = torch.cat(bbox_reg_deltas, dim=1)  # (B, 8732, 4)
+        if cls_logits.shape[1] != bbox_reg_deltas.shape[1]:
+            raise RuntimeError('Classification and localization prediction counts differ')
 
         # Generate default_boxes for all feature maps
         scales_used = self.scales[:len(outputs)+1]
         aspect_used = self.aspect_ratios[:len(outputs)]
         default_boxes = generate_default_boxes(outputs, aspect_used, scales_used, image_size=(h_r, w_r))
+        if len(default_boxes) != x.shape[0]:
+            raise RuntimeError('Default-box batch count differs from the input batch')
+        anchor_count = default_boxes[0].shape[0]
+        if cls_logits.shape[1] != bbox_reg_deltas.shape[1] or cls_logits.shape[1] != anchor_count:
+            raise RuntimeError(
+                f'Prediction/anchor count mismatch: localization={bbox_reg_deltas.shape[1]}, '
+                f'classification={cls_logits.shape[1]}, anchors={anchor_count}')
+        if self.record_execution_trace:
+            self.last_execution_trace.update({
+                'anchors_per_head': [
+                    feature.shape[-2] * feature.shape[-1] * (len(self.aspect_ratios[i]) + 1)
+                    for i, feature in enumerate(outputs)
+                ],
+                'N_loc_predictions': int(bbox_reg_deltas.shape[1]),
+                'N_cls_predictions': int(cls_logits.shape[1]),
+                'N_anchors': int(anchor_count),
+            })
         # default_boxes -> List[Tensor of shape 8732 x 4]
         # len(default_boxes) = Batch size
 
