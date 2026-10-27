@@ -29,9 +29,15 @@ def geometry_model(trace=True):
 
 
 class RuntimeDepthPolicyTests(unittest.TestCase):
-    def test_legacy_threshold_helper_is_removed(self):
+    def test_runtime_depth_selection_does_not_use_legacy_threshold_helper(self):
         model = geometry_model()
-        self.assertFalse(hasattr(model, 'get_max_feature_layer_by_roi_size'))
+        if hasattr(model, 'get_max_feature_layer_by_roi_size'):
+            model.get_max_feature_layer_by_roi_size = lambda _: self.fail(
+                'Forward depth selection consulted the legacy threshold helper')
+        with torch.inference_mode():
+            features, depth = model._build_feature_levels(torch.zeros(1, 3, 129, 129))
+        self.assertEqual(depth, 5)
+        self.assertEqual(tuple(features[-1].shape[-2:]), (1, 1))
 
     def test_dynamic_policy_tracks_actual_square_and_rectangle_shapes(self):
         model = geometry_model()

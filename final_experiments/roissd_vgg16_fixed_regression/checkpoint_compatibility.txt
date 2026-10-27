@@ -1,0 +1,9 @@
+{
+  "strict": true,
+  "missing_keys": [],
+  "unexpected_keys": [],
+  "shape_mismatches": {},
+  "checkpoint_tensor_sha256": "0d98d9c9d8f3a6be4df8c274f7deaeebf0c18dd523c91c87e2678115c1850ce3",
+  "weights_unchanged_after_inference": true,
+  "finite_inference": true
+}

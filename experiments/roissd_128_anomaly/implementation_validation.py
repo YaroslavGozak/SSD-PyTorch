@@ -165,6 +165,8 @@ def aggregate_policy(model, samples, sample_rows, class_names, device, shape,
         'actual_L_R': expected_layout['actual_L_R'],
         'input_h': shape[0], 'input_w': shape[1], 'min_dim': min(shape),
         'num_samples': len(samples), 'num_gt': len(best_ious),
+        'num_detections': sum(
+            len(boxes) for prediction in predictions for boxes in prediction.values()),
         'map50': map50, 'recall50': recall50,
         'mean_raw_max_confidence': float(np.mean(raw_confidences)),
         'mean_best_anchor_iou': float(np.mean(best_ious)),

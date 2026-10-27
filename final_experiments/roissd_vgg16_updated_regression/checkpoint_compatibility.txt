@@ -1,0 +1,20 @@
+{
+  "checkpoint": {
+    "model_family": "ROI-SSD",
+    "checkpoint": "trained_models/best-imagenet-vid-roissd/imagenet26022026stage3.pt",
+    "checkpoint_sha256": "e63200377a07c497c31d859b0a2dbbeabf6a1c1c7cafc0a7e795f70070d9a3fa",
+    "role": "roi",
+    "config_snapshot": "configs/roissd.yaml",
+    "config_sha256": "5f3ab4e30721307cba59bc9523e0535d896d15395b78ea46d18e3c621aec8a6b",
+    "source_config": "outputs/batch_infer/best-imagenet-vid-roissd/imagenet26022026stage3.pt/config.yaml"
+  },
+  "strict": true,
+  "missing_keys": [],
+  "unexpected_keys": [],
+  "shape_mismatches": {},
+  "checkpoint_tensor_sha256": "0d98d9c9d8f3a6be4df8c274f7deaeebf0c18dd523c91c87e2678115c1850ce3",
+  "loaded_state_sha256": "0d98d9c9d8f3a6be4df8c274f7deaeebf0c18dd523c91c87e2678115c1850ce3",
+  "weights_match": true,
+  "weights_unchanged_after_attempts": true,
+  "finite_inference": "UNAVAILABLE_FORWARD_FAILURE"
+}

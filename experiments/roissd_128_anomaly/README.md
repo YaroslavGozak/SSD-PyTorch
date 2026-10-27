@@ -250,6 +250,19 @@ and analysis integrity metadata. Production policy and weights are not edited.
 
 ## Stage 2f: runtime depth by feature-map geometry
 
+Run the focused post-edit checkpoint and representative Stage-2e regression
+check (10 accuracy shapes, 4 CPU sanity shapes):
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.roissd_128_anomaly.quick_regression_check --device auto --threads 4
+```
+
+This writes `quick_regression_report.md`, `checkpoint_load_report.txt`,
+`stage2e_reproduction.csv`, `cpu_latency_sanity.csv`, and `metadata.json` under
+`final_experiments/feature_map_depth_policy_implementation_check/`. It compares
+per-sample predictions against the saved Stage-2e outputs and fails on any
+metric difference above 1e-6.
+
 Run the checkpoint-compatibility, Stage-2e parity, and CPU profiling validation:
 
 ```powershell
@@ -280,3 +293,28 @@ the implementation report, and test log are written to
 does not update any trained weights. Stopping at 1x1 is a policy boundary;
 some padded convolutions could mathematically produce another 1x1 output, but
 those blocks are deliberately not evaluated.
+
+## VGG16 runtime repair and paired regression
+
+The VGG16 iterator uses `features` and `conv5_3_fc`, preserves the learned
+conv4_3 L2 scale, and passes unnormalized conv4_3 to conv5/fc. Next-level
+feasibility includes max-pooling geometry. Trace attributes are optional and
+do not introduce checkpoint keys; construction preserves the caller's scales.
+
+```powershell
+.venv/Scripts/python.exe -m unittest discover -s experiments/roissd_128_anomaly/tests -v
+.venv/Scripts/python.exe -m experiments.roissd_128_anomaly.vgg16_fixed_regression
+.venv/Scripts/python.exe -m experiments.roissd_128_anomaly.vgg16_latency_regression
+.venv/Scripts/python.exe -m experiments.roissd_128_anomaly.vgg16_fullframe_checkpoint_regression
+```
+
+Results are written to `final_experiments/roissd_vgg16_fixed_regression/`.
+The paired check executes historical VGG16 source at revision `06b0bf4` and
+the current implementation using the same locked ROI checkpoint, 256 inputs,
+GT, crop jitter, thresholds and evaluator. It replays exact saved Stage 2
+metrics where available, covers the requested square/rectangular geometry,
+and records CPU timings against the same old source. The additional check
+loads the manifest's full-frame checkpoint and compares all 256 full-frame
+outputs. The earlier failure evidence remains in
+`final_experiments/roissd_vgg16_updated_regression/`; its diagnostic runner
+never awards PASS after a repair.

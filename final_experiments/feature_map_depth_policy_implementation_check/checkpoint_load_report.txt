@@ -1,0 +1,9 @@
+checkpoint: trained_models/best-imagenet-vid-roissd-mobilenet/20260928-phase2-bn-freeze/best_map.pt
+checkpoint_sha256: 7fa171ab669ac53f0d4f39586c08e61a60ca79fed98fd70874ef42bfd52356ce
+load_state_dict(strict=True): PASS
+missing_keys: []
+unexpected_keys: []
+shape_mismatches: {}
+checkpoint_tensor_sha256: 06acb9cee59720d8f553ff02cb55e82e703ed83522eaa1d31d0e647523131fbe
+loaded_state_sha256: 06acb9cee59720d8f553ff02cb55e82e703ed83522eaa1d31d0e647523131fbe
+checkpoint_weights_match_loaded_model: True
