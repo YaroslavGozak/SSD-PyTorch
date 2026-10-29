@@ -126,14 +126,14 @@ class VOCDataset(Dataset):
             hw = self.transform_name[len('fixed_size_yolo_'):]
             h_str, w_str = hw.split('x')
             self.transforms = FixedSizeTestTransform(
-                int(h_str), int(w_str), self.imagenet_mean, self.imagenet_std, normalize=False
+                int(h_str), int(w_str), self.imagenet_mean, self.imagenet_std, normalize=False, frame_size=self.im_size
             ).transforms
         elif self.transform_name.startswith('fixed_size_'):
             # Pattern: fixed_size_{H}x{W}  e.g. fixed_size_96x128
             hw = self.transform_name[len('fixed_size_'):]
             h_str, w_str = hw.split('x')
             self.transforms = FixedSizeTestTransform(
-                int(h_str), int(w_str), self.imagenet_mean, self.imagenet_std, normalize=True
+                int(h_str), int(w_str), self.imagenet_mean, self.imagenet_std, normalize=True, frame_size=self.im_size
             ).transforms
         else:
             raise Exception('Unknown transform name "{}"'.format(self.transform_name))

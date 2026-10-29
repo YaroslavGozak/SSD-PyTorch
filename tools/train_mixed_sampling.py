@@ -5,9 +5,11 @@ from tools.helpers.config_reader import load_config
 from tools.helpers.training_metrics import append_epoch_metrics_csv
 from tools.helpers.pipeline import load_model, resolve_device
 from tools.infer import infer_and_evaluate
-from tools.reset_lr import reset_learning_rate
-from tools.train_samplers.roi_mixed_sampling import MixedBatchSampler, MixedCollateFn, RoiBatchProcessor
-from tools.train_samplers.mixed_sampling_stats import MixedSamplingStats, save_epoch_stats
+from tools.train_samplers.deployment_mixed_sampling import (
+    DeploymentMixedBatchSampler, DeploymentRoiBatchProcessor,
+    DeploymentMixedCollateFn, DeploymentSamplingDataset, stage_sampling_config,
+)
+from tools.train_samplers.deployment_sampling_stats import DeploymentSamplingStats
 import torch
 import argparse
 import os
@@ -22,6 +24,24 @@ from torch.optim.lr_scheduler import MultiStepLR
 
 device = resolve_device(None)
 print('Using device {}'.format(device))
+
+
+def reset_checkpoint_for_stage(checkpoint, stage, optimizer, scheduler):
+    """Keep earlier-stage weights and start fresh training state for this stage."""
+    checkpoint_stage = int(checkpoint.get('stage', 1)) if isinstance(checkpoint, dict) else 1
+    if checkpoint_stage >= stage:
+        return checkpoint
+    print(
+        f'Checkpoint stage {checkpoint_stage} is below configured stage {stage}; '
+        'resetting learning rate, scheduler and epoch.'
+    )
+    return {
+        'model': checkpoint['model'] if isinstance(checkpoint, dict) and 'model' in checkpoint else checkpoint,
+        'optimizer': optimizer.state_dict(),
+        'scheduler': scheduler.state_dict(),
+        'epoch': -1,
+        'stage': stage,
+    }
 
 
 def save_validation_checkpoints(checkpoint, directory, epoch_map, best_map):
@@ -43,6 +63,20 @@ class ImageNetNormalize:
         return (img - mean) / std
 
 
+def build_deployment_training_loader(raw_dataset, dataset_config, train_config, num_workers=4):
+    """One deployment sampler/processor path for both mixed-training stages."""
+    stage=train_config.get('roi_mixed_stage',2)
+    im_size=dataset_config['im_size']
+    sampling_cfg=stage_sampling_config(train_config,stage,im_size)
+    processor=DeploymentRoiBatchProcessor(sampling_cfg,im_size=im_size)
+    dataset=DeploymentSamplingDataset(raw_dataset,processor)
+    sampler=DeploymentMixedBatchSampler(dataset,train_config['batch_size'],stage,sampling_cfg,
+                                        im_size=im_size,seed=train_config['seed'],shuffle=True,drop_last=True)
+    loader=DataLoader(dataset,batch_sampler=sampler,collate_fn=DeploymentMixedCollateFn(),
+                      num_workers=num_workers,pin_memory=True,persistent_workers=False)
+    return loader,sampler
+
+
 def train(args):
     # Read the config file #
     config = load_config(args.config_path)
@@ -51,6 +85,9 @@ def train(args):
 
     dataset_config = config['dataset_params']
     train_config = config['train_params']
+    roi_stage = train_config.get('roi_mixed_stage')
+    # Reject unsupported stages/configs before model/checkpoint side effects.
+    stage_sampling_config(train_config,roi_stage,dataset_config['im_size'])
 
     seed = train_config['seed']
     torch.manual_seed(seed)
@@ -120,7 +157,6 @@ def train(args):
                                 weight_decay=5E-4, momentum=0.9)
     
     # Get learning rate steps for the current stage of mixed sampling
-    roi_stage = train_config.get('roi_mixed_stage', 1)
     _stage_suffix = f'_stage{roi_stage}' if roi_stage > 1 else ''
     _lr_steps_key = f'lr_steps{_stage_suffix}'
     _lr_steps = train_config.get(_lr_steps_key, train_config['lr_steps'])
@@ -131,18 +167,10 @@ def train(args):
     if os.path.exists(model_checkpoint_path):
         print('Loading checkpoint as one exists')
         checkpoint = torch.load(model_checkpoint_path, map_location=device)
-        checkpoint_stage = int(checkpoint.get('stage', 1)) if isinstance(checkpoint, dict) else 1
-        if checkpoint_stage < roi_stage:
-            print(
-                'Checkpoint stage {} is below configured stage {}; resetting training state.'.format(
-                    checkpoint_stage, roi_stage
-                )
-            )
-            if not reset_learning_rate(evaluation_config_path, stage=roi_stage):
-                raise RuntimeError('Unable to reset checkpoint training state')
-            checkpoint = torch.load(model_checkpoint_path, map_location=device)
-            # The reset helper uses the base schedule; retain this stage's schedule.
-            checkpoint['scheduler'] = lr_scheduler.state_dict()
+        stage_checkpoint = reset_checkpoint_for_stage(checkpoint, roi_stage, optimizer, lr_scheduler)
+        if stage_checkpoint is not checkpoint:
+            checkpoint = stage_checkpoint
+            torch.save(checkpoint, model_checkpoint_path)
         
         # Handle both old format (state_dict only) and new format (full checkpoint)
         if isinstance(checkpoint, dict) and 'model' in checkpoint:
@@ -184,32 +212,9 @@ def train(args):
             task=None,
         )
 
-    batch_sampler = MixedBatchSampler(
-        dataset=train_dataset,
-        batch_size=train_config['batch_size'],
-        stage=train_config.get('roi_mixed_stage', 2),
-        drop_last=True,
-        shuffle=True,
-        seed=train_config['seed'],
-        im_size=dataset_config['im_size'],
-    )
-    print("Mixed-sampling output sizes:", {mode.name: mode.out_size for mode in batch_sampler.mode_configs})
-
-    processor = RoiBatchProcessor(
-        image_only_transform=None,
-        normalize_transform=ImageNetNormalize(),
-        mode_configs=batch_sampler.mode_configs,
-        im_size=dataset_config['im_size'],
-    )
-    collate_fn = MixedCollateFn(processor, return_mode=True, return_sampling_info=True)
-    train_dataset_loader = DataLoader(
-        train_dataset,
-        batch_sampler=batch_sampler,
-        collate_fn=collate_fn,
-        num_workers=4,
-        pin_memory=True,
-        persistent_workers=False
-    )
+    train_dataset_loader,batch_sampler=build_deployment_training_loader(
+        train_dataset,dataset_config,train_config)
+    print(f'Deployment mixed sampler Stage {roi_stage}: {batch_sampler.config}')
 
     print(f"lr_scheduler.milestones: {lr_scheduler.milestones}")
     acc_steps = train_config['acc_steps']
@@ -233,11 +238,14 @@ def train(args):
         epoch_start_time = time.time()
         ssd_classification_losses = []
         ssd_localization_losses = []
-        sampling_stats = MixedSamplingStats(batch_sampler.mode_configs, dataset_config['im_size'])
-        for idx, (images, targets, mode, sampling_info) in enumerate(tqdm(train_dataset_loader, desc=f'[Stage {roi_stage}] Training epoch {i+1}/{num_epochs}')):
+        batch_sampler.set_epoch(i)
+        sampling_stats = DeploymentSamplingStats(roi_stage,batch_sampler.config)
+        for idx, batch in enumerate(tqdm(train_dataset_loader, desc=f'[Stage {roi_stage}] Training epoch {i+1}/{num_epochs}')):
 
-            sampling_stats.record(mode, images.shape[-1], len(targets),
-                                  object_mismatch=sampling_info['object_mismatch'])
+            if batch is None:
+                continue
+            images, targets, mode, sampling_info = batch
+            sampling_stats.record(mode,images.shape[-2:],sampling_info)
 
             if idx % 50 == 0:
                 print(f"Batch mode: {mode}, image size: {tuple(images.shape)}")
@@ -304,18 +312,11 @@ def train(args):
         epoch_minutes = epoch_time / 60
         print('Finished epoch {}/{}'.format(i+1, num_epochs))
         print('Epoch execution time: {:.2f} minutes'.format(epoch_minutes))
-        sampling_rows = sampling_stats.rows(epoch=i + 1, stage=roi_stage)
-        sampling_stats_path = os.path.join(model_task_path, 'mixed_sampling_stats.csv')
-        save_epoch_stats(sampling_stats_path, sampling_rows)
-        overall_sampling = sampling_rows[0]
-        most_enlarged = max(sampling_rows[1:], key=lambda row: row['enlarged_batches'])
-        most_affected = ('{} px ({} batches)'.format(most_enlarged['required_size_px'],
-                         most_enlarged['enlarged_batches']) if most_enlarged['enlarged_batches'] else 'none')
-        print('Mixed sampling: {} / {} batches enlarged ({:.2f}%), including {} with oversized selected objects; most affected size: {}. Stats: {}'.format(
-            overall_sampling['enlarged_batches'], overall_sampling['batches'],
-            overall_sampling['enlargement_rate_pct'], overall_sampling['object_mismatch_batches'],
-            most_affected, sampling_stats_path,
-        ))
+        sampling_stats.save(model_task_path,epoch=i+1)
+        sampling_summary=sampling_stats.summary()
+        print('Deployment sampling: full={:.2%}, ROI={:.2%}, rectangular ROI={:.2%}; stats in {}'.format(
+            sampling_summary['full_share'],sampling_summary['roi_share'],
+            sampling_summary['rectangular_roi_share'],model_task_path))
         # if isinstance(collate_fn, EpochAwareCollateFn):
         #     collate_fn.print_and_reset_stats(i)
         # else:

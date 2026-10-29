@@ -54,7 +54,7 @@ def sweep_summary(mode, model):
         prefix = 'fixed_padding_roi_crop_yolo_' if model == 'yolo' else 'fixed_padding_roi_crop_'
         return 'results.csv', {prefix + str(pad) for pad in range(0, 201, 10)}
     prefix = 'fixed_size_yolo_' if model == 'yolo' else 'fixed_size_'
-    return 'fixed_size_results.csv', {f'{prefix}{h}x{w}' for h in range(32, 321, 32)
+    return 'fixed_size_results_v2.csv', {f'{prefix}{h}x{w}' for h in range(32, 321, 32)
                                     for w in range(32, 321, 32)}
 
 
@@ -294,7 +294,7 @@ def main(argv=None):
                 if not (args.resume and mode_completed(progress_marker, identity)):
                     # Clear incompatible summaries before recording the new identity.
                     if not recovered:
-                        for name in ('results.csv', 'fixed_size_results.csv'):
+                        for name in ('results.csv', 'fixed_size_results_v2.csv'):
                             (destination/mode/name).unlink(missing_ok=True)
                     temporary_progress = progress_marker.with_suffix('.json.tmp')
                     temporary_progress.write_text(json.dumps(identity, indent=2), encoding='utf-8')

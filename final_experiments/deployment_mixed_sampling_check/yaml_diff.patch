@@ -1,0 +1,36 @@
+--- before/imagenet-vid-roissd-mobilenet.yaml
++++ after/imagenet-vid-roissd-mobilenet.yaml
+@@ -27,6 +27,33 @@
+   model: 'roissd-mobilenet'
+   model_label_space: 'yolo-imagenet-vid'  # 'coco', 'image-net', 'imagenet-vid-yolo13' or 'voc' - determines how labels are remapped during training and inference
+   roi_mixed_stage: 3
++  roi_sampling:
++    stage2:
++      full_probability: 0.50
++      min_crop_side: 96
++      aspect_ratio_range: [0.5, 2.0]
++      center_jitter_ratio: 0.15
++      reference_min_visibility: 0.90
++      other_box_min_visibility: 0.30
++      max_resample_attempts: 20
++      roi_area_fraction_bins:
++        - [0.10, 0.25, 0.05]
++        - [0.25, 0.50, 0.15]
++        - [0.50, 0.75, 0.35]
++        - [0.75, 1.00, 0.45]
++    stage3:
++      full_probability: 0.30
++      min_crop_side: 64
++      aspect_ratio_range: [0.5, 2.0]
++      center_jitter_ratio: 0.25
++      reference_min_visibility: 0.80
++      other_box_min_visibility: 0.30
++      max_resample_attempts: 20
++      roi_area_fraction_bins:
++        - [0.10, 0.25, 0.25]
++        - [0.25, 0.50, 0.35]
++        - [0.50, 0.75, 0.25]
++        - [0.75, 1.00, 0.15]
+   seed: 856245
+   acc_steps: 3
+   num_epochs: 130

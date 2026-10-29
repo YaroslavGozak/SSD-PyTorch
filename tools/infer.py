@@ -443,7 +443,7 @@ def evaluation_resources(args, transform_name, resources):
             prefix = 'fixed_size_yolo_' if yolo else 'fixed_size_'
             h, w = map(int, transform_name[len(prefix):].split('x'))
             transform = FixedSizeTestTransform(h, w, dataset.imagenet_mean,
-                                               dataset.imagenet_std, normalize=not yolo)
+                                               dataset.imagenet_std, normalize=not yolo, frame_size=dataset.im_size)
         elif transform_name.startswith(('fixed_padding_roi_crop_', 'fixed_padding_roi_crop_yolo_')):
             cls = (FixedPaddingRoiCropYOLOTestTransform if
                    transform_name.startswith('fixed_padding_roi_crop_yolo_') else
@@ -457,6 +457,17 @@ def evaluation_resources(args, transform_name, resources):
         dataset.transforms = transform.transforms
     else:
         model, dataset, _, config = load_model_and_dataset(args, transform_name)
+    if transform_name.startswith(('fixed_size_', 'fixed_size_yolo_')) and hasattr(dataset, 'im_size'):
+        yolo=transform_name.startswith('fixed_size_yolo_')
+        prefix='fixed_size_yolo_' if yolo else 'fixed_size_'
+        h,w=map(int,transform_name[len(prefix):].split('x'))
+        train=config.get('train_params',{})
+        stage=train.get('roi_mixed_stage',3)
+        sampling=train.get('roi_sampling',{}).get(f'stage{stage}',{})
+        dataset.transforms=FixedSizeTestTransform(h,w,dataset.imagenet_mean,dataset.imagenet_std,
+            normalize=not yolo,frame_size=dataset.im_size,
+            reference_min_visibility=sampling.get('reference_min_visibility',.9),
+            other_box_min_visibility=sampling.get('other_box_min_visibility',.3)).transforms
     batch_size = getattr(args, 'eval_batch_size', 1)
     if batch_size > 1 and not transform_name.startswith(('fixed_size_', 'fixed_size_yolo_')):
         raise ValueError('Evaluation batches > 1 require a fixed-size transform')
@@ -484,7 +495,17 @@ def _evaluate_single_transform(
         summary_path = getattr(args, 'summary_path', None)
         if not summary_path:
             raise ValueError('--resume-evaluation requires --summary-path')
-        for row in read_completed_results(os.path.join(summary_path, summary_csv_name)):
+        completed=read_completed_results(os.path.join(summary_path, summary_csv_name))
+        if transform_name.startswith(('fixed_size_', 'fixed_size_yolo_')):
+            # Old resize-to-fit results are incompatible with this crop protocol.
+            coverage_path=os.path.join(summary_path,'fixed_size_coverage_v2.csv')
+            compatible=set()
+            if os.path.exists(coverage_path):
+                with open(coverage_path,newline='',encoding='utf-8') as stream:
+                    compatible={r['evaluated_dataset'] for r in csv.DictReader(stream)
+                                if r.get('protocol')=='deployment_fixed_crop_v1'}
+            completed=[r for r in completed if r['evaluated_dataset'] in compatible]
+        for row in completed:
             if row['evaluated_dataset'] == evaluated_dataset:
                 print('Skipping completed evaluation: {}'.format(evaluated_dataset), flush=True)
                 return dict(evaluated_dataset=evaluated_dataset, transform_name=transform_name,
@@ -523,7 +544,17 @@ def _evaluate_single_transform(
     preds = []
     difficults = []
     latencies_s: List[float] = []
+    eligible_images=0
+    total_images=0
     for im_tensor, targets, filenames in tqdm(test_dataset):
+        total_images+=len(targets)
+        keep=[i for i,t in enumerate(targets) if t.get('fixed_crop_eligible',True)]
+        eligible_images+=len(keep)
+        if not keep:
+            continue
+        im_tensor=im_tensor[keep]
+        targets=[targets[i] for i in keep]
+        filenames=[filenames[i] for i in keep]
         im_tensor = im_tensor.float().to(
             device, non_blocking=bool(getattr(args, 'pin_memory', False)))
         conf_threshold = config['train_params'].get('infer_conf_threshold', None)
@@ -562,11 +593,28 @@ def _evaluate_single_transform(
     mean_latency_ms = mean_latency_s * 1000.0 if not np.isnan(mean_latency_s) else float('nan')
     mean_fps = (1.0 / mean_latency_s) if (latencies_s and mean_latency_s > 0.0) else float('nan')
 
+    if transform_name.startswith(('fixed_size_', 'fixed_size_yolo_')):
+        os.makedirs(model_task_path,exist_ok=True)
+        coverage_path=os.path.join(model_task_path,'fixed_size_coverage_v2.csv')
+        fields=['evaluated_dataset','eligible_images','ineligible_images','total_images','coverage','protocol']
+        rows=[]
+        if os.path.exists(coverage_path):
+            with open(coverage_path,newline='',encoding='utf-8') as stream:
+                rows=[r for r in csv.DictReader(stream) if r['evaluated_dataset']!=evaluated_dataset]
+        with open(coverage_path,'w',newline='',encoding='utf-8') as stream:
+            writer=csv.DictWriter(stream,fieldnames=fields)
+            writer.writeheader()
+            writer.writerows(rows)
+            writer.writerow(dict(evaluated_dataset=evaluated_dataset,eligible_images=eligible_images,
+                ineligible_images=total_images-eligible_images,total_images=total_images,
+                coverage=eligible_images/total_images if total_images else 0.,protocol='deployment_fixed_crop_v1'))
+        print(f'Eligible images: {eligible_images}/{total_images}')
+
     print('Class Wise Average Precisions and Detector Recall')
     for idx in range(len(voc.idx2label)):
         lbl = voc.idx2label[idx]
         print('AP for class {} = {:.4f}  |  detector_recall = {:.4f}'.format(
-            lbl, all_aps[lbl], all_recalls[lbl]))
+            lbl, all_aps.get(lbl,float('nan')), all_recalls.get(lbl,float('nan'))))
     print('Mean Average Precision : {:.4f}'.format(mean_ap))
     print('Mean Detector Recall   : {:.4f}'.format(mean_recall))
     print('Mean Latency (ms)      : {:.4f}'.format(mean_latency_ms))
@@ -659,7 +707,7 @@ def evaluate_map_fixed_size_loop(args) -> Dict[str, Any]:
                 evaluated_dataset=transform_name,
                 model_name=model_name,
                 yolo_debug_suffix='size_{}x{}'.format(h, w),
-                summary_csv_name='fixed_size_results.csv',
+                summary_csv_name='fixed_size_results_v2.csv',
                 resources=resources,
             ))
     return {'mode': 'fixed-size-loop', 'runs': runs}

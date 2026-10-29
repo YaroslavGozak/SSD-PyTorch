@@ -40,7 +40,7 @@ class EvaluationOptimizationTests(unittest.TestCase):
     def test_sweeps_resume_at_interrupted_setting(self):
         for loop, csv_name, stop in (
             (infer.evaluate_map_pad_loop, 'results.csv', 16),
-            (infer.evaluate_map_fixed_size_loop, 'fixed_size_results.csv', 3),
+            (infer.evaluate_map_fixed_size_loop, 'fixed_size_results_v2.csv', 3),
         ):
             with self.subTest(loop=loop.__name__), test_directory() as tmp:
                 config_path = Path(tmp)/'config.yaml'
@@ -99,8 +99,8 @@ class EvaluationOptimizationTests(unittest.TestCase):
             return {'boxes': tv_tensors.BoundingBoxes([[12, 12, 25, 25]], format='XYXY', canvas_size=(64, 64)),
                     'labels': torch.tensor([1]), 'difficult': torch.tensor([0])}
         cases = [
-            ('fixed_size_32x64', FixedSizeTestTransform(32, 64, dataset.imagenet_mean, dataset.imagenet_std)),
-            ('fixed_size_yolo_32x64', FixedSizeTestTransform(32, 64, dataset.imagenet_mean, dataset.imagenet_std, normalize=False)),
+            ('fixed_size_32x64', FixedSizeTestTransform(32, 64, dataset.imagenet_mean, dataset.imagenet_std, frame_size=64)),
+            ('fixed_size_yolo_32x64', FixedSizeTestTransform(32, 64, dataset.imagenet_mean, dataset.imagenet_std, normalize=False, frame_size=64)),
             ('fixed_padding_roi_crop_10', FixedPaddingRoiCropTestTransform(64, dataset.imagenet_mean, dataset.imagenet_std, 10, 10)),
             ('fixed_padding_roi_crop_yolo_10', FixedPaddingRoiCropYOLOTestTransform(64, dataset.imagenet_mean, dataset.imagenet_std, 10, 10)),
         ]

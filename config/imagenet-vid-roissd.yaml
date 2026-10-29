@@ -26,20 +26,47 @@ model_params:
 train_params:
   model: 'roissd'
   model_label_space: 'yolo-imagenet-vid'  # 'yolo-imagenet-vid', 'coco', 'image-net', 'imagenet-vid-yolo13' or 'voc' - determines how labels are remapped during training and inference
-  roi_mixed_stage: 2
-  seed: 20261002
+  roi_mixed_stage: 3
+  roi_sampling:
+    stage2:
+      full_probability: 0.50
+      min_crop_side: 96
+      aspect_ratio_range: [0.5, 2.0]
+      center_jitter_ratio: 0.15
+      reference_min_visibility: 0.90
+      other_box_min_visibility: 0.30
+      max_resample_attempts: 30
+      roi_area_fraction_bins:
+        - [0.10, 0.25, 0.05]
+        - [0.25, 0.50, 0.15]
+        - [0.50, 0.75, 0.35]
+        - [0.75, 1.00, 0.45]
+    stage3:
+      full_probability: 0.30
+      min_crop_side: 32
+      aspect_ratio_range: [0.5, 2.0]
+      center_jitter_ratio: 0.25
+      reference_min_visibility: 0.80
+      other_box_min_visibility: 0.30
+      max_resample_attempts: 30
+      roi_area_fraction_bins:
+        - [0.10, 0.25, 0.25]
+        - [0.25, 0.50, 0.35]
+        - [0.50, 0.75, 0.25]
+        - [0.75, 1.00, 0.15]
+  seed: 20261028
   acc_steps: 3
   num_epochs: 100
   num_epochs_stage2: 20
   num_epochs_stage3: 20
-  batch_size: 16 # can be 20
+  batch_size: 12 # 20 for MobileNet, 12-16 for VGG16
   lr_steps: [ 40, 50, 60, 70, 80, 90 ]
   lr_steps_stage2: [ 5, 15 ]
   lr_steps_stage3: [ 10, 15 ]
-  lr: 0.001
+  lr: 0.0005
   freeze_backbone_bn: false
   freeze_extra_bn: false
   train_bn_affine: true
   log_steps : 100
-  task_name: 'imagenet-vid-roissd-20261002'
-  ckpt_name: 'stage2.pt'
+  task_name: 'imagenet-vid-roissd-20261028/stage3'
+  ckpt_name: 'init.pt'

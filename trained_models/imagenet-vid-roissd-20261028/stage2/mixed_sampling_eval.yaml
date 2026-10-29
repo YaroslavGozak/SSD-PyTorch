@@ -1,0 +1,125 @@
+dataset_params:
+  filter_voc_overlap: false
+  im_size: 320
+  num_classes: 31
+  transform_name: ssd
+  yolo_dataset_yaml: D:\ImageNet-VID\ImageNet\data\ImageNet2015\imagenet_vid_yolo_sampled\imagenet_vid.yaml
+model_params:
+  aspect_ratios:
+  - - 1.0
+    - 2.0
+    - 0.5
+  - - 1.0
+    - 2.0
+    - 3.0
+    - 0.5
+    - 0.333
+  - - 1.0
+    - 2.0
+    - 3.0
+    - 0.5
+    - 0.333
+  - - 1.0
+    - 2.0
+    - 3.0
+    - 0.5
+    - 0.333
+  - - 1.0
+    - 2.0
+    - 0.5
+  - - 1.0
+    - 2.0
+    - 0.5
+  detections_per_img: 200
+  im_channels: 3
+  iou_threshold: 0.5
+  low_score_threshold: 0.01
+  neg_pos_ratio: 3
+  nms_threshold: 0.45
+  pre_nms_topK: 400
+  scales:
+  - 0.1
+  - 0.2
+  - 0.375
+  - 0.55
+  - 0.725
+  - 0.9
+train_params:
+  acc_steps: 3
+  batch_size: 16
+  ckpt_name: last.pt
+  dataset: yolo-imagenet-vid
+  freeze_backbone_bn: false
+  freeze_extra_bn: false
+  infer_conf_threshold: 0.5
+  log_steps: 100
+  lr: 0.0005
+  lr_steps:
+  - 40
+  - 50
+  - 60
+  - 70
+  - 80
+  - 90
+  lr_steps_stage2:
+  - 5
+  - 15
+  lr_steps_stage3:
+  - 10
+  - 15
+  model: roissd
+  model_label_space: yolo-imagenet-vid
+  num_epochs: 100
+  num_epochs_stage2: 20
+  num_epochs_stage3: 20
+  roi_mixed_stage: 2
+  roi_sampling:
+    stage2:
+      aspect_ratio_range:
+      - 0.5
+      - 2.0
+      center_jitter_ratio: 0.15
+      full_probability: 0.5
+      max_resample_attempts: 30
+      min_crop_side: 96
+      other_box_min_visibility: 0.3
+      reference_min_visibility: 0.9
+      roi_area_fraction_bins:
+      - - 0.1
+        - 0.25
+        - 0.05
+      - - 0.25
+        - 0.5
+        - 0.15
+      - - 0.5
+        - 0.75
+        - 0.35
+      - - 0.75
+        - 1.0
+        - 0.45
+    stage3:
+      aspect_ratio_range:
+      - 0.5
+      - 2.0
+      center_jitter_ratio: 0.25
+      full_probability: 0.3
+      max_resample_attempts: 30
+      min_crop_side: 32
+      other_box_min_visibility: 0.3
+      reference_min_visibility: 0.8
+      roi_area_fraction_bins:
+      - - 0.1
+        - 0.25
+        - 0.25
+      - - 0.25
+        - 0.5
+        - 0.35
+      - - 0.5
+        - 0.75
+        - 0.25
+      - - 0.75
+        - 1.0
+        - 0.15
+  seed: 20261028
+  task_name: imagenet-vid-roissd-20261028/stage2
+  train_bn_affine: true

@@ -1,0 +1,17 @@
+Local validation summary
+
+.venv/Scripts/python.exe -m unittest discover -s tests -p '*mixed_sampling*.py' -v
+PASS: 23 tests (10 deployment sampler tests plus 13 legacy regression tests).
+Includes real Windows DataLoader worker-count comparison (0 vs 2 workers),
+resume/global-RNG determinism, deployment pixel parity, target normalization,
+deterministic resampling, shape constraints and rectangular statistics.
+
+.venv/Scripts/python.exe -m unittest discover -s tests -p test_model_first_loading.py -v
+PASS: 5 tests. Missing checkpoints still fail before scanning the dataset;
+the mixed-training test now supplies the newly required sampling configuration.
+
+.venv/Scripts/python.exe -m experiments.cpu_pilot.deployment_sampling_check
+PASS: 10,000 definitions per stage; 14 real B=2 forward/backward batches;
+all 65 BN running statistics unchanged; BN affine gradients present;
+strict configured-checkpoint load; complete model state and checkpoint files unchanged.
+Optimizer steps: 0. Full training loop: not run.

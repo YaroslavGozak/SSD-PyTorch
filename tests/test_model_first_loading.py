@@ -68,7 +68,9 @@ class ModelFirstLoadingTests(unittest.TestCase):
             config = {
                 'dataset_params': {'im_size': 320},
                 'train_params': {'seed': 1, 'model': 'roissd', 'dataset': 'yolo-imagenet-vid',
-                                 'task_name': task_name, 'ckpt_name': 'missing.pt'},
+                                 'task_name': task_name, 'ckpt_name': 'missing.pt',
+                                 'roi_sampling': pipeline.load_config(str(Path(__file__).resolve().parents[1] /
+                                     'config/imagenet-vid-roissd-mobilenet.yaml'))['train_params']['roi_sampling']},
             }
             with patch.object(train_mixed_sampling, 'load_config', return_value=config), \
                  patch.object(train_mixed_sampling, 'load_model', return_value=torch.nn.Linear(1, 1)), \

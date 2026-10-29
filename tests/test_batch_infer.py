@@ -120,7 +120,7 @@ class BatchInferTests(unittest.TestCase):
                 self.assertEqual(run.call_count, 4)
                 interrupted = output/'b.pt'/batch_infer.MODES[1]
                 interrupted.mkdir(parents=True)
-                (interrupted/'fixed_size_results.csv').write_text('partial rows')
+                (interrupted/'fixed_size_results_v2.csv').write_text('partial rows')
                 # Shared configs and malformed markers cannot invalidate another
                 # method's successful completion snapshot.
                 (output/'a.pt'/'config.yaml').unlink()
@@ -140,7 +140,7 @@ class BatchInferTests(unittest.TestCase):
                 self.assertEqual(command[command.index('--eval-mode')+1], batch_infer.MODES[1])
                 self.assertIn('--resume-evaluation', command)
                 self.assertEqual(command[command.index('--num-workers')+1], '6')
-                self.assertEqual((interrupted/'fixed_size_results.csv').read_text(), 'partial rows')
+                self.assertEqual((interrupted/'fixed_size_results_v2.csv').read_text(), 'partial rows')
                 report = json.loads((output/'batch_report.json').read_text())
                 self.assertEqual(list(report[0]['modes'].values()), ['SKIPPED_COMPLETED']*2)
                 self.assertEqual(list(report[1]['modes'].values()), ['SKIPPED_COMPLETED', 'PASS'])
@@ -149,7 +149,7 @@ class BatchInferTests(unittest.TestCase):
                 run.reset_mock()
                 self.assertEqual(batch_infer.main(argv), 0)
                 self.assertEqual(run.call_count, 2)
-                self.assertFalse((interrupted/'fixed_size_results.csv').exists())
+                self.assertFalse((interrupted/'fixed_size_results_v2.csv').exists())
 
     def test_recursive_modes_isolation_and_resume(self):
         with test_directory() as tmp:

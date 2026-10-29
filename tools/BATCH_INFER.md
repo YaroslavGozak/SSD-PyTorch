@@ -20,7 +20,7 @@ outputs/batch_infer/<run>/<nested-run>/<checkpoint.pt>/
   pad-loop.log
   pad-loop/results.csv
   fixed-size-loop.log
-  fixed-size-loop/fixed_size_results.csv
+  fixed-size-loop/fixed_size_results_v2.csv
 ```
 
 Per-transform artifacts live alongside each mode's CSV. `batch_report.json`
