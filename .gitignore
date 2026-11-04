@@ -27,3 +27,6 @@ __pycache__
 .venv/
 
 outputs/
+
+/final_experiments/**/*.txt
+/final_experiments/**/*.log

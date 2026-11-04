@@ -51,7 +51,7 @@ train_params:
   dataset: yolo-imagenet-vid
   freeze_backbone_bn: true
   freeze_extra_bn: true
-  infer_conf_threshold: 0.01
+  infer_conf_threshold: 0.5
   log_steps: 100
   lr: 0.00025
   lr_steps:
@@ -70,18 +70,64 @@ train_params:
   num_epochs: 130
   num_epochs_stage2: 30
   num_epochs_stage3: 30
-  roi_mixed_stage: 2
+  roi_mixed_stage: 3
+  roi_sampling:
+    stage2:
+      aspect_ratio_range:
+      - 0.5
+      - 2.0
+      center_jitter_ratio: 0.15
+      full_probability: 0.5
+      max_resample_attempts: 30
+      min_crop_side: 96
+      other_box_min_visibility: 0.3
+      reference_min_visibility: 0.9
+      roi_area_fraction_bins:
+      - - 0.1
+        - 0.25
+        - 0.05
+      - - 0.25
+        - 0.5
+        - 0.15
+      - - 0.5
+        - 0.75
+        - 0.35
+      - - 0.75
+        - 1.0
+        - 0.45
+    stage3:
+      aspect_ratio_range:
+      - 0.5
+      - 2.0
+      center_jitter_ratio: 0.25
+      full_probability: 0.3
+      max_resample_attempts: 30
+      min_crop_side: 32
+      other_box_min_visibility: 0.3
+      reference_min_visibility: 0.8
+      roi_area_fraction_bins:
+      - - 0.1
+        - 0.25
+        - 0.25
+      - - 0.25
+        - 0.5
+        - 0.35
+      - - 0.5
+        - 0.75
+        - 0.25
+      - - 0.75
+        - 1.0
+        - 0.15
   seed: 856245
-  task_name: best-imagenet-vid-roissd-mobilenet/20261001-phase2-preserved-forms
+  task_name: imagenet-vid-roissd-mobilenet-20261027/stage3
   train_bn_affine: true
   device: cpu
+  penalized_roissd: false
 audit_protocol:
-  purpose: Inference only; never use for retraining
-  canonical_manifest: final_experiments/audit/canonical_validation.jsonl
-  final_manifest: final_experiments/audit/val_manifest.jsonl
-  resize: squash 320x320 RGB OpenCV INTER_LINEAR; no letterbox
-  normalization: ImageNet mean/std for SSD; [0,1] for YOLO
-  confidence: 0.01
-  class_aware_nms_iou: 0.45
-  max_detections: 200
-  checkpoint_sha256: 29a861219da99dbde13ba0c8004f945f3ece316d62c332f729712e370e79cd45
+  purpose: User-selected checkpoint for all subsequent tests; inference only
+  selection_date: '2026-10-31'
+  selection_reason: Explicit user selection; no new comparative ranking claimed
+  checkpoint_sha256: 1a830c339f060905f1042e10e98906be0cab43fa94cb3867bfc683ad14adc804
+  canonical_manifest: final_experiments/01_audit/canonical_validation.jsonl
+  final_manifest: final_experiments/01_audit/val_manifest.jsonl
+  source_config: trained_models/imagenet-vid-roissd-mobilenet-20261027/stage3/mixed_sampling_eval.yaml

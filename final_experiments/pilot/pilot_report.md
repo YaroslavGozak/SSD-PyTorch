@@ -2,9 +2,9 @@
 
 ## Preparation status
 
-`BLOCKED_PIPELINE_ACCEPTANCE`. Completed stages: ['coordinate_smoke', 'cpu_cost_calibration', 'padding_sweep']. The full padding sweep is complete. CA/FULL-TECH pipeline runs have not been completed.
+`PIPELINE_ERROR`. Completed stages: ['coordinate_smoke', 'cpu_cost_calibration', 'padding_sweep']. The full padding sweep is complete. CA/FULL-TECH pipeline runs have not been completed.
 
-**Execution stop:** STOP: ROI-SSD-MobileNet p=96 retains only 0.68805965 of its full-frame mAP50 (required >=0.95), with GT coverage 0.95892857 (required >=0.98). No tested padding satisfies the predeclared criteria. CA/FULL-TECH were not run; Stage 4/Raspberry Pi remain on hold.
+**Execution stop:** Cost-aware merging requires measured effective tensor shapes
 
 ## Locked split
 
@@ -23,7 +23,7 @@ external test set. The original 5,064-frame source manifest remains unchanged.
 ## Selected models
 
 - YOLO26n checkpoint SHA-256: `5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027`.
-- ROI-SSD-MobileNet ROI checkpoint SHA-256: `7fa171ab669ac53f0d4f39586c08e61a60ca79fed98fd70874ef42bfd52356ce`.
+- ROI-SSD-MobileNet ROI checkpoint SHA-256: `1a830c339f060905f1042e10e98906be0cab43fa94cb3867bfc683ad14adc804`.
 - Exact source configuration snapshots are in [`configs/`](./configs/).
 - Inference thresholds follow the selected configs; YOLO output cap/NMS are locked
   to 200 detections and IoU 0.45. CPU threads are fixed to 8 (the i7-11700K core
@@ -47,9 +47,7 @@ Coordinate/class checks passed on 20 frames per model; 20 overlays per model wer
 | yolo26n | FF | 1.0000 | 1.0000 |
 | yolo26n | SEG | 1.0000 | 1.0000 |
 | roi_ssd_mobilenet | FF | 1.0000 | 1.0000 |
-| roi_ssd_mobilenet | SEG | 0.1410 | 0.3167 |
-
-**STOP warning:** MobileNet smoke segment/full-frame mAP50 ratio is 0.141. The sample is too small for a conclusion, but the full padding sweep must resolve this before CA/FULL-TECH is run.
+| roi_ssd_mobilenet | SEG | 0.9793 | 1.0000 |
 
 ## Measured full-frame and padding results
 
@@ -57,14 +55,22 @@ All entries use the full locked 320-frame CPU pilot; image loading and metric co
 
 | Model | Mode | Padding | mAP50 | mAP50:95 | Recall50 | GT coverage | Mean latency (ms) | FPS |
 |---|---|---:|---:|---:|---:|---:|---:|---:|
-| yolo26n | FF | 0 | 0.8186 | 0.5760 | 0.8432 | 1.0000 | 19.68 | 50.83 |
-| yolo26n | SEG | 32 | 0.7492 | 0.5184 | 0.8423 | 0.9946 | 74.30 | 13.46 |
-| yolo26n | SEG | 64 | 0.7977 | 0.5484 | 0.8582 | 1.0000 | 73.39 | 13.62 |
-| yolo26n | SEG | 96 | 0.8147 | 0.5574 | 0.8640 | 1.0000 | 75.88 | 13.18 |
-| roi_ssd_mobilenet | FF | 0 | 0.7391 | 0.4583 | 0.7549 | 1.0000 | 22.09 | 45.27 |
-| roi_ssd_mobilenet | SEG | 32 | 0.4484 | 0.2027 | 0.4971 | 0.8643 | 29.24 | 34.20 |
-| roi_ssd_mobilenet | SEG | 64 | 0.3894 | 0.1600 | 0.4924 | 0.9446 | 38.49 | 25.98 |
-| roi_ssd_mobilenet | SEG | 96 | 0.5086 | 0.1926 | 0.5893 | 0.9589 | 37.57 | 26.62 |
+| yolo26n | FF | 0 | 0.8186 | 0.5760 | 0.8432 | 1.0000 | 25.02 | 39.97 |
+| yolo26n | SEG | 32 | 0.7492 | 0.5184 | 0.8423 | 0.9946 | 94.50 | 10.58 |
+| yolo26n | SEG | 64 | 0.7977 | 0.5484 | 0.8582 | 1.0000 | 91.92 | 10.88 |
+| yolo26n | SEG | 96 | 0.8147 | 0.5574 | 0.8640 | 1.0000 | 93.99 | 10.64 |
+| yolo26n | SEG | 112 | 0.8206 | 0.5668 | 0.8632 | 1.0000 | 96.78 | 10.33 |
+| yolo26n | SEG | 128 | 0.8176 | 0.5704 | 0.8552 | 1.0000 | 86.63 | 11.54 |
+| yolo26n | SEG | 144 | 0.8170 | 0.5753 | 0.8503 | 1.0000 | 77.88 | 12.84 |
+| yolo26n | SEG | 160 | 0.8204 | 0.5761 | 0.8524 | 1.0000 | 72.90 | 13.72 |
+| roi_ssd_mobilenet | FF | 0 | 0.7410 | 0.4278 | 0.7605 | 1.0000 | 26.34 | 37.96 |
+| roi_ssd_mobilenet | SEG | 32 | 0.6125 | 0.3703 | 0.6237 | 0.8375 | 30.15 | 33.17 |
+| roi_ssd_mobilenet | SEG | 64 | 0.5951 | 0.3015 | 0.6267 | 0.9536 | 37.44 | 26.71 |
+| roi_ssd_mobilenet | SEG | 96 | 0.6753 | 0.3645 | 0.7033 | 0.9661 | 39.53 | 25.30 |
+| roi_ssd_mobilenet | SEG | 112 | 0.6860 | 0.3808 | 0.7139 | 0.9750 | 43.52 | 22.98 |
+| roi_ssd_mobilenet | SEG | 128 | 0.7262 | 0.4118 | 0.7473 | 0.9964 | 41.90 | 23.87 |
+| roi_ssd_mobilenet | SEG | 144 | 0.7334 | 0.4038 | 0.7580 | 0.9839 | 43.44 | 23.02 |
+| roi_ssd_mobilenet | SEG | 160 | 0.7137 | 0.4116 | 0.7438 | 0.9804 | 40.61 | 24.62 |
 
 Sources: [padding sweep](padding_sweep.csv), [frame-level metrics](frame_level_metrics.csv), [preflight](stage2_preflight.json).
 
@@ -72,23 +78,23 @@ Sources: [padding sweep](padding_sweep.csv), [frame-level metrics](frame_level_m
 
 | Model | Final padding | Criterion met | Eligible values |
 |---|---:|:---:|---|
-| yolo26n | 64 | True | [64, 96] |
-| roi_ssd_mobilenet | 96 | False | [] |
+| yolo26n | 64 | True | [64, 96, 112, 128, 144, 160] |
+| roi_ssd_mobilenet | 128 | True | [128, 144, 160] |
 
 ## Fresh CPU cost profiles
 
 | Model | K (ms) | c (ms/pixel) | tau (pixels) | R² | MAE (ms) | RMSE (ms) |
 |---|---:|---:|---:|---:|---:|---:|
-| yolo26n | 6.33534 | 0.000128433 | 49328.017 | 0.9850 | 0.3552 | 0.4896 |
-| roi_ssd_mobilenet | 8.09516 | 0.000154142 | 52517.638 | 0.9489 | 0.8915 | 1.1035 |
+| yolo26n | 8.55664 | 0.000160886 | 53184.555 | 0.9667 | 0.8062 | 0.9217 |
+| roi_ssd_mobilenet | 9.67932 | 0.000182902 | 52920.680 | 0.8926 | 1.6343 | 1.9583 |
 
 ## Frozen pilot parameters
 
 YOLO_PADDING_FINAL = 64
-ROISSD_MOBILENET_PADDING_FINAL = 96
-YOLO_CPU_K = 6.335343954672639
-YOLO_CPU_c = 0.0001284329742175617
-YOLO_CPU_tau = 49328.017148779494
-ROISSD_MOBILENET_CPU_K = 8.095160321754358
-ROISSD_MOBILENET_CPU_c = 0.0001541417439743473
-ROISSD_MOBILENET_CPU_tau = 52517.63807149851
+ROISSD_MOBILENET_PADDING_FINAL = 128
+YOLO_CPU_K = 8.556641460408814
+YOLO_CPU_c = 0.00016088583232070242
+YOLO_CPU_tau = 53184.55538926758
+ROISSD_MOBILENET_CPU_K = 9.67931572057076
+ROISSD_MOBILENET_CPU_c = 0.00018290232983781814
+ROISSD_MOBILENET_CPU_tau = 52920.68028413598

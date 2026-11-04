@@ -62,7 +62,7 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(matching(anchors,torch.empty(0,4)),([],[],[]))
 
     def test_crops_are_reproducible_despite_intervening_rng_calls(self):
-        row=json.loads((Path(__file__).parents[1]/'data/synthetic_example.json').read_text())
+        row={'sample_id': 0, 'gt': [[0, .5, .5, .3, .4]]}
         image=(np.arange(240*320*3).reshape(240,320,3)%256).astype('uint8')
         first=crop(image,row,(128,160),123)
         random.random();torch.rand(5)

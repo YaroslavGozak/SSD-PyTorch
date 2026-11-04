@@ -21,22 +21,14 @@ PILOT_VIDEO_COUNT = 32
 SEED = 20261112
 
 MODEL_CONFIGS = {
-    "yolo26n": ROOT / "final_experiments" / "configs" / "yolo26n.yaml",
-    "roi_ssd_mobilenet": (
-        ROOT / "outputs" / "batch_infer" / "best-imagenet-vid-roissd-mobilenet"
-        / "20260928-phase2-bn-freeze" / "best_map.pt" / "config.yaml"
-    ),
+    "yolo26n": ROOT / "final_experiments/configs/yolo26n.yaml",
+    "roi_ssd_mobilenet": ROOT / "final_experiments/configs/roi_ssd_mobilenet.yaml",
 }
+SELECTIONS = json.loads((ROOT / "final_experiments/01_audit/model_role_recommendations.json").read_text(encoding="utf-8"))
+_mobile = SELECTIONS["families"]["ROI-SSD-MobileNet"]
 MODEL_CHECKPOINTS = {
-    "yolo26n": (
-        ROOT / "trained_models" / "best-imagenet-vid-yolo" / "best.pt",
-        "5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027",
-    ),
-    "roi_ssd_mobilenet": (
-        ROOT / "trained_models" / "best-imagenet-vid-roissd-mobilenet"
-        / "20260928-phase2-bn-freeze" / "best_map.pt",
-        "7fa171ab669ac53f0d4f39586c08e61a60ca79fed98fd70874ef42bfd52356ce",
-    ),
+    "yolo26n": (ROOT / "trained_models/best-imagenet-vid-yolo/best.pt", "5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027"),
+    "roi_ssd_mobilenet": (ROOT / _mobile["roi_checkpoint"], _mobile["checkpoint_sha256"]),
 }
 
 
@@ -82,10 +74,15 @@ def validate_source_rows(rows, dataset_root: Path):
 
 
 def main():
+    global OUTPUT
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT)
     parser.add_argument("--pilot-video-count", type=int, default=PILOT_VIDEO_COUNT)
     parser.add_argument("--seed", type=int, default=SEED)
     args = parser.parse_args()
+    OUTPUT = args.output_dir.resolve()
+    if OUTPUT.exists() and any(OUTPUT.iterdir()):
+        raise ValueError(f"Preparation requires an empty output directory: {OUTPUT}")
     if args.pilot_video_count < 1:
         raise ValueError("--pilot-video-count must be positive")
 

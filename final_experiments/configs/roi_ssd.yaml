@@ -44,17 +44,16 @@ model_params:
   - 0.55
   - 0.725
   - 0.9
-  - 1.0
 train_params:
   acc_steps: 3
-  batch_size: 16
-  ckpt_name: best_map_stage2.pt
+  batch_size: 12
+  ckpt_name: best_map.pt
   dataset: yolo-imagenet-vid
   freeze_backbone_bn: false
   freeze_extra_bn: false
-  infer_conf_threshold: 0.01
+  infer_conf_threshold: 0.5
   log_steps: 100
-  lr: 0.001
+  lr: 0.0005
   lr_steps:
   - 40
   - 50
@@ -74,17 +73,63 @@ train_params:
   num_epochs_stage2: 20
   num_epochs_stage3: 20
   roi_mixed_stage: 3
-  seed: 20261002
-  task_name: imagenet-vid-roissd-20261002
+  roi_sampling:
+    stage2:
+      aspect_ratio_range:
+      - 0.5
+      - 2.0
+      center_jitter_ratio: 0.15
+      full_probability: 0.5
+      max_resample_attempts: 30
+      min_crop_side: 96
+      other_box_min_visibility: 0.3
+      reference_min_visibility: 0.9
+      roi_area_fraction_bins:
+      - - 0.1
+        - 0.25
+        - 0.05
+      - - 0.25
+        - 0.5
+        - 0.15
+      - - 0.5
+        - 0.75
+        - 0.35
+      - - 0.75
+        - 1.0
+        - 0.45
+    stage3:
+      aspect_ratio_range:
+      - 0.5
+      - 2.0
+      center_jitter_ratio: 0.25
+      full_probability: 0.3
+      max_resample_attempts: 30
+      min_crop_side: 32
+      other_box_min_visibility: 0.3
+      reference_min_visibility: 0.8
+      roi_area_fraction_bins:
+      - - 0.1
+        - 0.25
+        - 0.25
+      - - 0.25
+        - 0.5
+        - 0.35
+      - - 0.5
+        - 0.75
+        - 0.25
+      - - 0.75
+        - 1.0
+        - 0.15
+  seed: 20261028
+  task_name: imagenet-vid-roissd-20261028/stage3
   train_bn_affine: true
   device: cpu
+  penalized_roissd: false
 audit_protocol:
-  purpose: Inference only; never use for retraining
-  canonical_manifest: final_experiments/audit/canonical_validation.jsonl
-  final_manifest: final_experiments/audit/val_manifest.jsonl
-  resize: squash 320x320 RGB OpenCV INTER_LINEAR; no letterbox
-  normalization: ImageNet mean/std for SSD; [0,1] for YOLO
-  confidence: 0.01
-  class_aware_nms_iou: 0.45
-  max_detections: 200
-  checkpoint_sha256: e6f15e01032ce2f2d509f72f96efff6b0ed447d125b858fb099e44e4e23f79f3
+  purpose: User-selected checkpoint for all subsequent tests; inference only
+  selection_date: '2026-10-31'
+  selection_reason: Explicit user selection; no new comparative ranking claimed
+  checkpoint_sha256: f8f49132e08a7c5bf3744ce32e46e1b0fed6595aabd9cf59cf68699569503f76
+  canonical_manifest: final_experiments/01_audit/canonical_validation.jsonl
+  final_manifest: final_experiments/01_audit/val_manifest.jsonl
+  source_config: trained_models/imagenet-vid-roissd-20261028/stage3/mixed_sampling_eval.yaml

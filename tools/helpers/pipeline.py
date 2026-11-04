@@ -767,7 +767,7 @@ def process_frame(
             dst_size_wh=(model_w, model_h),
         )
         
-        if hasattr(merge_fn, "policy"):
+        if hasattr(merge_fn, "policy") or getattr(merge_fn, "requires_effective_shape", False):
             def effective_shape(rect):
                 original_roi = _convert_rois_between_spaces(
                     [rect], (model_w, model_h), (frame_w, frame_h))[0]

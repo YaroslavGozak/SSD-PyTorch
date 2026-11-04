@@ -7,6 +7,10 @@ import time
 import yaml
 import random
 import csv
+import json
+import math
+from collections import Counter
+from pathlib import Path
 from tools.helpers.evaluation_results import read_completed_results
 from typing import Any, Dict, List
 from tqdm import tqdm
@@ -19,7 +23,7 @@ from tools.helpers.pipeline import (
 )
 from tools.train_samplers.roi_mixed_sampling import RoiBatchProcessor, build_stage_mode_configs
 
-device = resolve_device(None)
+device = resolve_device(os.environ.get('SSD_INFERENCE_DEVICE'))
 print('Using device {}'.format(device))
 
 
@@ -457,6 +461,14 @@ def evaluation_resources(args, transform_name, resources):
         dataset.transforms = transform.transforms
     else:
         model, dataset, _, config = load_model_and_dataset(args, transform_name)
+        manifest_path = getattr(args, 'frame_manifest', None)
+        if manifest_path:
+            manifest = [json.loads(line) for line in Path(manifest_path).read_text(encoding='utf-8').splitlines() if line]
+            dataset_cfg = yaml.safe_load(Path(config['dataset_params']['yolo_dataset_yaml']).read_text(encoding='utf-8'))
+            root = Path(dataset_cfg['path']).resolve()
+            by_path = {Path(info['filename']).resolve(): info for info in dataset.images_info}
+            # Preserve the exact frozen order and fail on absent frames.
+            dataset.images_info = [by_path[(root / row['image']).resolve()] for row in manifest]
     if transform_name.startswith(('fixed_size_', 'fixed_size_yolo_')) and hasattr(dataset, 'im_size'):
         yolo=transform_name.startswith('fixed_size_yolo_')
         prefix='fixed_size_yolo_' if yolo else 'fixed_size_'
@@ -546,6 +558,23 @@ def _evaluate_single_transform(
     latencies_s: List[float] = []
     eligible_images=0
     total_images=0
+    audit = getattr(args, 'audit_details', False)
+    shape_counts = Counter()
+    requested_counts = Counter()
+    crop_counts = Counter()
+    trace_counts = Counter()
+    base_model = unwrap_model(model)
+    if audit and hasattr(base_model, 'record_execution_trace'):
+        base_model.record_execution_trace = True
+    network = base_model._yolo.model if hasattr(base_model, '_yolo') else base_model
+    def observe_shape(_module, inputs):
+        if device.type == 'cpu' and inputs[0].device.type != 'cpu':
+            raise RuntimeError('CPU evaluation reached a non-CPU network input')
+        shape = tuple(map(int, inputs[0].shape[-2:]))
+        if is_yolo and any(side % 32 for side in shape):
+            raise RuntimeError(f'YOLO network input is not stride-32 aligned: {shape}')
+        shape_counts[shape] += int(inputs[0].shape[0])
+    hook = network.register_forward_pre_hook(observe_shape) if audit else None
     for im_tensor, targets, filenames in tqdm(test_dataset):
         total_images+=len(targets)
         keep=[i for i,t in enumerate(targets) if t.get('fixed_crop_eligible',True)]
@@ -558,12 +587,21 @@ def _evaluate_single_transform(
         im_tensor = im_tensor.float().to(
             device, non_blocking=bool(getattr(args, 'pin_memory', False)))
         conf_threshold = config['train_params'].get('infer_conf_threshold', None)
+        if audit:
+            requested_counts[tuple(map(int, im_tensor.shape[-2:]))] += len(targets)
+            for target in targets:
+                if 'requested_crop_hw' in target:
+                    crop_counts[tuple(target['requested_crop_hw'])] += 1
         t0 = time.perf_counter()
         ssd_detections = run_detector(
             model, im_tensor, targets[0] if len(targets) == 1 else targets,
             model_name=model_name, conf_threshold=conf_threshold,
         )
         elapsed = time.perf_counter() - t0
+        if audit and hasattr(base_model, 'get_runtime_log'):
+            trace = base_model.get_runtime_log()
+            if trace:
+                trace_counts[json.dumps({k: trace[k] for k in ('selected_L_R', 'active_heads')}, sort_keys=True)] += len(targets)
         latencies_s.extend([elapsed / len(targets)] * len(targets))
         if len(ssd_detections) != len(targets):
             raise RuntimeError('Detector returned a different number of results than input images')
@@ -588,10 +626,35 @@ def _evaluate_single_transform(
             preds.append(pred_boxes)
             difficults.append(difficult_boxes)
 
+    if hook is not None:
+        hook.remove()
     mean_ap, all_aps, mean_recall, all_recalls = compute_map(preds, gts, method='area', difficult=difficults)
     mean_latency_s = float(np.mean(latencies_s)) if latencies_s else float('nan')
     mean_latency_ms = mean_latency_s * 1000.0 if not np.isnan(mean_latency_s) else float('nan')
     mean_fps = (1.0 / mean_latency_s) if (latencies_s and mean_latency_s > 0.0) else float('nan')
+    if audit:
+        # Reuse the same AP implementation at each IoU; no metric reimplementation.
+        mean_ap_95 = float(np.mean([mean_ap] + [compute_map(preds, gts, iou_threshold=float(iou),
+            method='area', difficult=difficults)[0] for iou in np.linspace(.5, .95, 10)[1:]]))
+        def shapes(counter):
+            return [{'h': h, 'w': w, 'frames': n} for (h, w), n in sorted(counter.items())]
+        payload = dict(evaluated_dataset=evaluated_dataset, evaluated_frames=eligible_images,
+            confidence_floor=float(config['train_params']['infer_conf_threshold']),
+            total_frames=total_images, applicable_frame_coverage=eligible_images / total_images if total_images else 0,
+            mAP50=mean_ap, mAP50_95=mean_ap_95, detector_recall=mean_recall,
+            mean_latency_ms=mean_latency_ms, fps=mean_fps,
+            requested_shapes=shapes(requested_counts), geometric_crop_shapes_before_stride_padding=shapes(crop_counts),
+            actual_input_shapes=shapes(shape_counts),
+            active_depth_heads=[dict(json.loads(k), frames=n) for k, n in trace_counts.items()],
+            device=str(device), torch_threads=torch.get_num_threads(),
+            torch_interop_threads=torch.get_num_interop_threads(), opencv_threads=cv2.getNumThreads())
+        if transform_name.startswith(('fixed_size_', 'fixed_size_yolo_')):
+            payload['requested_h'], payload['requested_w'] = map(int, transform_name.rsplit('_', 1)[1].split('x'))
+        payload['status'] = 'EVALUATED' if eligible_images else 'NO_APPLICABLE_FRAMES'
+        payload = {key: None if isinstance(value, float) and not math.isfinite(value) else value
+                   for key, value in payload.items()}
+        os.makedirs(model_task_path, exist_ok=True)
+        Path(model_task_path, evaluated_dataset + '_audit.json').write_text(json.dumps(payload, indent=2, allow_nan=False), encoding='utf-8')
 
     if transform_name.startswith(('fixed_size_', 'fixed_size_yolo_')):
         os.makedirs(model_task_path,exist_ok=True)
@@ -768,9 +831,22 @@ if __name__ == '__main__':
                         help='Fixed-size evaluations only; latency is amortized per image')
     parser.add_argument('--no-reuse', action='store_true',
                         help='Reload models and datasets for each sweep setting')
+    parser.add_argument('--device', default=None, help='Explicit inference device, e.g. cpu')
+    parser.add_argument('--cpu-threads', type=int, default=None)
+    parser.add_argument('--frame-manifest', default=None, help='Frozen ordered JSONL frame manifest')
+    parser.add_argument('--audit-details', action='store_true', help='Record actual network shapes and extended metrics')
     parser.add_argument('--eval-mode', dest='eval_mode', choices=['default', 'pad-loop', 'fixed-size-loop'],
                         default='default', type=str)
     args = parser.parse_args()
+    device = resolve_device(args.device or os.environ.get('SSD_INFERENCE_DEVICE'))
+    if args.device == 'cpu' and device.type != 'cpu':
+        raise RuntimeError('CPU inference was requested')
+    if args.cpu_threads is not None:
+        if args.cpu_threads < 1:
+            parser.error('--cpu-threads must be positive')
+        torch.set_num_threads(args.cpu_threads)
+        torch.set_num_interop_threads(1)
+        cv2.setNumThreads(1)
     if args.num_workers < 0 or args.eval_batch_size < 1:
         parser.error('workers must be nonnegative and batch size must be positive')
 

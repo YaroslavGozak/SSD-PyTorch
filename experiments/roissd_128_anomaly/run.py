@@ -52,7 +52,9 @@ def prepare(settings):
     lock_path=DATA/'selection_lock.json'
     if lock_path.exists():
         lock=json.loads(lock_path.read_text())
+        current = json.loads((ROOT/settings['role_manifest']).read_text())['families']
         for entry in lock['models']:
+            assert entry['checkpoint'] == current[entry['model_family']]['roi_checkpoint'], 'Selection changed; archive old diagnostic data/output before preparing a new run'
             assert sha(ROOT/entry['checkpoint'])==entry['checkpoint_sha256'], 'Locked checkpoint changed'
             assert sha(DATA/entry['config_snapshot'])==entry['config_sha256'], 'Locked config changed'
         assert sha(DATA/'subset.jsonl')==lock['subset_sha256'], 'Locked subset changed'

@@ -16,7 +16,7 @@ class FixedPaddingRoiCropYOLOTestTransform:
     Pipeline:
     1) Resize full image to im_size x im_size
     2) Crop around first object with fixed padding
-    3) Pad crop to a square stride multiple without resizing its contents
+    3) Pad each crop dimension independently to a stride multiple, without resizing
     """
 
     def __init__(
@@ -34,6 +34,8 @@ class FixedPaddingRoiCropYOLOTestTransform:
         self.pad_x = float(pad_x)
         self.pad_y = float(pad_y)
         self.stride = int(stride)
+        if self.stride < 1:
+            raise ValueError('stride must be positive')
         self.min_box_area = float(min_box_area)
         self.letterbox_fill = int(letterbox_fill)
         self.debug_dir = os.environ.get('YOLO_ROI_DEBUG_DIR', '').strip()
@@ -45,48 +47,6 @@ class FixedPaddingRoiCropYOLOTestTransform:
 
     def _labels_getter(self, transform_input):
         return (transform_input[1]["labels"], transform_input[1]["difficult"])
-
-    def _expand_to_square_within_image(self, x1, y1, x2, y2, image_w, image_h):
-        """Expand ROI to a square by using available image margins first."""
-        w = x2 - x1
-        h = y2 - y1
-        if w <= 0 or h <= 0 or abs(w - h) < 1e-6:
-            return x1, y1, x2, y2
-
-        if w > h:
-            need = w - h
-            add_top = min(y1, need / 2.0)
-            add_bottom = min(float(image_h) - y2, need - add_top)
-            rem = need - add_top - add_bottom
-            if rem > 0:
-                extra_top = min(y1 - add_top, rem)
-                add_top += max(0.0, extra_top)
-                rem -= max(0.0, extra_top)
-            if rem > 0:
-                extra_bottom = min(float(image_h) - y2 - add_bottom, rem)
-                add_bottom += max(0.0, extra_bottom)
-            y1 -= add_top
-            y2 += add_bottom
-        else:
-            need = h - w
-            add_left = min(x1, need / 2.0)
-            add_right = min(float(image_w) - x2, need - add_left)
-            rem = need - add_left - add_right
-            if rem > 0:
-                extra_left = min(x1 - add_left, rem)
-                add_left += max(0.0, extra_left)
-                rem -= max(0.0, extra_left)
-            if rem > 0:
-                extra_right = min(float(image_w) - x2 - add_right, rem)
-                add_right += max(0.0, extra_right)
-            x1 -= add_left
-            x2 += add_right
-
-        x1 = max(0.0, x1)
-        y1 = max(0.0, y1)
-        x2 = min(float(image_w), x2)
-        y2 = min(float(image_h), y2)
-        return x1, y1, x2, y2
 
     def _crop_first_with_padding(self, image, target):
         boxes = target.get("boxes", target.get("bboxes", None))
@@ -102,9 +62,6 @@ class FixedPaddingRoiCropYOLOTestTransform:
         ry1 = max(0.0, y1 - self.pad_y)
         rx2 = min(float(w), x2 + self.pad_x)
         ry2 = min(float(h), y2 + self.pad_y)
-
-        # Step 4 part A: extend crop toward square using available margins.
-        rx1, ry1, rx2, ry2 = self._expand_to_square_within_image(rx1, ry1, rx2, ry2, w, h)
 
         if rx2 <= rx1 or ry2 <= ry1:
             return image, target
@@ -150,14 +107,15 @@ class FixedPaddingRoiCropYOLOTestTransform:
 
         return image, new_target
 
-    def _pad_to_square(self, image, target):
+    def _pad_to_stride(self, image, target):
         _, h, w = F.get_dimensions(image)
-        side = max(self.stride, int(math.ceil(max(h, w) / self.stride) * self.stride))
-        if h == side and w == side:
+        out_h = max(self.stride, int(math.ceil(h / self.stride) * self.stride))
+        out_w = max(self.stride, int(math.ceil(w / self.stride) * self.stride))
+        if h == out_h and w == out_w:
             return image, target
 
-        pad_h = side - h
-        pad_w = side - w
+        pad_h = out_h - h
+        pad_w = out_w - w
         pad_top = pad_h // 2
         pad_bottom = pad_h - pad_top
         pad_left = pad_w // 2
@@ -180,7 +138,7 @@ class FixedPaddingRoiCropYOLOTestTransform:
         new_boxes = tv_tensors.BoundingBoxes(
             boxes_t,
             format=boxes.format,
-            canvas_size=(side, side),
+            canvas_size=(out_h, out_w),
         )
         if "boxes" in target:
             new_target["boxes"] = new_boxes
@@ -221,16 +179,17 @@ class FixedPaddingRoiCropYOLOTestTransform:
             f.write(f"shape_chw={tuple(img.shape)}\n")
             f.write(f"boxes_xyxy={boxes_t}\n")
 
-        if stage_name == '04_square':
+        if stage_name == '04_stride_aligned':
             self._debug_count += 1
 
     def _core(self, image, target):
         image, target = self.base_resize(image, target)
         self._save_debug_image('01_resize_square', image, target)
         image, target = self._crop_first_with_padding(image, target)
+        target = dict(target, requested_crop_hw=tuple(map(int, image.shape[-2:])))
         self._save_debug_image('02_crop_pad', image, target)
-        image, target = self._pad_to_square(image, target)
-        self._save_debug_image('04_square', image, target)
+        image, target = self._pad_to_stride(image, target)
+        self._save_debug_image('04_stride_aligned', image, target)
         return image, target
 
     def _get_transforms(self, imagenet_mean, imagenet_std):
