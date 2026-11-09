@@ -178,7 +178,7 @@ def main():
     write_json(OUT/'metadata.json',meta)
     assert pilot._sha256(pilot.ROOT/old_meta['checkpoint']['path'])==old_meta['checkpoint']['sha256']
     assert pilot._sha256(pilot.ROOT/old_meta['config']['config'])==old_meta['config']['config_sha256']
-    model,dataset,config,threshold=pilot._load_model('roi_ssd_mobilenet',torch.device('cpu'))
+    model,dataset,config,threshold=pilot._load_model('roi_ssd_mobilenet',torch.device('cpu'), evaluation_conf=.5)
     assert threshold==.5 and next(model.parameters()).device.type=='cpu'
     model.record_execution_trace=True
     state_digest=lambda:hashlib.sha256(b''.join(v.detach().cpu().numpy().tobytes() for v in model.state_dict().values())).hexdigest()

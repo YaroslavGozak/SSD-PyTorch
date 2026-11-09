@@ -330,7 +330,9 @@ def main():
             'git_revision': subprocess.check_output(['git','rev-parse','HEAD'], text=True).strip(),
             'source_sha256': sources, 'production_and_pilot_unchanged': False}
     write_json(OUT/'metadata.json', meta)
-    model, dataset, config, threshold = pilot._load_model('roi_ssd_mobilenet', torch.device('cpu'))
+    model, dataset, config, threshold = pilot._load_model(
+        'roi_ssd_mobilenet', torch.device('cpu'), evaluation_conf=.5
+    )
     assert threshold == .5
     model.record_execution_trace = True
     weight_hash = hashlib.sha256(b''.join(v.detach().cpu().numpy().tobytes() for v in model.state_dict().values())).hexdigest()

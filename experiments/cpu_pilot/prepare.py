@@ -19,16 +19,24 @@ SOURCE_MANIFEST = ROOT / "final_experiments" / "01_audit" / "val_manifest.jsonl"
 CANONICAL_MANIFEST = ROOT / "final_experiments" / "01_audit" / "canonical_validation.jsonl"
 PILOT_VIDEO_COUNT = 32
 SEED = 20261112
+CONFIDENCE_THRESHOLD = 0.01
+DEFAULT_MODELS = ("yolo26n", "roi_ssd_mobilenet")
 
 MODEL_CONFIGS = {
     "yolo26n": ROOT / "final_experiments/configs/yolo26n.yaml",
+    "roi_ssd": ROOT / "final_experiments/configs/roi_ssd.yaml",
     "roi_ssd_mobilenet": ROOT / "final_experiments/configs/roi_ssd_mobilenet.yaml",
 }
-SELECTIONS = json.loads((ROOT / "final_experiments/01_audit/model_role_recommendations.json").read_text(encoding="utf-8"))
-_mobile = SELECTIONS["families"]["ROI-SSD-MobileNet"]
 MODEL_CHECKPOINTS = {
     "yolo26n": (ROOT / "trained_models/best-imagenet-vid-yolo/best.pt", "5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027"),
-    "roi_ssd_mobilenet": (ROOT / _mobile["roi_checkpoint"], _mobile["checkpoint_sha256"]),
+    "roi_ssd": (
+        ROOT / "trained_models/imagenet-vid-roissd-20261028/stage3/best_map.pt",
+        "f8f49132e08a7c5bf3744ce32e46e1b0fed6595aabd9cf59cf68699569503f76",
+    ),
+    "roi_ssd_mobilenet": (
+        ROOT / "trained_models/imagenet-vid-roissd-mobilenet-20261027/stage3/best_map.pt",
+        "1a830c339f060905f1042e10e98906be0cab43fa94cb3867bfc683ad14adc804",
+    ),
 }
 
 
@@ -79,7 +87,9 @@ def main():
     parser.add_argument("--output-dir", type=Path, default=OUTPUT)
     parser.add_argument("--pilot-video-count", type=int, default=PILOT_VIDEO_COUNT)
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument("--models", nargs="+", choices=tuple(MODEL_CONFIGS), default=None)
     args = parser.parse_args()
+    model_names = tuple(dict.fromkeys(args.models or DEFAULT_MODELS))
     OUTPUT = args.output_dir.resolve()
     if OUTPUT.exists() and any(OUTPUT.iterdir()):
         raise ValueError(f"Preparation requires an empty output directory: {OUTPUT}")
@@ -116,9 +126,17 @@ def main():
     configs_dir = OUTPUT / "configs"
     configs_dir.mkdir(exist_ok=True)
     copied_configs = {}
-    for name, source in MODEL_CONFIGS.items():
+    for name in model_names:
+        source = MODEL_CONFIGS[name]
         if not source.is_file():
             raise FileNotFoundError(f"Required selected model config is missing: {source}")
+        source_config = yaml.safe_load(source.read_text(encoding="utf-8"))
+        configured_threshold = float(source_config["train_params"]["infer_conf_threshold"])
+        if configured_threshold != CONFIDENCE_THRESHOLD:
+            raise ValueError(
+                f"{name} must use Stage 3 evaluation_conf {CONFIDENCE_THRESHOLD}; "
+                f"configured value is {configured_threshold}"
+            )
         destination = configs_dir / f"{name}.yaml"
         shutil.copy2(source, destination)
         copied_configs[name] = {
@@ -127,7 +145,8 @@ def main():
             "sha256": sha256_file(destination),
         }
     checkpoints = {}
-    for name, (checkpoint, expected_hash) in MODEL_CHECKPOINTS.items():
+    for name in model_names:
+        checkpoint, expected_hash = MODEL_CHECKPOINTS[name]
         if not checkpoint.is_file():
             raise FileNotFoundError(f"Selected checkpoint is missing: {checkpoint}")
         actual_hash = sha256_file(checkpoint)
@@ -215,11 +234,12 @@ external test set. The original 5,064-frame source manifest remains unchanged.
 
 ## Selected models
 
-- YOLO26n checkpoint SHA-256: `{checkpoints['yolo26n']['sha256']}`.
-- ROI-SSD-MobileNet ROI checkpoint SHA-256: `{checkpoints['roi_ssd_mobilenet']['sha256']}`.
+{chr(10).join(f"- {name} checkpoint SHA-256: `{checkpoints[name]['sha256']}`." for name in model_names)}
 - Exact source configuration snapshots are in [`configs/`](./configs/).
-- Inference thresholds follow the selected configs; YOLO output cap/NMS are locked
-  to 200 detections and IoU 0.45. CPU threads are fixed to 8 (the i7-11700K core
+- Selected models use default evaluation_conf
+  `{CONFIDENCE_THRESHOLD}`; choose per-model operational_conf with `--stage confidence`.
+  YOLO output cap/NMS are locked to 200 detections and
+  IoU 0.45. CPU threads are fixed to 8 (the i7-11700K core
   count); OpenCV threads to 1.
 
 ## Smoke check
@@ -229,10 +249,12 @@ The 20-frame CPU coordinate smoke is run separately. Its outcome is recorded in
 
 ## Remaining protocol
 
-1. Run `python -m experiments.cpu_pilot.run_pilot --stage padding`.
-2. Run `python -m experiments.cpu_pilot.run_pilot --stage cost`.
-3. Review the locked padding decision and fresh CPU cost fits.
-4. Run `python -m experiments.cpu_pilot.run_pilot --stage pipeline`.
+1. Run `python -m experiments.cpu_pilot.run_pilot --stage confidence`.
+2. Run `python -m experiments.cpu_pilot.run_pilot --stage smoke --max-frames 20`.
+3. Run `python -m experiments.cpu_pilot.run_pilot --stage padding`.
+4. Run `python -m experiments.cpu_pilot.run_pilot --stage cost`.
+5. Review the locked padding decision and fresh CPU cost fits.
+6. Run `python -m experiments.cpu_pilot.run_pilot --stage pipeline`.
 
 No padding decision is final until the full sweep passes the predeclared accuracy/coverage rule.
 CPU cost coefficients, when measured, remain preliminary until the pipeline acceptance checks pass.

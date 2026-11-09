@@ -213,6 +213,7 @@ def load_dataset(config, split: str = 'test', transform_name: Optional[str] = No
             filter_voc_overlap=should_filter_imagenet_vid_to_voc_overlap(train_config, dataset_config, dataset_name),
         )
     elif dataset_name == 'yolo-imagenet-vid':
+        print('Loading YOLO ImageNet VID dataset with config: {}'.format(dataset_config))
         dataset = YoloImageNetVidDataset(
             split=split,
             yolo_dataset_yaml=dataset_config['yolo_dataset_yaml'],
@@ -675,6 +676,7 @@ def apply_tracker_input_dropout(
 @dataclass
 class FrameResult:
     final_detections:  List[Dict[str, Any]]  = field(default_factory=list)
+    evaluation_detections: List[Dict[str, Any]] = field(default_factory=list)
     dropped_tracker_detections: List[Dict[str, Any]] = field(default_factory=list)
     rois_used:         List[List[int]]        = field(default_factory=list)
     next_frame_rois:   List[List[int]]        = field(default_factory=list)
@@ -687,6 +689,10 @@ class FrameResult:
     tracker_latency_s: float = 0.0
     merge_count: int = 0
     merge_decisions: List[Dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def operational_detections(self):
+        return self.final_detections
 
 
 # ---------------------------------------------------------------------------
@@ -704,6 +710,7 @@ def process_frame(
     key_frame_interval: int,
     im_size_hw: Tuple[int, int],
     conf_threshold: float,
+    evaluation_conf_threshold: Optional[float] = None,
     nms_iou: float,
     merge_fn: Callable = None,        # defaults to greedy
     merge_tau: float = 150000.0,
@@ -715,12 +722,16 @@ def process_frame(
     Run one frame through the full pipeline:
       1. Decide full-frame vs ROI mode.
       2. Run model inference (optionally per-ROI crop).
-      3. NMS + confidence filter.
-      4. Update tracker.
+      3. Apply shared NMS, then split evaluation and operational detections.
+      4. Update the tracker from operational detections only.
     Returns a FrameResult with detections, ROI metadata, and timing.
     """
     if merge_fn is None:
         merge_fn = MERGE_STRATEGIES["none"]
+    if evaluation_conf_threshold is None:
+        evaluation_conf_threshold = conf_threshold
+    if evaluation_conf_threshold > conf_threshold:
+        raise ValueError("evaluation_conf_threshold must not exceed operational conf_threshold")
     if roi_grid is None:
         roi_grid = _model_roi_grid(model)
 
@@ -860,9 +871,21 @@ def process_frame(
     tracker_result = tracker.update(tracker_input, frame_shape=(frame_h, frame_w))
     tracker_latency_s = time.perf_counter() - tracker_start
     latency_s = time.perf_counter() - t0
+    evaluation_detections = []
+    for det in merged:
+        if float(det['confidence']) < evaluation_conf_threshold:
+            continue
+        c = clip_bbox(det['bbox'], frame_w, frame_h)
+        if c is not None:
+            evaluation_detections.append({
+                'bbox': c,
+                'class': det['class'],
+                'confidence': float(det['confidence']),
+            })
 
     return FrameResult(
         final_detections=final_detections,
+        evaluation_detections=evaluation_detections,
         dropped_tracker_detections=dropped_tracker_detections,
         rois_used=rois_used,
         next_frame_rois=[r['roi'] for r in tracker_result['rois']],

@@ -9,12 +9,19 @@
 - `final_experiments/FINAL_EXPERIMENTS_MANIFEST.md`
 - `final_experiments/diagnostics_128/diagnostic_report.md`
 
-Для фінального pipeline використовувати:
+Для основного Stage 3 pilot використовувати:
 
 - selected YOLO26n;
 - selected ROI-SSD-MobileNet.
 
-ROI-SSD без MobileNet у цьому етапі не є обов'язковою: він використовується в етапі 2 для діагностики архітектурної поведінки.
+ROI-SSD з VGG16 є optional окремим CPU experiment. Щоб не затримувати основний
+pilot, запускати його в окремому output directory:
+
+```powershell
+python -m experiments.cpu_pilot.prepare --output-dir final_experiments\pilot_roi_ssd_vgg16 --models roi_ssd
+python -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_roi_ssd_vgg16 --models roi_ssd --stage confidence
+python -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_roi_ssd_vgg16 --models roi_ssd --stage smoke --max-frames 20
+```
 
 ## Мета
 
@@ -76,6 +83,29 @@ ROI-SSD без MobileNet у цьому етапі не є обов'язково�
 - periodic full-frame interval = `10`;
 - при відсутності придатних сегментів → full frame.
 
+`evaluation_conf` має default `0.01` і є низьким floor для AP/Recall evaluation.
+`operational_conf` визначається окремо для кожної моделі через `--stage
+confidence` (maximum micro F1@IoU=0.5; ties: higher recall, then lower threshold).
+Candidate grid: `0.01`, далі `0.05`–`0.95` з кроком `0.05`. Його не можна
+вважати рівним `0.5` за замовчуванням. `--stage all` не вибирає цей поріг і
+потребує frozen confidence results або явний `--operational-conf`.
+
+Smoke, padding, cost і pipeline використовують обидва thresholds одночасно:
+evaluation branch бачить detections від `evaluation_conf`, а лише detections
+від `operational_conf` оновлюють tracker і формують segments наступного кадру.
+Padding таким чином оцінює quality на тій самій operational segmentation
+logic, яку використовує pipeline. `--evaluation-conf` дозволяє змінити floor;
+`--operational-conf` є явним запусковим override. Без override stages вимагають
+per-model frozen result від confidence stage. Для `confidence` evaluation floor
+залишається `0.01`.
+
+Один detector invocation і shared NMS output подають обидві гілки. Оцінювальне
+threshold filtering і metric calculation виконуються поза process-frame timing.
+Cost calibration вимірює той самий shared detector call, зафіксований як
+`shared_detector_call_at_evaluation_floor`; обидва thresholds записуються у
+cost metadata. Frame/summary metrics містять `evaluation_conf`,
+`operational_conf`, evaluation та operational detection counts.
+
 ## 3. Development sweep padding
 
 Для кожної моделі окремо:
@@ -92,8 +122,11 @@ ROI-SSD без MobileNet у цьому етапі не є обов'язково�
 - `p = 128`;
 - `p = 144`;
 - `p = 160`;
+- `p = 192`;
+- `p = 224`;
 
-Якщо для ROI-SSD-MobileNet після етапу 2 є обґрунтована причина додати ще один padding — дозволено, але це треба пояснити в pilot report.
+Для основного pilot використовувати однаковий заздалегідь визначений список
+padding. VGG16 experiment використовує цей самий список окремо.
 
 ### Режим для padding sweep
 
@@ -124,6 +157,7 @@ gt_roi_coverage_mean >= 0.98
 Зберегти обрані значення як:
 
 - `YOLO_PADDING_FINAL`
+- `ROISSD_PADDING_FINAL`
 - `ROISSD_MOBILENET_PADDING_FINAL`
 
 у `pilot_report.md`.
@@ -164,7 +198,7 @@ Cost model має отримувати **фактичний effective input shap
 - letterbox/padding;
 - actual tensor `H×W`.
 
-Для ROI-SSD-MobileNet:
+Для ROI-SSD-MobileNet (і окремого VGG16 experiment):
 
 - використовувати actual variable input shape;
 - якщо preprocessing змінює shape — логувати requested і actual окремо.
@@ -314,6 +348,7 @@ Cost model має отримувати **фактичний effective input shap
 
 На CPU:
 
+- записати CPU model, physical/logical core counts, PyTorch/OpenCV thread counts, OS, Python і PyTorch версії;
 - зафіксувати number of threads;
 - зафіксувати OpenCV threads;
 - однакові environment variables;
@@ -360,24 +395,31 @@ Cost model має отримувати **фактичний effective input shap
 
 ```text
 YOLO_PADDING_FINAL =
+ROISSD_PADDING_FINAL =
 ROISSD_MOBILENET_PADDING_FINAL =
 
 YOLO_CPU_K =
 YOLO_CPU_c =
 YOLO_CPU_tau =
 
+ROISSD_CPU_K =
+ROISSD_CPU_c =
+ROISSD_CPU_tau =
+
 ROISSD_MOBILENET_CPU_K =
 ROISSD_MOBILENET_CPU_c =
 ROISSD_MOBILENET_CPU_tau =
 ```
 
-і relative links до final configs.
+і relative links до final configs: `final_experiments/configs/yolo26n.yaml`,
+`final_experiments/configs/roi_ssd.yaml` та
+`final_experiments/configs/roi_ssd_mobilenet.yaml`.
 
 ## STOP CONDITIONS
 
 Не переходити до Raspberry Pi / final benchmark, якщо:
 
-- ROI-SSD-MobileNet segment inference має некоректні global coordinates;
+- ROI-SSD-MobileNet має некоректні global coordinates;
 - class IDs не збігаються;
 - mAP collapse не пояснений;
 - FULL-TECH не відрізняється логічно від CA;

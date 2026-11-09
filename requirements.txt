@@ -7,6 +7,7 @@ PyYAML==6.0.1
 torch==2.3.1
 torchvision==0.18.1
 tqdm==4.66.4
-ultralytics==8.3.77
+ultralytics==8.4.60
 scikit-image==0.17.2
 lap==0.4.0
+psutil
