@@ -59,21 +59,35 @@ class PilotHelperTests(unittest.TestCase):
         self.assertEqual(result.merge_decisions[0]["first_shape_hw"], (64, 64))
         self.assertEqual(result.merge_count, 1)
 
-    def test_pipeline_stops_when_either_model_fails_coverage_despite_passing_accuracy(self):
+    def test_pipeline_stops_when_joint_calibration_gate_failed(self):
         for rejected in MODEL_NAMES:
-            with self.subTest(model=rejected):
+            with self.subTest(model=rejected), tempfile.TemporaryDirectory() as directory:
+                pilot_dir = Path(directory)
+                (pilot_dir / "configs").mkdir()
+                for name in MODEL_NAMES:
+                    (pilot_dir / "configs" / f"{name}.yaml").write_text(
+                        json.dumps({"train_params": {}}), encoding="utf-8"
+                    )
+                (pilot_dir / "cost_profiles_cpu.json").write_text("{}", encoding="utf-8")
                 decisions = {
-                    name: {"criterion_met": name != rejected, "accuracy_gate_passed": True}
-                    for name in MODEL_NAMES
+                    name: {
+                        "status": "CALIBRATION_GATE_FAILED"
+                    }
+                    for name in (rejected,)
                 }
                 with patch("pathlib.Path.is_file", return_value=True), patch(
-                    "pathlib.Path.read_text", side_effect=[json.dumps(decisions), "{}"]
+                    "pathlib.Path.read_text", return_value="{}"
+                ), patch(
+                    "experiments.cpu_pilot.calibration.load_selected_for_models",
+                    return_value=decisions,
+                ), patch("experiments.cpu_pilot.run_pilot.PILOT_DIR", pilot_dir), patch(
+                    "experiments.cpu_pilot.run_pilot.MODEL_NAMES", (rejected,)
                 ), patch("experiments.cpu_pilot.run_pilot._load_model") as load:
                     with self.assertRaisesRegex(RuntimeError, "STOP: " + rejected):
                         run_pipeline_modes({}, [], torch.device("cpu"))
                     load.assert_not_called()
 
-    def test_pipeline_uses_operational_override_and_separate_evaluation_floor(self):
+    def test_pipeline_uses_provenance_locked_joint_calibration(self):
         operational_conf = 0.35
         with tempfile.TemporaryDirectory() as directory:
             pilot_dir = Path(directory)
@@ -82,21 +96,29 @@ class PilotHelperTests(unittest.TestCase):
                 json.dumps({"train_params": {"infer_conf_threshold": CONFIDENCE_THRESHOLD}}),
                 encoding="utf-8",
             )
-            (pilot_dir / "padding_decision.json").write_text(
-                json.dumps({
-                    "yolo26n": {
-                        "criterion_met": True, "padding_final": 64,
-                        "evaluation_conf": CONFIDENCE_THRESHOLD,
-                        "operational_conf": operational_conf,
-                    },
-                }),
-                encoding="utf-8",
-            )
+            runtime = {"cpu_model": "test cpu"}
+            selected = {
+                "status": "CALIBRATION_PASS",
+                "operational_conf": operational_conf,
+                "padding": 64,
+                "evaluation_conf": CONFIDENCE_THRESHOLD,
+                "checkpoint_sha256": "checkpoint",
+                "config_sha256": "config",
+                "pilot_manifest_sha256": "manifest",
+                "implementation_sha256": {"run_pilot.py": "impl"},
+            }
             (pilot_dir / "cost_profiles_cpu.json").write_text(
                 json.dumps({"yolo26n": {
                     "K_ms": 1.0, "c_ms_per_pixel": 0.01,
                     "evaluation_conf": CONFIDENCE_THRESHOLD,
                     "operational_conf": operational_conf,
+                    "padding": 64,
+                    "checkpoint_sha256": "checkpoint",
+                    "config_sha256": "config",
+                    "pilot_manifest_sha256": "manifest",
+                    "implementation_sha256": {"run_pilot.py": "impl"},
+                    "timing_mode": "inference_only_at_evaluation_conf",
+                    "runtime_environment": runtime,
                 }}),
                 encoding="utf-8",
             )
@@ -106,9 +128,14 @@ class PilotHelperTests(unittest.TestCase):
             with (
                 patch("experiments.cpu_pilot.run_pilot.PILOT_DIR", pilot_dir),
                 patch("experiments.cpu_pilot.run_pilot.MODEL_NAMES", ("yolo26n",)),
-                patch("experiments.cpu_pilot.run_pilot._load_model", return_value=(
-                    model, dataset, config, CONFIDENCE_THRESHOLD
-                )) as load_model,
+            patch("experiments.cpu_pilot.run_pilot._runtime_environment", return_value=runtime),
+            patch(
+                "experiments.cpu_pilot.calibration.load_selected_for_models",
+                return_value={"yolo26n": selected},
+            ),
+            patch("experiments.cpu_pilot.run_pilot._load_model", return_value=(
+                model, dataset, config, CONFIDENCE_THRESHOLD
+            )) as load_model,
                 patch("experiments.cpu_pilot.run_pilot._dataset_indices", return_value=[]),
                 patch("experiments.cpu_pilot.run_pilot._dataset_root", return_value=Path(".")),
                 patch("experiments.cpu_pilot.run_pilot._run_pipeline", return_value=(
@@ -127,7 +154,6 @@ class PilotHelperTests(unittest.TestCase):
                 torch.device("cpu"),
                 CONFIDENCE_THRESHOLD,
             )
-            self.assertEqual(config["train_params"]["infer_conf_threshold"], CONFIDENCE_THRESHOLD)
             self.assertEqual(run_pipeline.call_count, 4)
             self.assertTrue(all(call.args[4] == CONFIDENCE_THRESHOLD for call in run_pipeline.call_args_list))
             self.assertTrue(all(call.args[5] == operational_conf for call in run_pipeline.call_args_list))

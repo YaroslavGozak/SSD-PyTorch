@@ -1,0 +1,100 @@
+dataset_params:
+  yolo_dataset_yaml: D:\Repositories\Other\imagenet_vid_yolo_sampled\imagenet_vid.yaml
+  filter_voc_overlap: false
+  transform_name: ssd
+  num_classes: 30
+  im_size: 320
+train_params:
+  dataset: yolo-imagenet-vid
+  infer_conf_threshold: 0.01
+  model: yolo
+  task_name: best-imagenet-vid-yolo
+  yolo_weights: trained_models/best-imagenet-vid-yolo/best.pt
+  model_label_space: yolo-imagenet-vid
+  device: cpu
+  yolo_use_predict_api: true
+audit_protocol:
+  purpose: Inference only; never use for retraining
+  canonical_manifest: final_experiments/audit/canonical_validation.jsonl
+  final_manifest: final_experiments/audit/val_manifest.jsonl
+  resize: squash 320x320 RGB OpenCV INTER_LINEAR; no letterbox
+  normalization: ImageNet mean/std for SSD; [0,1] for YOLO
+  confidence: 0.01
+  class_aware_nms_iou: 0.45
+  max_detections: 200
+  checkpoint_sha256: 5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027
+diagnostic_protocol:
+  purpose: Isolated YOLO26n operational-confidence x static-padding diagnostic
+  evaluation_conf: 0.01
+  operational_confs:
+  - 0.01
+  - 0.05
+  - 0.1
+  - 0.2
+  - 0.35
+  paddings:
+  - 64
+  - 96
+  - 128
+  - 160
+  - 192
+  - 224
+  mode: SEG
+  localization: previous operational detections via StaticPaddingTracker
+  hold_last_for_frames: 0
+  periodic_full_frame_interval: 10
+  merge: disabled
+  device: cpu
+  pilot:
+    manifest_path: final_experiments\pilot_dual_conf_new\pilot_manifest.txt
+    manifest_sha256: 817f5b145b774dc91ee0fa8d271e02c11d71d70bb50ff13082a0ba9487aa63cb
+    frame_count: 320
+    video_count: 32
+    ground_truth_count: 560
+    config_path: final_experiments\pilot_dual_conf_new\configs\yolo26n.yaml
+    config_sha256: 2605281bb1fb0cf7d087f65642134322cda9d5b35a89903a40859792f210130e
+    checkpoint_path: trained_models\best-imagenet-vid-yolo\best.pt
+    checkpoint_sha256: 5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027
+    dataset_yaml_path: D:\Repositories\Other\imagenet_vid_yolo_sampled\imagenet_vid.yaml
+    dataset_yaml_sha256: 5496fbf035ffc1ab5ce59b4799a31b375e17ddd4f6433febb1ba7ba6954878c2
+  class_list:
+  - airplane
+  - antelope
+  - bear
+  - bicycle
+  - bird
+  - bus
+  - car
+  - cattle
+  - dog
+  - domestic_cat
+  - elephant
+  - fox
+  - giant_panda
+  - hamster
+  - horse
+  - lion
+  - lizard
+  - monkey
+  - motorcycle
+  - rabbit
+  - red_panda
+  - sheep
+  - snake
+  - squirrel
+  - tiger
+  - train
+  - turtle
+  - watercraft
+  - whale
+  - zebra
+  gates:
+    mAP50_retention_min: 0.95
+    gt_roi_coverage_mean_min: 0.98
+  recommendation:
+    primary: minimum tensor_area_ratio_mean among gate-passing configurations
+    secondary:
+    - candidate_segments_per_frame
+    - smaller padding
+    - higher operational_conf
+    near_best_tensor_area_relative_tolerance: 0.01

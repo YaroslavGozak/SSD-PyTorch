@@ -215,8 +215,8 @@ def main():
 
 ## Preparation status
 
-`PREPARED_NOT_BENCHMARKED`. The full padding sweep, fresh CPU cost calibration,
-and FF/SEG/CA/FULL-TECH runs have not been executed.
+`PREPARED_NOT_BENCHMARKED`. Joint confidence/padding calibration, fresh CPU
+cost calibration, and FF/SEG/CA/FULL-TECH runs have not been executed.
 
 ## Locked split
 
@@ -236,11 +236,14 @@ external test set. The original 5,064-frame source manifest remains unchanged.
 
 {chr(10).join(f"- {name} checkpoint SHA-256: `{checkpoints[name]['sha256']}`." for name in model_names)}
 - Exact source configuration snapshots are in [`configs/`](./configs/).
-- Selected models use default evaluation_conf
-  `{CONFIDENCE_THRESHOLD}`; choose per-model operational_conf with `--stage confidence`.
-  YOLO output cap/NMS are locked to 200 detections and
-  IoU 0.45. CPU threads are fixed to 8 (the i7-11700K core
-  count); OpenCV threads to 1.
+- `evaluation_conf` is fixed at `{CONFIDENCE_THRESHOLD}` for final Stage 3 quality evaluation.
+- Final `operational_conf` and padding are selected jointly by `--stage calibration`
+  using each model's config-defined grids and fixed quality gates.
+- `--stage confidence` is an optional detector-level diagnostic; its F1-optimal
+  threshold does not automatically become the final operational threshold.
+- YOLO output cap/NMS are locked to 200 detections and IoU 0.45.
+- CPU thread counts are fixed by the runner, and actual CPU/runtime details are
+  detected and recorded automatically.
 
 ## Smoke check
 
@@ -249,15 +252,14 @@ The 20-frame CPU coordinate smoke is run separately. Its outcome is recorded in
 
 ## Remaining protocol
 
-1. Run `python -m experiments.cpu_pilot.run_pilot --stage confidence`.
-2. Run `python -m experiments.cpu_pilot.run_pilot --stage smoke --max-frames 20`.
-3. Run `python -m experiments.cpu_pilot.run_pilot --stage padding`.
-4. Run `python -m experiments.cpu_pilot.run_pilot --stage cost`.
-5. Review the locked padding decision and fresh CPU cost fits.
-6. Run `python -m experiments.cpu_pilot.run_pilot --stage pipeline`.
+1. Run `--stage smoke --max-frames 20 --operational-conf 0.10` and review coordinate checks.
+2. Run `--stage calibration` to jointly select operational confidence and padding.
+3. If both model gates pass, run `--stage cost` for fresh cost coefficients on this CPU.
+4. Run `--stage pipeline` for FF/SEG/CA/FULL-TECH, or use `--stage all` after successful smoke.
 
-No padding decision is final until the full sweep passes the predeclared accuracy/coverage rule.
-CPU cost coefficients, when measured, remain preliminary until the pipeline acceptance checks pass.
+Calibration decisions are frozen only when both mAP50-retention and GT-coverage
+gates pass. If any selected model fails calibration, cost and pipeline are blocked.
+Cost coefficients remain tied to the selected configuration and detected CPU environment.
 """
     (OUTPUT / "pilot_report.md").write_text(report, encoding="utf-8")
     print(json.dumps(metadata["selection"], indent=2))

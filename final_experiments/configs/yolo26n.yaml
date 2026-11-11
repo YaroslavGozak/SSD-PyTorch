@@ -1,5 +1,5 @@
 dataset_params:
-  yolo_dataset_yaml: D:\ImageNet-VID\ImageNet\data\ImageNet2015\imagenet_vid_yolo_sampled\imagenet_vid.yaml
+  yolo_dataset_yaml: D:\Repositories\Other\imagenet_vid_yolo_sampled\imagenet_vid.yaml
   filter_voc_overlap: false
   transform_name: ssd
   num_classes: 30
@@ -23,3 +23,6 @@ audit_protocol:
   class_aware_nms_iou: 0.45
   max_detections: 200
   checkpoint_sha256: 5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027
+calibration:
+  operational_conf_values: [0.01, 0.05, 0.10, 0.20, 0.35]
+  padding_values: [64, 96, 128, 160, 192, 224]

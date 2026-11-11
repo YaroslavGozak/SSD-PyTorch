@@ -1,0 +1,25 @@
+dataset_params:
+  yolo_dataset_yaml: D:\ImageNet-VID\ImageNet\data\ImageNet2015\imagenet_vid_yolo_sampled\imagenet_vid.yaml
+  filter_voc_overlap: false
+  transform_name: ssd
+  num_classes: 30
+  im_size: 320
+train_params:
+  dataset: yolo-imagenet-vid
+  infer_conf_threshold: 0.01
+  model: yolo
+  task_name: best-imagenet-vid-yolo
+  yolo_weights: trained_models/best-imagenet-vid-yolo/best.pt
+  model_label_space: yolo-imagenet-vid
+  device: cpu
+  yolo_use_predict_api: true
+audit_protocol:
+  purpose: Inference only; never use for retraining
+  canonical_manifest: final_experiments/audit/canonical_validation.jsonl
+  final_manifest: final_experiments/audit/val_manifest.jsonl
+  resize: squash 320x320 RGB OpenCV INTER_LINEAR; no letterbox
+  normalization: ImageNet mean/std for SSD; [0,1] for YOLO
+  confidence: 0.01
+  class_aware_nms_iou: 0.45
+  max_detections: 200
+  checkpoint_sha256: 5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027

@@ -3,7 +3,7 @@ dataset_params:
   im_size: 320
   num_classes: 31
   transform_name: ssd
-  yolo_dataset_yaml: D:\ImageNet-VID\ImageNet\data\ImageNet2015\imagenet_vid_yolo_sampled\imagenet_vid.yaml
+  yolo_dataset_yaml: D:\Repositories\Other\imagenet_vid_yolo_sampled\imagenet_vid.yaml
 model_params:
   aspect_ratios:
   - - 1.0
@@ -51,7 +51,7 @@ train_params:
   dataset: yolo-imagenet-vid
   freeze_backbone_bn: false
   freeze_extra_bn: false
-  infer_conf_threshold: 0.5
+  infer_conf_threshold: 0.01
   log_steps: 100
   lr: 0.0005
   lr_steps:
@@ -133,3 +133,6 @@ audit_protocol:
   canonical_manifest: final_experiments/01_audit/canonical_validation.jsonl
   final_manifest: final_experiments/01_audit/val_manifest.jsonl
   source_config: trained_models/imagenet-vid-roissd-20261028/stage3/mixed_sampling_eval.yaml
+calibration:
+  operational_conf_values: [0.01, 0.05, 0.10, 0.20, 0.25, 0.35, 0.50]
+  padding_values: [64, 96, 112, 128, 144, 160, 192, 224]

@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -58,6 +59,19 @@ CALIBRATION_SHAPES = (
 
 def _sha256(path):
     return file_sha256(str(path))
+
+
+def _implementation_hashes():
+    paths = (
+        ROOT / "experiments" / "cpu_pilot" / "run_pilot.py",
+        ROOT / "experiments" / "cpu_pilot" / "calibration.py",
+        ROOT / "tools" / "helpers" / "pipeline.py",
+        ROOT / "tools" / "trackers" / "static_padding_tracker.py",
+    )
+    return {
+        path.relative_to(ROOT).as_posix(): _sha256(path)
+        for path in paths
+    }
 
 
 def _read_tsv_manifest(path):
@@ -120,10 +134,16 @@ def _runtime_environment():
     }
 
 
-def _load_model(model_name, device, evaluation_conf=DEFAULT_EVALUATION_CONF):
+def _load_model(
+    model_name, device, evaluation_conf=DEFAULT_EVALUATION_CONF, config_path=None
+):
     if device.type != "cpu":
         raise ValueError("The CPU pilot requires device=cpu")
-    snapshot = PILOT_DIR / "configs" / f"{model_name}.yaml"
+    snapshot = (
+        Path(config_path)
+        if config_path is not None
+        else PILOT_DIR / "configs" / f"{model_name}.yaml"
+    )
     print(f"Loading {model_name} model from {snapshot}", flush=True)
     args = SimpleNamespace(config_path=str(snapshot))
     model, dataset, _loader, config = load_model_and_dataset(device, args)
@@ -590,6 +610,7 @@ def _run_pipeline(model_name, model, dataset, config, evaluation_conf, operation
                     "image": str(image_path),
                     "input_mode": "full" if result.use_full_frame else "segments",
                     "candidate_segments": candidate_count,
+                    "next_candidate_segments": len(result.next_frame_rois),
                     "segments_after_merge": candidate_merged_count,
                     "nn_calls": len(frame_shapes),
                     "requested_input_shapes_hw": json.dumps({
@@ -605,6 +626,7 @@ def _run_pipeline(model_name, model, dataset, config, evaluation_conf, operation
                     ),
                     "gt_covered": covered,
                     "gt_count": gt_count,
+                    "segments_used": json.dumps(result.rois_used, separators=(",", ":")),
                     "full_frame_fallback": bool(result.use_full_frame and mode != "FF"),
                     "fallback_reason": fallback_reason if result.use_full_frame else "",
                     "merge_decision_time_s": result.merge_latency_s,
@@ -692,6 +714,9 @@ def _run_pipeline(model_name, model, dataset, config, evaluation_conf, operation
         )),
         "full_frame_fraction": sum(row["input_mode"] == "full" for row in rows) / n,
         "candidate_segments_mean": float(np.mean([row["candidate_segments"] for row in rows])),
+        "next_candidate_segments_mean": float(np.mean(
+            [row["next_candidate_segments"] for row in rows]
+        )),
         "segments_after_merge_mean": float(np.mean([row["segments_after_merge"] for row in rows])),
         "nn_calls_per_frame": float(np.mean([row["nn_calls"] for row in rows])),
         "nn_calls_total": int(sum(row["nn_calls"] for row in rows)),
@@ -700,6 +725,14 @@ def _run_pipeline(model_name, model, dataset, config, evaluation_conf, operation
         "fallback_counts": dict(Counter(
             row["fallback_reason"] for row in rows if row["fallback_reason"]
         )),
+        "selector_decision_counts": dict(Counter(
+            row["selector_decision"]
+            for row in rows
+            if row["selector_decision"] != "not_enabled"
+        )),
+        "evaluation_predictions_sha256": hashlib.sha256(
+            json.dumps(predictions, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
         "merge_time_s": float(sum(row["merge_decision_time_s"] for row in rows)),
         "crop_preprocess_time_s": float(sum(row["crop_preprocess_time_s"] for row in rows)),
         "postprocess_time_s": float(sum(row["postprocess_time_s"] for row in rows)),
@@ -773,6 +806,8 @@ def _profile_cost(model_name, model, dataset, indices, repetitions):
         "warmup_per_shape": 2,
         "repetitions_per_shape": repetitions,
         "actual_shape_count": len(shape_rows),
+        "timing_mode": "inference_only_at_evaluation_conf",
+        "timing_boundary": "model_forward_and_detector_internal_postprocess",
     }
     if not math.isfinite(fit["K_ms"]) or fit["K_ms"] <= 0 or not math.isfinite(fit["c_ms_per_pixel"]) or fit["c_ms_per_pixel"] <= 0:
         raise ValueError(f"Nonphysical CPU affine fit for {model_name}: {fit}")
@@ -854,6 +889,17 @@ def _metadata(model_name, model, dataset, config, evaluation_conf, operational_c
         "operational_conf": operational_conf,
         "operational_confidence_sha256": (_sha256(PILOT_DIR / 'operational_confidence.json')
                                            if (PILOT_DIR / 'operational_confidence.json').is_file() else None),
+        "selected_operational_config_sha256": (
+            _sha256(
+                PILOT_DIR / "calibration" / model_name
+                / "selected_operational_config.json"
+            )
+            if (
+                PILOT_DIR / "calibration" / model_name
+                / "selected_operational_config.json"
+            ).is_file()
+            else None
+        ),
         "input_size": config["dataset_params"]["im_size"],
         "transform_name": config["dataset_params"]["transform_name"],
         "dataset_class_count": len(dataset.idx2label) - 1,
@@ -956,6 +1002,8 @@ def run_padding_sweep(split, manifest_rows, device, max_frames=None, partial=Fal
         map_ratio = selected["mAP50"] / full["mAP50"] if full["mAP50"] > 0 else None
         decisions[model_name] = {
             "status": "PASS" if eligible else "PADDING_GATE_FAILED",
+            "stage_role": "DIAGNOSTIC_FIXED_CONFIDENCE_ONLY",
+            "final_stage3_selection": False,
             "evaluation_conf": evaluation_conf,
             "operational_conf": resolved_operational[model_name],
             "padding_final": chosen,
@@ -979,26 +1027,45 @@ def run_padding_sweep(split, manifest_rows, device, max_frames=None, partial=Fal
 
 def run_cost_profiles(split, manifest_rows, device, repetitions,
                       evaluation_conf=DEFAULT_EVALUATION_CONF, operational_conf=None):
+    from .calibration import load_selected_for_models
+
     profiles = {}
     rows = []
     raw_rows = []
-    resolved_operational = {}
-    for model_name in MODEL_NAMES:
-        config = yaml.safe_load(
+    configs = {
+        model_name: yaml.safe_load(
             (PILOT_DIR / "configs" / f"{model_name}.yaml").read_text(encoding="utf-8")
         )
-        resolved_operational[model_name] = _resolve_operational_conf(
-            model_name, config, evaluation_conf, operational_conf
-        )
+        for model_name in MODEL_NAMES
+    }
+    selected_configs = load_selected_for_models(
+        MODEL_NAMES, evaluation_conf, configs, sys.modules[__name__]
+    )
+    for model_name in MODEL_NAMES:
+        selected = selected_configs[model_name]
+        if selected["status"] != "CALIBRATION_PASS":
+            raise RuntimeError(
+                f"STOP: {model_name} has CALIBRATION_GATE_FAILED; cost and pipeline are blocked"
+            )
+        if operational_conf is not None and float(operational_conf) != float(
+            selected["operational_conf"]
+        ):
+            raise ValueError(
+                f"--operational-conf differs from frozen joint calibration for {model_name}"
+            )
     for model_name in MODEL_NAMES:
         model, dataset, config, _ = _load_model(model_name, device, evaluation_conf)
-        operational = resolved_operational[model_name]
+        selected = selected_configs[model_name]
+        operational = float(selected["operational_conf"])
         all_indices = _dataset_indices(dataset, manifest_rows, _dataset_root(config))
         fit, shape_rows, _raw = _profile_cost(model_name, model, dataset, all_indices, repetitions)
+        runtime = _runtime_environment()
         for raw_row in _raw:
             raw_row["evaluation_conf"] = evaluation_conf
             raw_row["operational_conf"] = operational
-            raw_row["timing_mode"] = "shared_detector_call_at_evaluation_floor"
+            raw_row["padding"] = int(selected["padding"])
+            raw_row["timing_mode"] = "inference_only_at_evaluation_conf"
+            raw_row["timing_boundary"] = "model_forward_and_detector_internal_postprocess"
         raw_rows.extend(_raw)
         profiles[model_name] = fit
         model_info = _metadata(
@@ -1007,7 +1074,12 @@ def run_cost_profiles(split, manifest_rows, device, repetitions,
         for shape, median, p95 in shape_rows:
             rows.append({
                 **model_info,
-                "timing_mode": "shared_detector_call_at_evaluation_floor",
+                "operational_conf": operational,
+                "padding": int(selected["padding"]),
+                "pilot_manifest_sha256": split["provenance"]["pilot_manifest_sha256"],
+                "config_sha256": model_info["config_sha256"],
+                "timing_mode": "inference_only_at_evaluation_conf",
+                "timing_boundary": "model_forward_and_detector_internal_postprocess",
                 "actual_network_h": shape[0],
                 "actual_network_w": shape[1],
                 "actual_tensor_pixels": shape[0] * shape[1],
@@ -1017,7 +1089,17 @@ def run_cost_profiles(split, manifest_rows, device, repetitions,
             })
         profiles[model_name]["evaluation_conf"] = evaluation_conf
         profiles[model_name]["operational_conf"] = operational
-        profiles[model_name]["timing_mode"] = "shared_detector_call_at_evaluation_floor"
+        profiles[model_name]["padding"] = int(selected["padding"])
+        profiles[model_name]["checkpoint_sha256"] = model_info["checkpoint_sha256"]
+        profiles[model_name]["config_sha256"] = model_info["config_sha256"]
+        profiles[model_name]["pilot_manifest_sha256"] = split["provenance"]["pilot_manifest_sha256"]
+        profiles[model_name]["timing_mode"] = "inference_only_at_evaluation_conf"
+        profiles[model_name]["timing_boundary"] = (
+            "model_forward_and_detector_internal_postprocess; "
+            "operational thresholding/tracker are outside this timing"
+        )
+        profiles[model_name]["runtime_environment"] = runtime
+        profiles[model_name]["implementation_sha256"] = selected["implementation_sha256"]
         del model, dataset
     write_json(PILOT_DIR / "cost_profiles_cpu.json", profiles)
     _write_csv(PILOT_DIR / "cost_profiles_cpu.csv", rows)
@@ -1026,49 +1108,64 @@ def run_cost_profiles(split, manifest_rows, device, repetitions,
 
 def run_pipeline_modes(split, manifest_rows, device, max_frames=None, debug=True, partial=False,
                        evaluation_conf=DEFAULT_EVALUATION_CONF, operational_conf=None):
-    decision_path = PILOT_DIR / "padding_decision.json"
+    from .calibration import load_selected_for_models
+
     profile_path = PILOT_DIR / "cost_profiles_cpu.json"
-    if not decision_path.is_file() or not profile_path.is_file():
-        raise FileNotFoundError("Run the padding sweep and CPU calibration before pipeline modes")
-    decisions = json.loads(decision_path.read_text(encoding="utf-8"))
+    if not profile_path.is_file():
+        raise FileNotFoundError("Run joint calibration and fresh CPU cost calibration before pipeline modes")
     profiles = json.loads(profile_path.read_text(encoding="utf-8"))
-    for model_name in MODEL_NAMES:
-        if not decisions[model_name].get("criterion_met", False) and not split.get("diagnostic_on_padding_gate_failure", False):
-            raise RuntimeError(
-                f"STOP: {model_name} has no tested padding satisfying both segment/full-frame "
-                "mAP50 >= 0.95 and GT coverage >= 0.98. Investigate before running CA/FULL-TECH."
-            )
-    rows = manifest_rows[:max_frames] if max_frames else manifest_rows
-    summaries = []
-    frame_rows = []
     configs = {
         model_name: yaml.safe_load(
             (PILOT_DIR / "configs" / f"{model_name}.yaml").read_text(encoding="utf-8")
         )
         for model_name in MODEL_NAMES
     }
-    operational_by_model = {
-        model_name: _resolve_operational_conf(
-            model_name, configs[model_name], evaluation_conf, operational_conf
-        )
-        for model_name in MODEL_NAMES
-    }
-    _require_matching_stage_thresholds(decisions, profiles, MODEL_NAMES)
+    decisions = load_selected_for_models(
+        MODEL_NAMES, evaluation_conf, configs, sys.modules[__name__]
+    )
+    current_runtime = _runtime_environment()
     for model_name in MODEL_NAMES:
-        if (
-            float(decisions[model_name]["evaluation_conf"]) != evaluation_conf
-            or float(decisions[model_name]["operational_conf"])
-            != operational_by_model[model_name]
+        selected = decisions[model_name]
+        if selected["status"] != "CALIBRATION_PASS":
+            raise RuntimeError(
+                f"STOP: {model_name} has CALIBRATION_GATE_FAILED; pipeline modes are blocked"
+            )
+        profile = profiles.get(model_name)
+        if profile is None:
+            raise ValueError(f"Fresh cost profile is missing for {model_name}")
+        expected_profile = {
+            "evaluation_conf": evaluation_conf,
+            "operational_conf": float(selected["operational_conf"]),
+            "padding": int(selected["padding"]),
+            "checkpoint_sha256": selected["checkpoint_sha256"],
+            "config_sha256": selected["config_sha256"],
+            "pilot_manifest_sha256": selected["pilot_manifest_sha256"],
+            "implementation_sha256": selected["implementation_sha256"],
+            "timing_mode": "inference_only_at_evaluation_conf",
+        }
+        if any(profile.get(key) != value for key, value in expected_profile.items()):
+            raise ValueError(
+                f"{model_name} cost profile is stale or mismatched with frozen calibration"
+            )
+        if profile.get("runtime_environment") != current_runtime:
+            raise ValueError(
+                f"{model_name} cost profile was measured in a different CPU/software environment; "
+                "rerun --stage cost here"
+            )
+        if operational_conf is not None and float(operational_conf) != float(
+            selected["operational_conf"]
         ):
             raise ValueError(
-                f"Pipeline thresholds differ from the padding sweep for {model_name}; "
-                "rerun padding and cost with the same evaluation_conf/operational_conf"
+                f"--operational-conf differs from frozen joint calibration for {model_name}"
             )
+    rows = manifest_rows[:max_frames] if max_frames else manifest_rows
+    summaries = []
+    frame_rows = []
     for model_name in MODEL_NAMES:
         model, dataset, config, _ = _load_model(model_name, device, evaluation_conf)
-        operational = operational_by_model[model_name]
+        operational = float(decisions[model_name]["operational_conf"])
         indices = _dataset_indices(dataset, rows, _dataset_root(config))
-        padding = int(decisions[model_name]["padding_final"])
+        padding = int(decisions[model_name]["padding"])
         for mode in ("FF", "SEG", "CA", "FULL-TECH"):
             summary, mode_rows = _run_pipeline(
                 model_name, model, dataset, config, evaluation_conf, operational,
@@ -1081,7 +1178,7 @@ def run_pipeline_modes(split, manifest_rows, device, max_frames=None, debug=True
                 model_name, model, dataset, config, evaluation_conf, operational, split
             ))
             summary["padding_final"] = padding
-            summary["padding_gate_status"] = "PASS" if decisions[model_name].get("criterion_met") else "PADDING_GATE_FAILED"
+            summary["calibration_gate_status"] = decisions[model_name]["status"]
             summary["cost_profile"] = profiles[model_name]
             summaries.append(summary)
             frame_rows.extend(mode_rows)
@@ -1176,6 +1273,16 @@ def run_smoke(split, manifest_rows, device, max_frames=20,
         "status": "PASS",
         "frames_per_model": len(rows),
         "models": list(MODEL_NAMES),
+        "pilot_manifest_sha256": split["provenance"]["pilot_manifest_sha256"],
+        "checkpoint_sha256_by_model": {
+            name: split["provenance"]["selected_checkpoints"][name]["sha256"]
+            for name in MODEL_NAMES
+        },
+        "config_sha256_by_model": {
+            name: _sha256(PILOT_DIR / "configs" / f"{name}.yaml")
+            for name in MODEL_NAMES
+        },
+        "implementation_sha256": _implementation_hashes(),
         "evaluation_conf": evaluation_conf,
         "operational_conf_by_model": operational_by_model,
         "detection_counts": {
@@ -1216,7 +1323,7 @@ def run_smoke(split, manifest_rows, device, max_frames=20,
 def _write_metadata(split, stage, arguments):
     metadata_path = PILOT_DIR / "metadata.json"
     previous = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
-    selected_models = {}
+    selected_models = previous.get("selected_models", {})
     for name in MODEL_NAMES:
         config_path = PILOT_DIR / "configs" / f"{name}.yaml"
         selected_models[name] = {
@@ -1234,9 +1341,11 @@ def _write_metadata(split, stage, arguments):
             "operational_conf": arguments["operational_conf"],
             "operational_conf_by_model": arguments.get("operational_conf_by_model", {}),
             "operational_conf_source": (
-                "selected_by_confidence_stage" if stage == "confidence" else
+                "detector_level_diagnostic_only" if stage == "confidence" else
+                "selected_jointly_with_padding_by_calibration" if stage in {"calibration", "all"} else
                 "explicit_cli_override" if arguments["operational_conf"] is not None else
-                "frozen_confidence_result"
+                "frozen_joint_calibration" if stage in {"cost", "pipeline"} else
+                "frozen_confidence_result_for_diagnostic"
             ),
         },
         "completed_stages": previous.get("completed_stages", []),
@@ -1247,16 +1356,20 @@ def _write_metadata(split, stage, arguments):
         "frozen_protocol": {
             "dataset": "sampled ImageNet-VID validation, video-disjoint pilot",
             "default_evaluation_conf": DEFAULT_EVALUATION_CONF,
-            "operational_conf_source": "per-model frozen result from --stage confidence",
+            "operational_conf_source": "per-model joint calibration of operational_conf x padding",
             "preprocessing": "dataset ssd transform, 320x320 base input",
             "segment_formation": "Static/previous localization",
             "hold_last_for_frames": 0,
             "key_frame_interval": KEY_FRAME_INTERVAL,
             "empty_segment_fallback": "full frame",
-            "padding_sweep_pixels": list(PADDING_VALUES),
-            "padding_selection": (
-                "smallest p with segment/full-frame mAP50 >= 0.95 and GT coverage >= 0.98; "
-                f"otherwise p={max(PADDING_VALUES)}"
+            "diagnostic_padding_sweep_pixels": list(PADDING_VALUES),
+            "calibration_quality_gates": {
+                "mAP50_retention_min": 0.95,
+                "gt_roi_coverage_mean_min": 0.98,
+            },
+            "calibration_selection": (
+                "Among configurations passing both gates, minimize tensor area ratio; "
+                "within 1%, fewer candidates/frame, smaller padding, then higher confidence"
             ),
             "pipeline_modes": ["FF", "SEG", "CA", "FULL-TECH"],
             "merge_cost_model": "T(A)=K+cA fitted on actual network input shape/area",
@@ -1273,8 +1386,12 @@ def _write_metadata(split, stage, arguments):
             "processed_area_ratio_mean": "mean per-frame sum of snapped source ROI areas / source frame area; overlap is counted per inference",
             "tensor_area_ratio_mean": "mean per-frame actual network tensor pixels / full-frame actual network tensor pixels",
             "latency": "process_frame time excludes dataset loading, evaluation-only filtering, and metric calculation",
-            "inference_latency": "shared detector call at evaluation_conf, including network forward and detector-internal NMS; evaluation metrics are outside the timing",
-            "cost_timing_mode": "shared_detector_call_at_evaluation_floor",
+            "inference_latency": (
+                "model forward and detector-internal postprocessing at fixed evaluation_conf; "
+                "operational thresholding, tracker updates, and metrics are outside the cost timing"
+            ),
+            "cost_timing_mode": "inference_only_at_evaluation_conf",
+            "cost_timing_boundary": "model_forward_and_detector_internal_postprocess",
         },
         "runtime_controls": {
             "device": "cpu",
@@ -1306,8 +1423,14 @@ def _mark_stage(stage, status):
         "PARTIAL_PIPELINE_SMOKE",
     }:
         metadata["status"] = status
+    elif "calibration_gate_failed" in completed:
+        metadata["status"] = "CALIBRATION_GATE_FAILED"
+    elif {"joint_calibration", "cpu_cost_calibration"} <= completed:
+        metadata["status"] = "CALIBRATION_AND_CPU_COST_READY_PIPELINE_PENDING"
+    elif "joint_calibration" in completed:
+        metadata["status"] = "JOINT_CALIBRATION_COMPLETE_COST_PENDING"
     elif {"padding_sweep", "cpu_cost_calibration"} <= completed:
-        metadata["status"] = "PADDING_AND_CPU_COST_READY_PIPELINE_PENDING"
+        metadata["status"] = "DIAGNOSTIC_PADDING_AND_CPU_COST_READY"
     elif {"coordinate_smoke", "cpu_cost_calibration"} <= completed:
         metadata["status"] = "SMOKE_AND_CPU_COST_COMPLETE_PADDING_PENDING"
     elif "coordinate_smoke" in completed:
@@ -1362,7 +1485,7 @@ def _refresh_report():
         if candidate_grid is None:
             candidate_grid = next(iter(operational["models"].values()))["candidate_grid"]
         sections.extend([
-            '## Frozen operational confidence', '',
+            '## Detector-level confidence diagnostic (not final Stage 3)', '',
             f"Evaluation floor: {operational['evaluation_conf']}.",
             operational["selection_rule"],
             f"Candidate grid: {candidate_grid}.",
@@ -1379,8 +1502,45 @@ def _refresh_report():
             "",
             "Candidates are scored using detections retained at evaluation_conf=0.01; "
             "ties resolve by higher recall, then lower threshold.",
+            "This is a detector-level diagnostic operating point. Final Stage 3 "
+            "operational confidence is selected jointly with padding by `--stage calibration`.",
             'Decision and evidence hashes: [operational_confidence.json](operational_confidence.json).', '',
         ])
+    calibration_root = PILOT_DIR / "calibration"
+    if calibration_root.is_dir():
+        sections.extend([
+            "## Joint operational-confidence × padding calibration",
+            "",
+            "Final Stage 3 selection requires both fixed quality gates, then minimizes "
+            "tensor_area_ratio_mean. Within 1% of the minimum, ties use fewer candidate "
+            "segments/frame, smaller padding, then higher operational confidence.",
+            "",
+            "| Model | Status | evaluation_conf | operational_conf | Padding | Retention | GT coverage | Tensor area ratio |",
+            "|---|---|---:|---:|---:|---:|---:|---:|",
+        ])
+        for model_name in tuple(dict.fromkeys((*DEFAULT_MODELS, "roi_ssd"))):
+            selected_path = (
+                calibration_root / model_name / "selected_operational_config.json"
+            )
+            if not selected_path.is_file():
+                continue
+            selected = json.loads(selected_path.read_text(encoding="utf-8"))
+            sections.append(
+                f"| {model_name} | {selected['status']} | "
+                f"{selected['evaluation_conf']:.2f} | "
+                f"{selected['operational_conf'] if selected['operational_conf'] is not None else 'NOT SELECTED'} | "
+                f"{selected['padding'] if selected['padding'] is not None else 'NOT SELECTED'} | "
+                f"{selected['mAP50_retention'] if selected['mAP50_retention'] is not None else 'N/A'} | "
+                f"{selected['gt_roi_coverage_mean'] if selected['gt_roi_coverage_mean'] is not None else 'N/A'} | "
+                f"{selected['tensor_area_ratio_mean'] if selected['tensor_area_ratio_mean'] is not None else 'N/A'} |"
+            )
+            sections.append(
+                f"\nArtifacts: [{model_name} sweep](calibration/{model_name}/calibration_sweep.csv), "
+                f"[gate matrix](calibration/{model_name}/calibration_gate_matrix.csv), "
+                f"[decision](calibration/{model_name}/selected_operational_config.json), "
+                f"[report](calibration/{model_name}/calibration_report.md)."
+            )
+        sections.append("")
     smoke_path = PILOT_DIR / "smoke_metadata.json"
     if smoke_path.is_file():
         smoke = json.loads(smoke_path.read_text(encoding="utf-8"))
@@ -1424,7 +1584,7 @@ def _refresh_report():
                         "",
                         f"**STOP warning:** {model_name} smoke segment/full-frame mAP50 ratio is "
                         f"{ratio:.3f}. The sample is too small for a conclusion, but the full "
-                        "padding sweep must resolve this before CA/FULL-TECH is run.",
+                        "joint confidence/padding calibration must resolve this before CA/FULL-TECH is run.",
                     ])
         sections.append("")
     if decision_path.is_file():
@@ -1434,7 +1594,7 @@ def _refresh_report():
             with sweep_path.open(encoding="utf-8", newline="") as stream:
                 sweep_rows = list(csv.DictReader(stream))
             sections.extend([
-                "## Measured full-frame and padding results", "",
+                "## Fixed-confidence padding diagnostic", "",
                 "All entries use the locked pilot; image loading and metric computation are excluded from process-frame timing.", "",
                 "| Model | Mode | Padding | evaluation_conf | operational_conf | mAP50 | mAP50:95 | Recall50 | GT coverage | Mean latency (ms) | FPS |",
                 "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
@@ -1449,7 +1609,7 @@ def _refresh_report():
                 )
             sections.extend(["", "Sources: [padding sweep](padding_sweep.csv), [frame-level metrics](frame_level_metrics.csv), [preflight](stage2_preflight.json).", ""])
         sections.extend([
-            "## Locked padding decisions",
+            "## Diagnostic padding decisions (not final Stage 3)",
             "",
             "| Model | evaluation_conf | operational_conf | Final padding | Criterion met | Eligible values |",
             "|---|---:|---:|---:|:---:|---|",
@@ -1467,7 +1627,9 @@ def _refresh_report():
         sections.extend([
             "## Fresh CPU cost profiles",
             "",
-            "Timing mode: shared detector call at evaluation_conf; quality-only filtering/metrics are not timed.",
+            "Timing boundary: model forward and detector-internal postprocessing at the fixed "
+            "evaluation_conf. Operational thresholding, tracker updates, and metrics are outside "
+            "this timing; the operational confidence and padding are recorded as frozen provenance.",
             "",
             "| Model | evaluation_conf | operational_conf | K (ms) | c (ms/pixel) | tau (pixels) | R² | MAE (ms) | RMSE (ms) |",
             "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
@@ -1504,25 +1666,103 @@ def _refresh_report():
                 f'{float(row["full_frame_fraction"]):.4f} | '
                 f'{float(row["nn_calls_per_frame"]):.3f} |'
             )
+        by_model_mode = {
+            (row["model"], row["mode"]): row for row in summaries
+        }
+        sections.extend([
+            "",
+            "### CA and FULL-TECH selector/workload interpretation",
+            "",
+        ])
+        for model_name in MODEL_NAMES:
+            seg = by_model_mode.get((model_name, "SEG"))
+            ca = by_model_mode.get((model_name, "CA"))
+            full_tech = by_model_mode.get((model_name, "FULL-TECH"))
+            if seg is None or ca is None or full_tech is None:
+                continue
+            ca_changes = []
+            if float(ca["segments_after_merge_mean"]) != float(seg["segments_after_merge_mean"]):
+                ca_changes.append("post-merge segment count")
+            if int(ca["nn_calls_total"]) != int(seg["nn_calls_total"]):
+                ca_changes.append("NN calls")
+            if int(ca["tensor_pixels_total"]) != int(seg["tensor_pixels_total"]):
+                ca_changes.append("tensor pixels")
+            ca_interpretation = (
+                "CA changed " + ", ".join(ca_changes) + " versus SEG."
+                if ca_changes else
+                "CA produced no aggregate segment-count, NN-call, or tensor-workload change versus SEG."
+            )
+            same_workload = (
+                int(ca["tensor_pixels_total"]) == int(full_tech["tensor_pixels_total"])
+                and int(ca["nn_calls_total"]) == int(full_tech["nn_calls_total"])
+            )
+            same_predictions = (
+                ca["evaluation_predictions_sha256"]
+                == full_tech["evaluation_predictions_sha256"]
+            )
+            selector_counts = full_tech.get("selector_decision_counts", {})
+            if same_workload and same_predictions:
+                interpretation = (
+                    "CA and FULL-TECH produced identical evaluation predictions, total tensor "
+                    "pixels, and NN calls; any timing difference is not evidence of selector "
+                    "workload savings."
+                )
+            elif same_workload:
+                interpretation = (
+                    "CA and FULL-TECH used equal tensor pixels and NN calls but produced different "
+                    "evaluation predictions; their timing difference is not workload savings."
+                )
+            else:
+                interpretation = (
+                    "CA and FULL-TECH produced different aggregate tensor workload/NN-call counts."
+                )
+            sections.append(
+                f"- {model_name}: {ca_interpretation} FULL-TECH logical selector decisions "
+                f"`{selector_counts}`; "
+                f"CA tensor pixels/NN calls=`{ca['tensor_pixels_total']}`/"
+                f"`{ca['nn_calls_total']}`, FULL-TECH=`{full_tech['tensor_pixels_total']}`/"
+                f"`{full_tech['nn_calls_total']}`. {interpretation}"
+            )
         sections.append("")
     decisions = json.loads(decision_path.read_text(encoding="utf-8")) if decision_path.is_file() else {}
     profiles = json.loads(profile_path.read_text(encoding="utf-8")) if profile_path.is_file() else {}
     operational = operational or {"models": {}}
-    op_values = {
-        name: decision.get("operational_conf", "NOT SELECTED")
-        for name, decision in operational["models"].items()
-    }
+    selected_configs = {}
+    for model_name in MODEL_NAMES:
+        selected_path = calibration_root / model_name / "selected_operational_config.json"
+        if selected_path.is_file():
+            selected_configs[model_name] = json.loads(
+                selected_path.read_text(encoding="utf-8")
+            )
+
+    def selected_value(model_name, field):
+        selected = selected_configs.get(model_name, {})
+        value = selected.get(field)
+        if value is not None:
+            return value
+        if selected.get("status") == "CALIBRATION_GATE_FAILED":
+            return "CALIBRATION_GATE_FAILED"
+        return "NOT SELECTED"
+
     sections.extend([
         "## Frozen pilot parameters",
         "",
-        f'YOLO_OPERATIONAL_CONF = {op_values.get("yolo26n", "NOT SELECTED")}',
-        f'ROISSD_OPERATIONAL_CONF = {op_values.get("roi_ssd", "NOT SELECTED")}',
-        f'ROISSD_MOBILENET_OPERATIONAL_CONF = {op_values.get("roi_ssd_mobilenet", "NOT SELECTED")}',
-        "PADDING_EVALUATION_CONF = evaluation_conf (default 0.01)",
-        "PIPELINE_OPERATIONAL_CONF = per-model frozen value above",
-        f'YOLO_PADDING_FINAL = {decisions.get("yolo26n", {}).get("padding_final", "NOT RUN")}',
-        f'ROISSD_PADDING_FINAL = {decisions.get("roi_ssd", {}).get("padding_final", "NOT RUN")}',
-        f'ROISSD_MOBILENET_PADDING_FINAL = {decisions.get("roi_ssd_mobilenet", {}).get("padding_final", "NOT RUN")}',
+        f'YOLO_EVALUATION_CONF = {selected_value("yolo26n", "evaluation_conf")}',
+        f'YOLO_OPERATIONAL_CONF_FINAL = {selected_value("yolo26n", "operational_conf")}',
+        f'YOLO_PADDING_FINAL = {selected_value("yolo26n", "padding")}',
+        f'ROISSD_MOBILENET_EVALUATION_CONF = {selected_value("roi_ssd_mobilenet", "evaluation_conf")}',
+        f'ROISSD_MOBILENET_OPERATIONAL_CONF_FINAL = {selected_value("roi_ssd_mobilenet", "operational_conf")}',
+        f'ROISSD_MOBILENET_PADDING_FINAL = {selected_value("roi_ssd_mobilenet", "padding")}',
+        f'ROISSD_EVALUATION_CONF = {selected_value("roi_ssd", "evaluation_conf")}',
+        f'ROISSD_OPERATIONAL_CONF_FINAL = {selected_value("roi_ssd", "operational_conf")}',
+        f'ROISSD_PADDING_FINAL = {selected_value("roi_ssd", "padding")}',
+        f'YOLO_OPERATIONAL_CONF (confidence diagnostic) = {operational.get("models", {}).get("yolo26n", {}).get("operational_conf", "NOT RUN")}',
+        f'ROISSD_MOBILENET_OPERATIONAL_CONF (confidence diagnostic) = {operational.get("models", {}).get("roi_ssd_mobilenet", {}).get("operational_conf", "NOT RUN")}',
+        "EVALUATION_CONF_DEFAULT = 0.01",
+        "PIPELINE_OPERATIONAL_CONF = provenance-validated joint calibration",
+        f'YOLO_PADDING_DIAGNOSTIC = {decisions.get("yolo26n", {}).get("padding_final", "NOT RUN")}',
+        f'ROISSD_PADDING_DIAGNOSTIC = {decisions.get("roi_ssd", {}).get("padding_final", "NOT RUN")}',
+        f'ROISSD_MOBILENET_PADDING_DIAGNOSTIC = {decisions.get("roi_ssd_mobilenet", {}).get("padding_final", "NOT RUN")}',
         f'YOLO_CPU_K = {profiles.get("yolo26n", {}).get("K_ms", "NOT RUN")}',
         f'YOLO_CPU_c = {profiles.get("yolo26n", {}).get("c_ms_per_pixel", "NOT RUN")}',
         f'YOLO_CPU_tau = {profiles.get("yolo26n", {}).get("tau_pixels", "NOT RUN")}',
@@ -1533,14 +1773,23 @@ def _refresh_report():
         f'ROISSD_MOBILENET_CPU_c = {profiles.get("roi_ssd_mobilenet", {}).get("c_ms_per_pixel", "NOT RUN")}',
         f'ROISSD_MOBILENET_CPU_tau = {profiles.get("roi_ssd_mobilenet", {}).get("tau_pixels", "NOT RUN")}',
         "",
+        "Exact prepared configurations:",
+        "",
+        *[
+            f"- `{name}`: [configs/{name}.yaml](configs/{name}.yaml)"
+            for name in MODEL_NAMES
+        ],
+        "",
     ])
-    base = report.split("\n## Locked padding decisions", 1)[0]
+    base = report.split("\n## Diagnostic padding decisions (not final Stage 3)", 1)[0]
     base = base.split("\n## CPU smoke (not decision-grade)", 1)[0]
     base = base.split("\n## Fresh CPU cost profiles", 1)[0]
     base = base.split("\n## FF / SEG / CA / FULL-TECH results", 1)[0]
     base = base.split("\n## Frozen pilot parameters", 1)[0]
     base = base.split("\n## Frozen operational confidence", 1)[0]
-    base = base.split("\n## Measured full-frame and padding results", 1)[0]
+    base = base.split("\n## Detector-level confidence diagnostic (not final Stage 3)", 1)[0]
+    base = base.split("\n## Joint operational-confidence × padding calibration", 1)[0]
+    base = base.split("\n## Fixed-confidence padding diagnostic", 1)[0]
     base = base.split("\n## Runtime environment", 1)[0]
     status = metadata.get("status", "PREPARED_NOT_BENCHMARKED")
     completed = metadata.get("completed_stages", [])
@@ -1550,7 +1799,13 @@ def _refresh_report():
         prefix
         + "## Preparation status\n\n"
         + f"`{status}`. Completed stages: {completed or 'none'}. "
-        + ("The full padding sweep is complete. " if "padding_sweep" in completed else "The full padding sweep remains pending. ")
+        + (
+            "Joint calibration is complete. "
+            if "joint_calibration" in completed else
+            "Joint calibration failed its quality gates. "
+            if "calibration_gate_failed" in completed else
+            "Joint confidence × padding calibration remains pending. "
+        )
         + (
             "FF/SEG/CA/FULL-TECH pipeline runs are recorded.\n\n"
             if "pipeline_modes" in completed else
@@ -1564,15 +1819,22 @@ def _refresh_report():
     )
     base = base.split("\n## Remaining protocol", 1)[0]
     pending_steps = ["## Remaining protocol", ""]
-    if not decision_path.is_file():
-        pending_steps.append("1. Run `python -m experiments.cpu_pilot.run_pilot --stage padding`.")
+    calibration_complete = "joint_calibration" in completed
+    if not calibration_complete:
+        pending_steps.append(
+            "1. Run `python -m experiments.cpu_pilot.run_pilot --stage calibration` "
+            "after a successful smoke."
+        )
     if not profile_path.is_file():
-        pending_steps.append("2. Run `python -m experiments.cpu_pilot.run_pilot --stage cost`.")
-    if decision_path.is_file() and profile_path.is_file() and not summary_path.is_file():
+        pending_steps.append(
+            "2. Run `python -m experiments.cpu_pilot.run_pilot --stage cost` "
+            "after joint calibration passes."
+        )
+    if calibration_complete and profile_path.is_file() and not summary_path.is_file():
         if metadata.get("stop_reason"):
-            pending_steps.append("Investigate failed segment-accuracy/coverage criteria for every model before rerunning CA/FULL-TECH. Do not relax thresholds or substitute checkpoints post hoc. Stage 4 / Raspberry Pi runs remain on hold.")
+            pending_steps.append("Investigate the recorded acceptance stop before running FF/SEG/CA/FULL-TECH. Do not relax thresholds or substitute checkpoints post hoc; Stage 4 remains on hold.")
         else:
-            pending_steps.append("Review padding eligibility/accuracy gate, then run `--stage pipeline`.")
+            pending_steps.append("Review frozen calibration and fresh cost provenance, then run `--stage pipeline`.")
     if summary_path.is_file():
         pending_steps.append("Review acceptance checks and final settings before Stage 4.")
     pending_steps.append("")
@@ -1582,24 +1844,63 @@ def _refresh_report():
     report_path.write_text(base, encoding="utf-8")
 
 
+def _require_successful_smoke(split, model_names):
+    smoke_path = PILOT_DIR / "smoke_metadata.json"
+    if not smoke_path.is_file():
+        raise FileNotFoundError("Run --stage smoke before calibration/all")
+    smoke = json.loads(smoke_path.read_text(encoding="utf-8"))
+    if (
+        smoke.get("status") != "PASS"
+        or int(smoke.get("frames_per_model", 0)) < 20
+        or smoke.get("pilot_manifest_sha256")
+        != split["provenance"]["pilot_manifest_sha256"]
+    ):
+        raise ValueError("Smoke result is stale, incomplete, or failed")
+    for model_name in model_names:
+        expected_checkpoint = split["provenance"]["selected_checkpoints"][model_name]["sha256"]
+        expected_config = _sha256(PILOT_DIR / "configs" / f"{model_name}.yaml")
+        if (
+            model_name not in smoke.get("models", [])
+            or smoke.get("checkpoint_sha256_by_model", {}).get(model_name)
+            != expected_checkpoint
+            or smoke.get("config_sha256_by_model", {}).get(model_name) != expected_config
+            or smoke.get("implementation_sha256") != _implementation_hashes()
+        ):
+            raise ValueError(f"{model_name} smoke provenance is missing or stale")
+
+
 def main():
     global PILOT_DIR, SPLIT_METADATA, MODEL_NAMES
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=PILOT_DIR)
-    parser.add_argument("--stage", choices=("confidence", "smoke", "padding", "cost", "pipeline", "all"), required=True)
+    parser.add_argument(
+        "--stage",
+        choices=("confidence", "smoke", "padding", "calibration", "cost", "pipeline", "all"),
+        required=True,
+        help=(
+            "confidence: optional detector-level diagnostic; smoke: short integration check; "
+            "padding: optional fixed-confidence padding diagnostic; calibration: final joint "
+            "operational-confidence x padding selection; cost: fresh CPU profiling from frozen "
+            "calibration; pipeline: FF/SEG/CA/FULL-TECH from frozen calibration + cost; "
+            "all: calibration -> cost -> pipeline"
+        ),
+    )
     parser.add_argument("--max-frames", type=int, default=None, help="Use only the first N pilot frames for smoke testing")
     parser.add_argument("--cost-repetitions", type=int, default=8)
     parser.add_argument(
         "--evaluation-conf",
         type=float,
         default=DEFAULT_EVALUATION_CONF,
-        help="Evaluation detection floor for smoke, padding, cost, and pipeline (default: 0.01; confidence stage is fixed)",
+        help="Evaluation threshold for metrics (default: 0.01; final calibration requires 0.01)",
     )
     parser.add_argument(
         "--operational-conf",
         type=float,
         default=None,
-        help="Explicit operational threshold override; otherwise use the per-model frozen --stage confidence result",
+        help=(
+            "Diagnostic override for smoke/padding only. Final cost/pipeline use the "
+            "provenance-validated joint calibration result."
+        ),
     )
     parser.add_argument("--no-debug", action="store_true")
     parser.add_argument("--models", nargs="+", choices=tuple(ROI_GRID), default=DEFAULT_MODELS)
@@ -1616,14 +1917,30 @@ def main():
         raise ValueError("--operational-conf is selected by --stage confidence and cannot be overridden there")
     if args.stage == "confidence" and args.evaluation_conf != DEFAULT_EVALUATION_CONF:
         raise ValueError("--stage confidence requires evaluation_conf=0.01")
+    if args.stage in {"calibration", "all"} and args.evaluation_conf != DEFAULT_EVALUATION_CONF:
+        raise ValueError(f"--stage {args.stage} requires evaluation_conf=0.01")
+    if args.stage in {"calibration", "all"} and args.operational_conf is not None:
+        raise ValueError(
+            f"--stage {args.stage} selects operational confidence from the config grid; "
+            "--operational-conf is not accepted"
+        )
     if args.stage == "all" and args.max_frames is not None:
         raise ValueError("--stage all cannot be combined with --max-frames; partial runs are not pilot results")
+    if args.max_frames is not None and args.stage not in {"smoke", "padding", "pipeline"}:
+        raise ValueError(f"--max-frames is not supported by --stage {args.stage}")
+    if args.cost_repetitions < 1:
+        raise ValueError("--cost-repetitions must be positive")
+    if args.stage in {"calibration", "all"}:
+        _require_successful_smoke(
+            json.loads((PILOT_DIR / "split_metadata.json").read_text(encoding="utf-8")),
+            tuple(dict.fromkeys(args.models)),
+        )
     if args.max_frames is not None and args.max_frames < 20 and args.stage in {"pipeline", "all"} and not args.no_debug:
         raise ValueError("At least 20 frames are required when debug export is enabled")
     _configure_runtime()
     split, manifests = _load_session()
     args.operational_conf_by_model = {}
-    if args.stage != "confidence":
+    if args.stage in {"smoke", "padding"}:
         for model_name in MODEL_NAMES:
             config = yaml.safe_load(
                 (PILOT_DIR / "configs" / f"{model_name}.yaml").read_text(encoding="utf-8")
@@ -1664,7 +1981,32 @@ def main():
         _refresh_report()
         print(json.dumps(smoke, indent=2))
         return
-    if args.stage in {"padding", "all"}:
+    if args.stage in {"calibration", "all"}:
+        from .calibration import run_joint_calibration
+        selected = run_joint_calibration(
+            split, manifests["pilot"], torch.device("cpu"),
+            pilot_module=sys.modules[__name__],
+        )
+        failed = [
+            name for name in MODEL_NAMES
+            if selected.get(name, {}).get("status") != "CALIBRATION_PASS"
+        ]
+        if failed:
+            _mark_stage("calibration_gate_failed", "CALIBRATION_GATE_FAILED")
+            _refresh_report()
+            if args.stage == "all":
+                raise RuntimeError(
+                    "STOP: CALIBRATION_GATE_FAILED for "
+                    + ", ".join(failed)
+                    + "; cost and pipeline stages were not run"
+                )
+            print("CALIBRATION_GATE_FAILED: " + ", ".join(failed), flush=True)
+            return
+        _mark_stage("joint_calibration", "JOINT_CALIBRATION_COMPLETE_COST_PENDING")
+        if args.stage == "calibration":
+            _refresh_report()
+            return
+    if args.stage == "padding":
         partial = args.max_frames is not None
         run_padding_sweep(
             split, manifests["pilot"], torch.device("cpu"), args.max_frames, partial=partial,
