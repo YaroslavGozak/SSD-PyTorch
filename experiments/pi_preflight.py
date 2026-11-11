@@ -152,11 +152,23 @@ def _validate_frozen_selections(stage3, failures):
             failures.append(f"Frozen Stage 3 config is missing: {config_path}")
         elif selection.get("config_sha256") != _sha256(config_path):
             failures.append(f"Frozen Stage 3 config hash mismatch for {model_name}")
-        elif selection.get("implementation_sha256") != current_implementations:
-            failures.append(
-                f"Stage 3 implementation hashes differ from frozen calibration for {model_name}; "
-                "use the calibrated source revision, do not edit the selection"
-            )
+        else:
+            frozen_implementations = selection.get("implementation_sha256")
+            if frozen_implementations != current_implementations:
+                details = []
+                frozen_implementations = frozen_implementations or {}
+                for relative in sorted(set(frozen_implementations) | set(current_implementations)):
+                    expected_hash = frozen_implementations.get(relative, "<not recorded>")
+                    current_hash = current_implementations.get(relative, "<file missing>")
+                    if expected_hash != current_hash:
+                        details.append(
+                            f"{relative}: expected {expected_hash}, found {current_hash}"
+                        )
+                failures.append(
+                    f"Stage 3 implementation hashes differ from frozen calibration for {model_name}: "
+                    + "; ".join(details)
+                    + ". Check out the calibrated source revision; do not edit the frozen selection."
+                )
         for hash_key, filename in (
             ("calibration_sweep_sha256", "calibration_sweep.csv"),
             ("calibration_gate_matrix_sha256", "calibration_gate_matrix.csv"),
