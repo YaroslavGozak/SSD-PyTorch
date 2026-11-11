@@ -14,7 +14,7 @@
 - чи прискорює повна технологія YOLO26n;
 - чи прискорює повна технологія ROI-SSD-MobileNet;
 - як змінюється точність;
-- як результат залежить від Core i7 та Raspberry Pi 5;
+- як результат залежить від Core i9 та Raspberry Pi 5;
 - який внесок дають окремо segment formation і cost-aware merge.
 
 ## Передумови
@@ -40,7 +40,7 @@
 
 Обов'язкові комбінації:
 
-| Model | Core i7-11700K | Raspberry Pi 5 |
+| Model | Core i9-9900KF | Raspberry Pi 5 |
 |---|---|---|
 | YOLO26n | required | required |
 | ROI-SSD-MobileNet | required | required |
@@ -73,18 +73,25 @@
 - Static / previous localization;
 - `hold = 0`;
 - periodic full-frame interval = 10;
-- model-specific padding із `pilot_report.md`;
+- model-specific padding із `final_experiments/pilot_20261110/pilot_report.md`;
+- `evaluation_conf = 0.01`; `operational_conf` — тільки з зафіксованих
+  `final_experiments/pilot_20261110/calibration/<model>/selected_operational_config.json`
+  Stage 3 artifacts;
 - empty segments → full frame.
 
 Не запускати додаткове tuning Static/SORT/Kalman у final set.
+`evaluation_conf` є фіксованим порогом збору оцінюваних detections і не
+замінює модельно-специфічний Stage 3 `operational_conf`, який використовується
+pipeline для вибору detections/segment mode. Stage 4 має перевірити checkpoint,
+config і pilot-manifest hashes selection artifact перед запуском.
 
 ## 4. Cost calibration для кожної device × model
 
 Для фінального benchmark потрібен **окремий свіжий profile на кожній платформі**:
 
-- YOLO26n / Core i7;
+- YOLO26n / Core i9;
 - YOLO26n / Raspberry Pi 5;
-- ROI-SSD-MobileNet / Core i7;
+- ROI-SSD-MobileNet / Core i9;
 - ROI-SSD-MobileNet / Raspberry Pi 5.
 
 Не копіювати K/c/tau між платформами.
@@ -450,8 +457,8 @@ Full-frame inference на кожному кадрі.
 ## 7. Cost-aware merge
 ## 8. Full technology
 ## 9. Ablation: FF -> SEG -> CA -> FULL-TECH
-## 10. YOLO26n: Core i7 vs Raspberry Pi 5
-## 11. ROI-SSD-MobileNet: Core i7 vs Raspberry Pi 5
+## 10. YOLO26n: Core i9 vs Raspberry Pi 5
+## 11. ROI-SSD-MobileNet: Core i9 vs Raspberry Pi 5
 ## 12. Accuracy-speed trade-off
 ## 13. Negative or unexpected findings
 ## 14. Dissertation-ready conclusions

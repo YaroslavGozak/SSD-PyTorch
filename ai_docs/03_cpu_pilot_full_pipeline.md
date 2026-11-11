@@ -1,439 +1,229 @@
-# Етап 3. CPU pilot повного сегменто-орієнтованого відеоконвеєра
+# Stage 3 CPU pilot — joint segment calibration
 
-## Передумови
+## Purpose and prerequisites
 
-Запускати лише після завершення етапів 1 і 2.
+Run Stage 3 only after Stages 1 and 2. Read
+`final_experiments/FINAL_EXPERIMENTS_MANIFEST.md` and the current Stage 2
+diagnostic report first.
 
-Обов'язково прочитати:
+The primary models are YOLO26n and ROI-SSD-MobileNetV3. ROI-SSD/VGG16 is an
+optional experiment and must use its own prepared output directory. The current
+desktop target is Intel Core i9-9900KF, but every run detects and records the
+actual CPU and software environment instead of assuming a particular CPU model.
 
-- `final_experiments/FINAL_EXPERIMENTS_MANIFEST.md`
-- `final_experiments/diagnostics_128/diagnostic_report.md`
-
-Для основного Stage 3 pilot використовувати:
-
-- selected YOLO26n;
-- selected ROI-SSD-MobileNet.
-
-ROI-SSD з VGG16 є optional окремим CPU experiment. Щоб не затримувати основний
-pilot, запускати його в окремому output directory:
-
-```powershell
-python -m experiments.cpu_pilot.prepare --output-dir final_experiments\pilot_roi_ssd_vgg16 --models roi_ssd
-python -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_roi_ssd_vgg16 --models roi_ssd --stage confidence
-python -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_roi_ssd_vgg16 --models roi_ssd --stage smoke --max-frames 20
-```
-
-## Мета
-
-Перед довгими фінальними benchmark runs:
-
-1. перевірити, що YOLO26n і ROI-SSD-MobileNet працюють в одному й тому самому відеоконвеєрі;
-2. перевірити координати, класи, cropping, merge, metric calculation;
-3. підібрати **за наперед визначеним правилом**, а не post hoc, робочий padding для кожної моделі;
-4. повторно відкалібрувати cost model на Core i7;
-5. перевірити cost-aware merge;
-6. перевірити автоматичний вибір між segment mode та full-frame mode;
-7. зафіксувати всі параметри, які потім будуть заморожені у фінальному етапі.
-
-## 1. Dataset
-
-Використовувати спільний ImageNet-VID dataset із:
-
-`FINAL_EXPERIMENTS_MANIFEST.md`
-
-Не використовувати `voc-vid`, якщо manifest не встановив його як canonical common dataset.
-
-### Development/pilot subset
-
-Для tuning/pilot вибрати **окремі відеопослідовності**, які не будуть використовуватися у фінальному stage 4 evaluation.
-
-Бажано:
-
-- декілька відео;
-- сумарно приблизно 300–1000 кадрів;
-- різна кількість об'єктів;
-- різні розміри об'єктів;
-- різний рух.
-
-Розділяти **за відео**, а не випадковими кадрами одного відео, щоб зменшити temporal leakage.
-
-Зберегти:
-
-`final_experiments/pilot/pilot_manifest.txt`
-
-і окремо:
-
-`final_experiments/pilot/final_eval_manifest_candidate.txt`
-
-Не змінювати final evaluation manifest після перегляду фінальних результатів.
-
-## 2. Єдина реалізація формування сегментів
-
-Для CPU pilot використати одну основну реалізацію методу формування:
-
-`Static / previous localization`
-
-Причина: у попередньому контрольованому дослідженні це найпростіша реалізація з хорошим співвідношенням coverage / processed area / системні витрати.
-
-Не запускати знову повний sweep Static × SORT × Kalman — це вже окремо досліджено.
-
-Параметри:
-
-- `hold = 0`;
-- periodic full-frame interval = `10`;
-- при відсутності придатних сегментів → full frame.
-
-`evaluation_conf` має default `0.01` і є низьким floor для AP/Recall evaluation.
-`operational_conf` визначається окремо для кожної моделі через `--stage
-confidence` (maximum micro F1@IoU=0.5; ties: higher recall, then lower threshold).
-Candidate grid: `0.01`, далі `0.05`–`0.95` з кроком `0.05`. Його не можна
-вважати рівним `0.5` за замовчуванням. `--stage all` не вибирає цей поріг і
-потребує frozen confidence results або явний `--operational-conf`.
-
-Smoke, padding, cost і pipeline використовують обидва thresholds одночасно:
-evaluation branch бачить detections від `evaluation_conf`, а лише detections
-від `operational_conf` оновлюють tracker і формують segments наступного кадру.
-Padding таким чином оцінює quality на тій самій operational segmentation
-logic, яку використовує pipeline. `--evaluation-conf` дозволяє змінити floor;
-`--operational-conf` є явним запусковим override. Без override stages вимагають
-per-model frozen result від confidence stage. Для `confidence` evaluation floor
-залишається `0.01`.
-
-Один detector invocation і shared NMS output подають обидві гілки. Оцінювальне
-threshold filtering і metric calculation виконуються поза process-frame timing.
-Cost calibration вимірює той самий shared detector call, зафіксований як
-`shared_detector_call_at_evaluation_floor`; обидва thresholds записуються у
-cost metadata. Frame/summary metrics містять `evaluation_conf`,
-`operational_conf`, evaluation та operational detection counts.
-
-## 3. Development sweep padding
-
-Для кожної моделі окремо:
-
-- YOLO26n;
-- ROI-SSD-MobileNet;
-
-перевірити:
-
-- `p = 32`;
-- `p = 64`;
-- `p = 96`;
-- `p = 112`;
-- `p = 128`;
-- `p = 144`;
-- `p = 160`;
-- `p = 192`;
-- `p = 224`;
-
-Для основного pilot використовувати однаковий заздалегідь визначений список
-padding. VGG16 experiment використовує цей самий список окремо.
-
-### Режим для padding sweep
-
-На цьому підетапі:
-
-- merge вимкнено;
-- periodic full frame = 10;
-- hold = 0;
-- однаковий pilot subset.
-
-### Вибір padding
-
-Вибрати **найменший** padding, який задовольняє обидві умови відносно full-frame baseline тієї самої моделі:
+Stage 3 now selects `operational_conf` and padding jointly:
 
 ```text
-mAP50_segment / mAP50_full >= 0.95
+smoke
+  -> calibration (operational_conf x padding)
+  -> freeze selected configuration
+  -> fresh CPU cost calibration
+  -> FF / SEG / CA / FULL-TECH
+  -> review report and freeze Stage 3 parameters
+```
+
+The optional `confidence` and `padding` stages are diagnostics, not the final
+selection procedure.
+
+## Threshold semantics
+
+`evaluation_conf` defaults to and, for final calibration, must equal `0.01`.
+Detections at or above this floor feed mAP@0.5, mAP@0.5:0.95, and Recall
+evaluation.
+
+Each calibration cell has its own `operational_conf`. Only detections at or
+above that threshold update previous-localization state and form next-frame
+segments. A single detector invocation and shared NMS output feed both
+branches; evaluation-only filtering and metric calculation are outside
+`process_frame` timing.
+
+The `confidence` stage remains available as an optional detector-level F1
+diagnostic. Its F1-optimal value is **not** automatically the final Stage 3
+operational threshold. The `padding` stage remains an optional fixed-confidence
+padding diagnostic and does not freeze the final Stage 3 padding.
+
+## Joint calibration
+
+Each model's exact grids are stored in its source YAML under:
+
+```yaml
+calibration:
+  operational_conf_values: [...]
+  padding_values: [...]
+```
+
+The prepared config snapshots are hash-locked. Primary grids:
+
+| Model | Operational confidence | Padding |
+|---|---|---|
+| YOLO26n | 0.01, 0.05, 0.10, 0.20, 0.35 | 64, 96, 128, 160, 192, 224 |
+| ROI-SSD-MobileNetV3 | 0.01, 0.05, 0.10, 0.20, 0.25, 0.35, 0.50 | 64, 96, 112, 128, 144, 160, 192, 224 |
+
+For each model, the runner uses the same pinned pilot manifest for:
+
+1. One full-frame (FF) baseline at evaluation confidence 0.01.
+2. One SEG-only run per operational-confidence/padding pair, using Static /
+   previous localization, hold=0, periodic full-frame interval=10, and merge
+   disabled.
+
+The fixed gates are:
+
+```text
+mAP50_retention = mAP50_SEG / mAP50_FF >= 0.95
 gt_roi_coverage_mean >= 0.98
 ```
 
-Якщо `mAP50_full` дуже малий або критерій стає беззмістовним — явно повідомити.
-
-Якщо жоден padding не задовольняє обидві умови:
-
-- не підбирати інший threshold post hoc;
-- вибрати найбільший протестований padding;
-- зафіксувати, що criterion not met.
-
-Зберегти обрані значення як:
-
-- `YOLO_PADDING_FINAL`
-- `ROISSD_PADDING_FINAL`
-- `ROISSD_MOBILENET_PADDING_FINAL`
-
-у `pilot_report.md`.
-
-## 4. Full-frame baselines
-
-Для кожної моделі на pilot subset виконати full-frame baseline.
-
-Логувати:
-
-- mAP@0.5;
-- mAP@0.5:0.95;
-- Recall@0.5;
-- total processing latency;
-- inference latency;
-- FPS;
-- p50 latency;
-- p95 latency.
-
-## 5. Свіжа cost calibration на Core i7
-
-Не використовувати старі `tau` автоматично.
-
-Для кожної моделі:
-
-- YOLO26n;
-- ROI-SSD-MobileNet;
-
-виконати профілювання на тому самому CPU environment, де буде pilot.
-
-### Важливо
-
-Cost model має отримувати **фактичний effective input shape**, який реально обробляє нейронна модель.
-
-Для YOLO:
-
-- врахувати stride constraints;
-- letterbox/padding;
-- actual tensor `H×W`.
-
-Для ROI-SSD-MobileNet (і окремого VGG16 experiment):
-
-- використовувати actual variable input shape;
-- якщо preprocessing змінює shape — логувати requested і actual окремо.
-
-Оцінити:
-
-`T(A) = K + c A`
-
-і:
-
-`tau = K / c`
-
-Зберегти:
-
-- K;
-- c;
-- tau;
-- R²;
-- MAE;
-- RMSE;
-- profiling shapes;
-- repetitions;
-- warmup protocol.
-
-Зберегти в:
-
-`final_experiments/pilot/cost_profiles_cpu.csv`
-
-## 6. Режими pipeline, які треба перевірити
-
-Після вибору padding і cost calibration для **кожної моделі** виконати:
-
-### FF — Full frame
-
-Повний кадр на кожному кадрі.
-
-### SEG — Segment formation only
-
-- periodic full frame = 10;
-- Static;
-- selected padding;
-- hold=0;
-- merge disabled.
-
-### CA — Segment formation + cost-aware merge
-
-Те саме, але ввімкнути `cost_affine`.
-
-### FULL-TECH — повна інформаційна технологія
-
-На кожному кадрі:
-
-1. якщо це periodic keyframe → full frame;
-2. інакше сформувати priority segments;
-3. якщо segments empty → full frame;
-4. виконати cost-aware merge;
-5. оцінити predicted total cost для merged segments;
-6. оцінити predicted full-frame cost;
-7. якщо segment cost < full-frame cost → обробити segments;
-8. інакше → full frame.
-
-Це має бути реальна реалізація технології, а не просто `CA` з іншою назвою.
-
-## 7. Перевірка coordinate correctness
-
-Для segment inference обов'язково перевірити:
-
-- crop coordinates у source image;
-- model input coordinates;
-- decoded local bbox;
-- transform назад у global frame coordinates;
-- clipping;
-- NMS/duplicate handling після кількох segments.
-
-Зробити debug export мінімум для 20 кадрів:
-
-- original frame;
-- segments;
-- local detections;
-- global detections;
-- GT.
-
-Зберегти в:
-
-`final_experiments/pilot/debug_frames/`
-
-Якщо bbox явно зміщені, не продовжувати performance benchmark до виправлення.
-
-## 8. Обов'язкові runtime metrics
-
-Для кожного кадру логувати:
-
-- frame id;
-- video id;
-- mode: full / segments;
-- number of candidate segments;
-- number of segments after merge;
-- number of NN calls;
-- geometric processed area;
-- actual tensor pixels processed;
-- tracker/formation time;
-- merge decision time;
-- crop/preprocess time;
-- NN inference time;
-- postprocessing time;
-- total `process_frame` time;
-- whether full-frame fallback was triggered;
-- reason for fallback.
-
-### Нові ключові метрики
-
-#### `nn_calls_per_frame`
-
-Кількість фактичних викликів detector forward/inference.
-
-#### `tensor_pixels_per_frame`
-
-Сума:
-
-`actual_input_h * actual_input_w`
-
-для всіх NN calls цього кадру.
-
-#### `tensor_area_ratio`
-
-Відношення `tensor_pixels_per_frame` до кількості tensor pixels full-frame inference тієї ж моделі.
-
-Не підмінювати `processed_area_ratio_mean` цим показником. Обидва потрібні.
-
-## 9. Quality metrics
-
-Для кожного режиму:
-
-- mAP@0.5;
-- mAP@0.5:0.95;
-- Recall@0.5;
-- `gt_roi_coverage_mean`;
-- `gt_roi_coverage_p5`, якщо реалізація вже підтримує;
-- `processed_area_ratio_mean`;
-- `tensor_area_ratio_mean`;
-- `full_frame_fraction`;
-- pre-merge segment count mean;
-- post-merge segment count mean;
-- NN calls/frame mean.
-
-## 10. Timing protocol
-
-На CPU:
-
-- записати CPU model, physical/logical core counts, PyTorch/OpenCV thread counts, OS, Python і PyTorch версії;
-- зафіксувати number of threads;
-- зафіксувати OpenCV threads;
-- однакові environment variables;
-- warm-up перед кожною серією;
-- image loading не включати в `process_frame`, якщо старий benchmark теж його не включав;
-- metric calculation не включати;
-- preprocessing/cropping/postprocess, які є частиною runtime pipeline, включати.
-
-Для pilot достатньо 1–3 repeats, але всі режими однієї моделі мають мати однаковий protocol.
-
-## 11. Acceptance checks перед stage 4
-
-Для YOLO26n і ROI-SSD-MobileNet окремо перевірити:
-
-- FF metrics адекватні;
-- SEG не має coordinate bug;
-- CA реально зменшує або принаймні змінює segment count;
-- `cost_affine` використовує свіжі K/c/tau;
-- FULL-TECH реально іноді обирає full frame через cost, якщо така ситуація виникає;
-- full-frame fallback reason логуються;
-- final padding зафіксований;
-- pipeline проходить весь pilot subset без crash;
-- ROI-SSD-MobileNet не має критичної втрати accuracy на segments.
-
-## 12. Обов'язкові outputs
-
-Створити:
-
-`final_experiments/pilot/`
-
-і зберегти:
-
-- `pilot_report.md`
-- `pilot_manifest.txt`
-- `final_eval_manifest_candidate.txt`
-- `padding_sweep.csv`
-- `cost_profiles_cpu.csv`
-- `pipeline_summary.csv`
-- `frame_level_metrics.csv`
-- `debug_frames/`
-- exact configs used.
-
-У `pilot_report.md` обов'язково записати:
+Only configurations passing both gates are eligible. Select the minimum
+`tensor_area_ratio_mean`. If candidates are within 1% of the minimum, break ties
+in order: fewer `candidate_segments_per_frame`, smaller padding, then higher
+operational confidence. Runtime is not a selection criterion.
+
+If no cell passes, record `CALIBRATION_GATE_FAILED`, list the nearest candidates
+as diagnostics only, and block cost/pipeline for that model. Do not select the
+largest padding or adjust gates after viewing results.
+
+Each model writes:
 
 ```text
-YOLO_PADDING_FINAL =
-ROISSD_PADDING_FINAL =
-ROISSD_MOBILENET_PADDING_FINAL =
-
-YOLO_CPU_K =
-YOLO_CPU_c =
-YOLO_CPU_tau =
-
-ROISSD_CPU_K =
-ROISSD_CPU_c =
-ROISSD_CPU_tau =
-
-ROISSD_MOBILENET_CPU_K =
-ROISSD_MOBILENET_CPU_c =
-ROISSD_MOBILENET_CPU_tau =
+calibration/<model>/
+    calibration_sweep.csv
+    calibration_gate_matrix.csv
+    selected_operational_config.json
+    selected_operational_config.sha256
+    calibration_report.md
+    full_frame_baseline.json
 ```
 
-і relative links до final configs: `final_experiments/configs/yolo26n.yaml`,
-`final_experiments/configs/roi_ssd.yaml` та
-`final_experiments/configs/roi_ssd_mobilenet.yaml`.
+Reuse of a saved selection is allowed only after validating its receipt, sweep
+and baseline hashes, checkpoint SHA-256, config SHA-256, pilot-manifest
+SHA-256, evaluation threshold, complete config grid, and the selection recomputed
+from the sweep. Execution-code hashes recorded on every sweep row must agree;
+the selected file may omit those hashes in older runs because the hash-locked
+sweep remains the source of that provenance.
 
-## STOP CONDITIONS
+## Cost calibration
 
-Не переходити до Raspberry Pi / final benchmark, якщо:
+Run cost calibration only after a passing joint calibration. It profiles actual
+network input shapes and records K, c, tau, R², MAE, RMSE, warmups, repetitions,
+evaluation/operational confidence, selected padding, checkpoint/config/manifest
+hashes, and runtime environment.
 
-- ROI-SSD-MobileNet має некоректні global coordinates;
-- class IDs не збігаються;
-- mAP collapse не пояснений;
-- FULL-TECH не відрізняється логічно від CA;
-- cost selector порівнює raw bbox area замість actual model input cost;
-- benchmark silently resize/pad inputs без logging;
-- final dataset overlap із pilot/tuning videos не визначений.
+The timing boundary is the model forward plus detector-internal postprocessing
+at the fixed evaluation confidence. Operational thresholding, tracker updates,
+and metrics are not timed. The operational threshold does not alter this
+timed path. Pipeline execution rejects a cost profile whose frozen selection,
+provenance, or detected CPU/software environment differs.
 
-## Критерій завершення
+Recorded runtime metadata includes CPU model, physical/logical cores, PyTorch
+intra/inter-op threads, OpenCV threads, OS, Python, and PyTorch. The current
+desktop is expected to be an Intel Core i9-9900KF; the report always displays
+the detected machine.
 
-Етап завершений, якщо:
+## Pipeline
 
-1. для кожної моделі вибраний і зафіксований padding;
-2. CPU cost profiles отримані;
-3. FF / SEG / CA / FULL-TECH коректно працюють;
-4. всі runtime та quality metrics логуються;
-5. існує зафіксований final evaluation manifest;
-6. конфігурацію можна без ручного переписування перенести на Raspberry Pi.
+`pipeline` runs FF, SEG, CA, and FULL-TECH using only the passing,
+provenance-validated joint calibration plus the matching fresh cost profile.
+It rejects a different evaluation confidence, operational confidence, padding,
+checkpoint, config, manifest, or runtime environment.
+
+- **FF:** full frame every frame.
+- **SEG:** previous-localization segments, no merge.
+- **CA:** same segment formation with `cost_affine` merge.
+- **FULL-TECH:** periodic keyframes or empty segments fall back to FF;
+  otherwise compare predicted merged-segment cost with predicted FF cost and
+  process the cheaper option.
+
+Frame logs retain candidate and post-merge segment counts, NN calls, source
+processed area, actual tensor pixels/shapes, fallback reasons, predicted
+selector costs/decision, and timing breakdowns. Reports distinguish the
+FULL-TECH selector's logical choice from actual CA/FULL-TECH workload; equal
+tensor pixels and NN calls must not be interpreted as selector savings based
+only on timing differences.
+
+Debug SEG exports must be reviewed for at least 20 frames. Do not proceed if
+coordinate remapping, class IDs, clipping, or duplicate handling is incorrect.
+
+## Preparation and commands
+
+Use a fresh output directory; preparation refuses to overwrite a non-empty one.
+The following commands assume the project virtual environment and repository
+root in PowerShell. Change `--output-dir` consistently if you choose another
+fresh location.
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.prepare --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet
+```
+
+Run a short coordinate/integration smoke before calibration. The explicit
+operational threshold here is for smoke only:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet --stage smoke --max-frames 20 --operational-conf 0.10
+```
+
+Joint calibration may be run per model so the results can be reviewed
+independently:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n --stage calibration
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models roi_ssd_mobilenet --stage calibration
+```
+
+Only after both models pass:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet --stage cost --cost-repetitions 8
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet --stage pipeline
+```
+
+Alternatively, after a successful smoke, a fresh output directory can use one
+command for calibration -> cost -> pipeline. A provenance-valid calibration
+selection may be reused; cost is still measured afresh:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet --stage all --cost-repetitions 8
+```
+
+Optional diagnostics:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet --stage confidence
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n --stage padding --operational-conf 0.10
+```
+
+The optional VGG16 experiment uses a distinct directory and does not gate the
+primary models:
+
+```powershell
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.prepare --output-dir final_experiments\pilot_roi_ssd_vgg16 --models roi_ssd
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_roi_ssd_vgg16 --models roi_ssd --stage smoke --max-frames 20 --operational-conf 0.10
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_roi_ssd_vgg16 --models roi_ssd --stage calibration
+```
+
+## Outputs and acceptance
+
+The prepared output contains the pinned pilot and final-evaluation candidate
+manifests plus exact config snapshots. Calibration artifacts are under
+`calibration/<model>/`. Main result files include:
+
+```text
+pilot_report.md
+calibration/<model>/selected_operational_config.json
+calibration/<model>/calibration_sweep.csv
+cost_profiles_cpu.csv
+pipeline_summary.csv
+frame_level_metrics.csv
+debug_frames/
+configs/
+```
+
+The pilot report records the final evaluation confidence, jointly selected
+operational confidence and padding, fresh CPU K/c/tau, all four pipeline modes,
+and detected runtime environment.
+
+Stage 3 is complete only when each primary model has a passing joint
+calibration, frozen operational confidence and padding, a matching fresh CPU
+cost profile, completed FF/SEG/CA/FULL-TECH runs, correct coordinates/classes,
+complete frame metrics, a clean full-pilot run, and a video-disjoint final
+evaluation candidate. Any calibration gate failure blocks Stage 4. Do not
+change pilot-selected parameters during Stage 4.
