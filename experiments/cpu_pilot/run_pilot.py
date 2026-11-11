@@ -134,16 +134,10 @@ def _runtime_environment():
     }
 
 
-def _load_model(
-    model_name, device, evaluation_conf=DEFAULT_EVALUATION_CONF, config_path=None
-):
+def _load_model(model_name, device, evaluation_conf=DEFAULT_EVALUATION_CONF):
     if device.type != "cpu":
         raise ValueError("The CPU pilot requires device=cpu")
-    snapshot = (
-        Path(config_path)
-        if config_path is not None
-        else PILOT_DIR / "configs" / f"{model_name}.yaml"
-    )
+    snapshot = PILOT_DIR / "configs" / f"{model_name}.yaml"
     print(f"Loading {model_name} model from {snapshot}", flush=True)
     args = SimpleNamespace(config_path=str(snapshot))
     model, dataset, _loader, config = load_model_and_dataset(device, args)

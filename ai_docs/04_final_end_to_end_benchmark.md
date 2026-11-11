@@ -22,8 +22,9 @@
 Обов'язково прочитати:
 
 - `final_experiments/FINAL_EXPERIMENTS_MANIFEST.md`
-- `final_experiments/diagnostics_128/diagnostic_report.md`
-- `final_experiments/pilot/pilot_report.md`
+- `final_experiments/02_diagnostics_128/diagnostic_report.md`
+- `final_experiments/pilot_20261110/pilot_report.md`
+- `final_experiments/RASPBERRY_PI_STAGE3_STAGE4_RUNBOOK.md` перед запуском на Pi
 
 Використовувати **тільки** зафіксовані там:
 
@@ -35,6 +36,10 @@
 - configs.
 
 Не підбирати параметри після перегляду final results.
+Dataset, checkpoint, Stage 3 artifact та output locations задаються локальними
+`SSD_DATASET_ROOT`, `SSD_DATASET_YAML`, `SSD_MODELS_ROOT`, `SSD_STAGE3_DIR` і
+`SSD_OUTPUT_ROOT`; machine-specific absolute paths не зберігаються у спільних
+конфігураціях. Frozen config і manifest hashes не змінювати.
 
 ## 1. Моделі та платформи
 

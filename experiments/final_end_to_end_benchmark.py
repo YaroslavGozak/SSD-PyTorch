@@ -18,6 +18,7 @@ import platform
 import re
 import shutil
 import statistics
+import subprocess
 import sys
 import threading
 import time
@@ -26,11 +27,23 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from experiments.cpu_pilot.portable_paths import (
+    CHECKPOINT_RELATIVE_PATHS,
+    CHECKPOINT_SHA256,
+    cpu_model_fallback,
+    dataset_root_path,
+    dataset_yaml_path,
+    env_path,
+    portable_dataset_config,
+    stage3_dir,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_ROOT = ROOT / "final_experiments" / "final_benchmark"
-PILOT_DIR = ROOT / "final_experiments" / "pilot_20261110"
+DEFAULT_OUTPUT_ROOT = env_path(
+    "SSD_OUTPUT_ROOT", ROOT / "raspberry-outputs" / "stage4"
+)
+PILOT_DIR = stage3_dir(ROOT / "final_experiments" / "pilot_20261110")
 PILOT_REPORT = PILOT_DIR / "pilot_report.md"
 PILOT_MANIFEST = PILOT_DIR / "pilot_manifest.txt"
 FINAL_MANIFEST = PILOT_DIR / "final_eval_manifest_candidate.txt"
@@ -41,12 +54,12 @@ MODEL_NAMES = ("yolo26n", "roi_ssd_mobilenet")
 MODEL_CONFIGS = {
     "yolo26n": {
         "pilot_name": "yolo26n",
-        "checkpoint_sha256": "5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027",
+        "checkpoint_sha256": CHECKPOINT_SHA256["yolo26n"],
         "config": PILOT_DIR / "configs" / "yolo26n.yaml",
     },
     "roi_ssd_mobilenet": {
         "pilot_name": "roi_ssd_mobilenet",
-        "checkpoint_sha256": "1a830c339f060905f1042e10e98906be0cab43fa94cb3867bfc683ad14adc804",
+        "checkpoint_sha256": CHECKPOINT_SHA256["roi_ssd_mobilenet"],
         "config": PILOT_DIR / "configs" / "roi_ssd_mobilenet.yaml",
     },
 }
@@ -101,6 +114,23 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(ROOT))
+    except ValueError:
+        return str(path)
+
+
+def _git_provenance() -> Dict:
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
+    ).strip()
+    dirty = bool(subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=ROOT, text=True
+    ).strip())
+    return {"git_commit": commit, "git_dirty": dirty}
+
+
 def _write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
@@ -151,10 +181,9 @@ def _required_inputs(dataset_yaml_override: Optional[Path] = None) -> Path:
         )
         if dataset_match is None:
             raise ValueError(f"Frozen config for {model_name} has no yolo_dataset_yaml path")
-        dataset_yaml = (
-            Path(dataset_yaml_override).expanduser().resolve()
-            if dataset_yaml_override is not None
-            else Path(dataset_match.group(1).strip().strip("\"'"))
+        dataset_yaml = dataset_yaml_path(
+            Path(dataset_match.group(1).strip().strip("\"'")),
+            dataset_yaml_override,
         )
         dataset_yaml_paths.add(dataset_yaml)
         if not dataset_yaml.is_file():
@@ -162,6 +191,16 @@ def _required_inputs(dataset_yaml_override: Optional[Path] = None) -> Path:
                 f"Stage 4 dataset YAML required by {model_name} does not exist: {dataset_yaml}. "
                 "Make the frozen dataset available at this path before running the benchmark."
             )
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError(
+                "PyYAML is required to validate the configured dataset YAML"
+            ) from exc
+        dataset_config = yaml.safe_load(dataset_yaml.read_text(encoding="utf-8"))
+        selected_root = dataset_root_path(dataset_config.get("path"))
+        if selected_root is None or not selected_root.is_dir():
+            raise FileNotFoundError(f"Dataset root is missing: {selected_root}")
     if len(dataset_yaml_paths) != 1:
         raise ValueError(
             "The frozen model configs must reference the same validation dataset YAML"
@@ -173,6 +212,13 @@ def _validate_frozen_inputs(
     dataset_yaml_override: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]], Dict]:
     dataset_yaml = _required_inputs(dataset_yaml_override)
+    import yaml
+
+    dataset_root = dataset_root_path(
+        yaml.safe_load(dataset_yaml.read_text(encoding="utf-8")).get("path")
+    )
+    if dataset_root is None or not dataset_root.is_dir():
+        raise FileNotFoundError(f"Dataset root is missing: {dataset_root}")
     if _sha256(PILOT_MANIFEST) != EXPECTED_PILOT_SHA256:
         raise ValueError("Stage 3 pilot manifest checksum differs from the locked report")
     if _sha256(FINAL_MANIFEST) != EXPECTED_FINAL_SHA256:
@@ -238,6 +284,8 @@ def _validate_frozen_inputs(
         "source_audit_manifest_sha256_matches_documented": source_sha256 == EXPECTED_SOURCE_SHA256,
         "dataset_yaml": str(dataset_yaml),
         "dataset_yaml_sha256": _sha256(dataset_yaml),
+        "dataset_root": str(dataset_root),
+        **_git_provenance(),
         "stage3_selections": stage3_selections,
         "pilot_report_sha256": _sha256(PILOT_REPORT),
         "diagnostic_report_sha256": _sha256(DIAGNOSTIC_REPORT),
@@ -336,6 +384,9 @@ def _validate_device_label(device_label: str, runtime: Dict) -> None:
 def _load_pilot_module():
     from experiments.cpu_pilot import run_pilot as pilot
 
+    pilot.PILOT_DIR = PILOT_DIR
+    pilot.SPLIT_METADATA = PILOT_DIR / "split_metadata.json"
+    pilot._cpu_model = cpu_model_fallback
     pilot._configure_runtime()
     return pilot
 
@@ -408,40 +459,68 @@ def _load_model_and_dataset(
     pilot, model_name: str, dataset_yaml_override: Optional[Path] = None
 ):
     import torch
+    import yaml
 
     model_info = MODEL_CONFIGS[model_name]
     padding = _read_locked_padding(model_name)
-    checkpoint_path, checkpoint_hash = pilot.MODEL_CHECKPOINTS[model_name]
-    if _sha256(ROOT / checkpoint_path) != checkpoint_hash:
-        raise ValueError(f"Selected checkpoint checksum mismatch for {model_name}")
+    checkpoint_path = ROOT / CHECKPOINT_RELATIVE_PATHS[model_name]
+    checkpoint_hash = CHECKPOINT_SHA256[model_name]
+    if not checkpoint_path.is_file() or _sha256(checkpoint_path) != checkpoint_hash:
+        raise ValueError(f"Selected checkpoint is missing or has a checksum mismatch for {model_name}")
     manifest_text = (ROOT / "final_experiments" / "FINAL_EXPERIMENTS_MANIFEST.md").read_text(
         encoding="utf-8"
     )
     checkpoint_relative_path = checkpoint_path.relative_to(ROOT).as_posix()
     if checkpoint_hash not in manifest_text or checkpoint_relative_path not in manifest_text:
         raise ValueError(f"Checkpoint selection for {model_name} differs from the canonical manifest")
-    if dataset_yaml_override is None:
-        model, dataset, config, evaluation_conf = pilot._load_model(
-            model_info["pilot_name"], torch.device("cpu"),
-            evaluation_conf=QUALITY_CONFIDENCE,
-            config_path=model_info["config"],
-        )
+    source_config = yaml.safe_load(
+        model_info["config"].read_text(encoding="utf-8")
+    )
+    selected_dataset_yaml = dataset_yaml_path(
+        source_config["dataset_params"]["yolo_dataset_yaml"],
+        dataset_yaml_override,
+    )
+    if not selected_dataset_yaml.is_file():
+        raise FileNotFoundError(f"Dataset YAML is missing: {selected_dataset_yaml}")
+    dataset_config = yaml.safe_load(selected_dataset_yaml.read_text(encoding="utf-8"))
+    selected_dataset_root = dataset_root_path(dataset_config.get("path"))
+    if selected_dataset_root is None or not selected_dataset_root.is_dir():
+        raise FileNotFoundError(f"Dataset root is missing: {selected_dataset_root}")
+    dataset_config = portable_dataset_config(dataset_config, selected_dataset_root)
+
+    train_config = source_config["train_params"]
+    if model_name == "yolo26n":
+        train_config["yolo_weights"] = str(checkpoint_path)
     else:
-        config_text = model_info["config"].read_text(encoding="utf-8")
-        dataset_match = re.search(
-            r"^(\s*yolo_dataset_yaml:\s*).+?$", config_text, re.MULTILINE
+        train_config["task_name"] = str(checkpoint_path.parent)
+        train_config["ckpt_name"] = checkpoint_path.name
+
+    with tempfile.TemporaryDirectory(prefix="stage4-portable-") as temp_dir:
+        temp_dir = Path(temp_dir)
+        runtime_yaml = temp_dir / selected_dataset_yaml.name
+        runtime_yaml.write_text(
+            yaml.safe_dump(dataset_config, sort_keys=False), encoding="utf-8"
         )
-        if dataset_match is None:
-            raise ValueError(f"Frozen config for {model_name} has no dataset YAML setting")
-        replacement = f"{dataset_match.group(1)}{json.dumps(str(dataset_yaml_override.resolve()))}"
-        runtime_config_text = config_text[:dataset_match.start()] + replacement + config_text[dataset_match.end():]
-        with tempfile.TemporaryDirectory(prefix="stage4-config-") as temp_dir:
-            runtime_config = Path(temp_dir) / model_info["config"].name
-            runtime_config.write_text(runtime_config_text, encoding="utf-8")
+        source_config["dataset_params"]["yolo_dataset_yaml"] = str(runtime_yaml)
+        runtime_config_dir = temp_dir / "configs"
+        runtime_config_dir.mkdir()
+        runtime_config = runtime_config_dir / model_info["config"].name
+        runtime_config.write_text(
+            yaml.safe_dump(source_config, sort_keys=False), encoding="utf-8"
+        )
+        original_pilot_dir = pilot.PILOT_DIR
+        pilot.PILOT_DIR = temp_dir
+        try:
             model, dataset, config, evaluation_conf = pilot._load_model(
                 model_info["pilot_name"], torch.device("cpu"),
-                evaluation_conf=QUALITY_CONFIDENCE, config_path=runtime_config,
+                evaluation_conf=QUALITY_CONFIDENCE,
             )
+        finally:
+            pilot.PILOT_DIR = original_pilot_dir
+    config["dataset_params"]["yolo_dataset_yaml"] = str(selected_dataset_yaml)
+    config["train_params"] = yaml.safe_load(
+        model_info["config"].read_text(encoding="utf-8")
+    )["train_params"]
     if float(config["train_params"].get("infer_conf_threshold", -1)) != QUALITY_CONFIDENCE:
         raise ValueError(f"Frozen evaluation confidence changed for {model_name}")
     _read_stage3_selection(model_name)
@@ -454,7 +533,11 @@ def _load_model_and_dataset(
 
 
 def _indices_for_manifest(pilot, dataset, config, rows):
-    root = pilot._dataset_root(config)
+    root = dataset_root_path()
+    if root is None:
+        root = pilot._dataset_root(config)
+    if not root.is_dir():
+        raise FileNotFoundError(f"Dataset root is missing: {root}")
     indices = pilot._dataset_indices(dataset, rows, root)
     if len(indices) != len(rows):
         raise ValueError("Manifest-to-dataset mapping did not preserve every frame")
@@ -464,7 +547,11 @@ def _indices_for_manifest(pilot, dataset, config, rows):
 def _check_manifest_files(pilot, config, rows) -> None:
     import yaml
 
-    dataset_root = pilot._dataset_root(config)
+    dataset_root = dataset_root_path()
+    if dataset_root is None:
+        dataset_root = pilot._dataset_root(config)
+    if not dataset_root.is_dir():
+        raise FileNotFoundError(f"Dataset root is missing: {dataset_root}")
     source_by_key = {
         (str(row["video_id"]), int(row["frame_index"])): row
         for row in _read_jsonl(AUDIT_MANIFEST)
@@ -560,7 +647,7 @@ def _profile_models(pilot, device_dir: Path, device_label: str,
                 "checkpoint_sha256": checkpoint,
                 "config_sha256": _sha256(MODEL_CONFIGS[model_name]["config"]),
                 "profiling_manifest_sha256": EXPECTED_PILOT_SHA256,
-                "profiling_manifest": str(PILOT_MANIFEST.relative_to(ROOT)),
+                "profiling_manifest": _display_path(PILOT_MANIFEST),
                 "shapes": [{"height": hw[0], "width": hw[1], "pixels": hw[0] * hw[1],
                             "median_ms": median, "p95_ms": p95}
                            for hw, median, p95 in shape_rows],
@@ -1017,7 +1104,7 @@ def _write_report(directory: Path, summary: Sequence[Dict], fulltech: Sequence[D
         "# Final end-to-end benchmark",
         "",
         "## 1. Dataset and compatibility",
-        f"- Final-evaluation manifest: `{FINAL_MANIFEST.relative_to(ROOT)}`",
+        f"- Final-evaluation manifest: `{_display_path(FINAL_MANIFEST)}`",
         f"- SHA-256: `{EXPECTED_FINAL_SHA256}`; 4,744 ordered frames from 476 videos.",
         dataset_line,
         "- Stage 3 pilot frames are checked for video-level disjointness from final frames.",

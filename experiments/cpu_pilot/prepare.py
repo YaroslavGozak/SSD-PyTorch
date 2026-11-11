@@ -12,9 +12,18 @@ from pathlib import Path
 import cv2
 import yaml
 
+from experiments.cpu_pilot.portable_paths import (
+    CHECKPOINT_RELATIVE_PATHS,
+    CHECKPOINT_SHA256,
+    checkpoint_path,
+    dataset_root_path,
+    dataset_yaml_path,
+    display_path,
+    stage3_dir,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
-OUTPUT = ROOT / "final_experiments" / "pilot"
+OUTPUT = stage3_dir(ROOT / "final_experiments" / "pilot")
 SOURCE_MANIFEST = ROOT / "final_experiments" / "01_audit" / "val_manifest.jsonl"
 CANONICAL_MANIFEST = ROOT / "final_experiments" / "01_audit" / "canonical_validation.jsonl"
 PILOT_VIDEO_COUNT = 32
@@ -28,15 +37,12 @@ MODEL_CONFIGS = {
     "roi_ssd_mobilenet": ROOT / "final_experiments/configs/roi_ssd_mobilenet.yaml",
 }
 MODEL_CHECKPOINTS = {
-    "yolo26n": (ROOT / "trained_models/best-imagenet-vid-yolo/best.pt", "5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027"),
+    "yolo26n": (checkpoint_path("yolo26n"), CHECKPOINT_SHA256["yolo26n"]),
     "roi_ssd": (
         ROOT / "trained_models/imagenet-vid-roissd-20261028/stage3/best_map.pt",
         "f8f49132e08a7c5bf3744ce32e46e1b0fed6595aabd9cf59cf68699569503f76",
     ),
-    "roi_ssd_mobilenet": (
-        ROOT / "trained_models/imagenet-vid-roissd-mobilenet-20261027/stage3/best_map.pt",
-        "1a830c339f060905f1042e10e98906be0cab43fa94cb3867bfc683ad14adc804",
-    ),
+    "roi_ssd_mobilenet": (checkpoint_path("roi_ssd_mobilenet"), CHECKPOINT_SHA256["roi_ssd_mobilenet"]),
 }
 
 
@@ -117,9 +123,11 @@ def main():
         raise RuntimeError("Pilot and final candidate overlap by video")
 
     config = yaml.safe_load(MODEL_CONFIGS["yolo26n"].read_text(encoding="utf-8"))
-    dataset_yaml = Path(config["dataset_params"]["yolo_dataset_yaml"])
+    dataset_yaml = dataset_yaml_path(config["dataset_params"]["yolo_dataset_yaml"])
     dataset_config = yaml.safe_load(dataset_yaml.read_text(encoding="utf-8"))
-    dataset_root = Path(dataset_config["path"])
+    dataset_root = dataset_root_path(dataset_config["path"])
+    if dataset_root is None or not dataset_root.is_dir():
+        raise FileNotFoundError(f"Dataset root is missing: {dataset_root}")
     validate_source_rows(pilot_rows, dataset_root)
 
     OUTPUT.mkdir(parents=True, exist_ok=True)
@@ -138,10 +146,12 @@ def main():
                 f"configured value is {configured_threshold}"
             )
         destination = configs_dir / f"{name}.yaml"
-        shutil.copy2(source, destination)
+        source_config["dataset_params"]["yolo_dataset_yaml"] = str(dataset_yaml)
+        with destination.open("w", encoding="utf-8", newline="") as stream:
+            yaml.safe_dump(source_config, stream, sort_keys=False)
         copied_configs[name] = {
-            "source": str(source.relative_to(ROOT)),
-            "snapshot": str(destination.relative_to(ROOT)),
+            "source": display_path(source),
+            "snapshot": display_path(destination),
             "sha256": sha256_file(destination),
         }
     checkpoints = {}
@@ -153,7 +163,7 @@ def main():
         if actual_hash != expected_hash:
             raise ValueError(f"Selected {name} checkpoint hash differs from the locked manifest")
         checkpoints[name] = {
-            "path": str(checkpoint.relative_to(ROOT)),
+            "path": CHECKPOINT_RELATIVE_PATHS[name].as_posix(),
             "sha256": actual_hash,
         }
 
@@ -196,9 +206,9 @@ def main():
             "canonical_manifest_sha256": sha256_file(CANONICAL_MANIFEST),
             "pilot_manifest_sha256": sha256_file(pilot_path),
             "final_eval_manifest_candidate_sha256": sha256_file(final_path),
-            "dataset_yaml": str(dataset_yaml),
+            "dataset_yaml": display_path(dataset_yaml),
             "dataset_yaml_sha256": sha256_file(dataset_yaml),
-            "dataset_root": str(dataset_root),
+            "dataset_root": display_path(dataset_root),
             "model_configs": copied_configs,
             "selected_checkpoints": checkpoints,
             "note": (
