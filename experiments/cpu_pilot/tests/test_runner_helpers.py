@@ -1,7 +1,9 @@
 import csv
+import io
 import unittest
 import json
 import tempfile
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -164,6 +166,55 @@ class PilotHelperTests(unittest.TestCase):
         for invalid in (-0.01, 1.01, float("nan"), float("inf")):
             with self.subTest(value=invalid), self.assertRaises(ValueError):
                 _validate_confidence("operational_conf", invalid)
+
+    def test_profile_cost_emits_progress_for_each_shape(self):
+        model = Mock()
+        dataset = [
+            (torch.zeros((1, 3, 64, 64), dtype=torch.float32), None),
+        ]
+        observed = []
+        current_pixels = 1
+        perf_counter_calls = 0
+
+        def fake_observer(_model):
+            return observed, Mock(remove=Mock())
+
+        def fake_inference(_model, batch):
+            nonlocal current_pixels
+            current_pixels = int(batch.shape[-2]) * int(batch.shape[-1])
+            observed.append(tuple(int(value) for value in batch.shape[-2:]))
+            return None, []
+
+        def fake_perf_counter():
+            nonlocal perf_counter_calls
+            perf_counter_calls += 1
+            return float(perf_counter_calls) + (current_pixels / 100000.0 if perf_counter_calls % 2 == 0 else 0.0)
+
+        def fake_interpolate(sample, size, mode, align_corners):
+            height, width = size
+            return torch.zeros((1, sample.shape[1], height, width), dtype=sample.dtype, device=sample.device)
+
+        buffer = io.StringIO()
+        with (
+            patch("experiments.cpu_pilot.run_pilot._attach_shape_observer", side_effect=fake_observer),
+            patch("experiments.cpu_pilot.run_pilot.run_model_inference", side_effect=fake_inference),
+            patch("experiments.cpu_pilot.run_pilot.F.interpolate", side_effect=fake_interpolate),
+            patch("experiments.cpu_pilot.run_pilot.time.perf_counter", side_effect=fake_perf_counter),
+            redirect_stdout(buffer),
+        ):
+            fit, shape_rows, raw = __import__("experiments.cpu_pilot.run_pilot", fromlist=["_profile_cost"])._profile_cost(
+                "tiny_model",
+                model,
+                dataset,
+                [0],
+                1,
+            )
+
+        self.assertTrue(shape_rows)
+        self.assertIn("Profiling CPU cost", buffer.getvalue())
+        self.assertIn("tiny_model", buffer.getvalue())
+        self.assertIn("Cost fit complete", buffer.getvalue())
+        self.assertEqual(fit["actual_shape_count"], len(shape_rows))
 
     def test_confidence_selection_uses_low_floor_predictions(self):
         frame_rows = [{

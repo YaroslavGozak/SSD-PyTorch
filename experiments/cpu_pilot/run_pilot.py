@@ -745,11 +745,19 @@ def _profile_cost(model_name, model, dataset, indices, repetitions):
     device = torch.device("cpu")
     observations = {}
     raw = []
+    print(
+        f"Profiling CPU cost for {model_name}: {len(CALIBRATION_SHAPES)} calibration shapes, {repetitions} reps/shape",
+        flush=True,
+    )
     try:
         with torch.inference_mode():
-            for height, width in CALIBRATION_SHAPES:
+            for shape_index, (height, width) in enumerate(CALIBRATION_SHAPES, start=1):
                 if model_name == "yolo26n" and (height % 32 or width % 32):
                     raise ValueError(f"YOLO calibration shape must be stride-32 aligned: {(height,width)}")
+                print(
+                    f"[{model_name}] cost shape {shape_index}/{len(CALIBRATION_SHAPES)}: {(height, width)}",
+                    flush=True,
+                )
                 batch = F.interpolate(sample, size=(height, width), mode="bilinear", align_corners=False)
                 for _ in range(2):
                     run_model_inference(model, batch.to(device))
@@ -773,6 +781,7 @@ def _profile_cost(model_name, model, dataset, indices, repetitions):
                     })
     finally:
         hook.remove()
+    print(f"Cost fit complete for {model_name}: {len(observations)} observed network shapes", flush=True)
 
     shape_rows = [
         (shape, float(np.median(values)), float(np.percentile(values, 95)))
@@ -1048,6 +1057,7 @@ def run_cost_profiles(split, manifest_rows, device, repetitions,
                 f"--operational-conf differs from frozen joint calibration for {model_name}"
             )
     for model_name in MODEL_NAMES:
+        print(f"Starting CPU cost calibration for {model_name} with frozen operational_conf={selected_configs[model_name]['operational_conf']}", flush=True)
         model, dataset, config, _ = _load_model(model_name, device, evaluation_conf)
         selected = selected_configs[model_name]
         operational = float(selected["operational_conf"])
