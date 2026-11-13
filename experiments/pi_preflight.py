@@ -177,6 +177,9 @@ def _validate_frozen_selections(stage3, failures):
             artifact = selection_dir / filename
             if not artifact.is_file() or selection.get(hash_key) != _sha256(artifact):
                 failures.append(f"Frozen {model_name} calibration artifact is missing or changed: {filename}")
+        report_path = selection_dir / "calibration_report.md"
+        if not report_path.is_file():
+            failures.append(f"Frozen {model_name} calibration artifact is missing: calibration_report.md")
 
 
 def _validate_split_metadata(stage3, failures):

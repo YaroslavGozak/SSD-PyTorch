@@ -235,6 +235,28 @@ unzip -q "$BASE/stage3_inputs.zip" -d "$SSD_STAGE3_DIR"
 mkdir -p "$SSD_OUTPUT_ROOT"
 ```
 
+The bundle includes each model's `calibration_report.md`; the frozen cost and
+pipeline stages require it alongside the selected-config receipt, sweep,
+gate matrix, and baseline. If an earlier bundle omitted these reports, export
+a new bundle from the same desktop frozen inputs and copy only the reports
+into the existing Pi Stage 3 directory:
+
+```powershell
+$bundle = "$env:TEMP\ssd_pi_inputs_$COMMIT_SHA-repaired"
+python -m experiments.cpu_pilot.export_pi_inputs --output-dir $bundle
+Compress-Archive -Path "$bundle\*" -DestinationPath "$bundle.zip"
+scp "$bundle.zip" PI_USER@PI_HOST:/home/PI_USER/object-detection/stage3_inputs_repaired.zip
+```
+
+```bash
+unzip -o "$BASE/stage3_inputs_repaired.zip" \
+  'calibration/yolo26n/calibration_report.md' \
+  'calibration/roi_ssd_mobilenet/calibration_report.md' \
+  -d "$SSD_STAGE3_DIR"
+test -s "$SSD_STAGE3_DIR/calibration/yolo26n/calibration_report.md"
+test -s "$SSD_STAGE3_DIR/calibration/roi_ssd_mobilenet/calibration_report.md"
+```
+
 ## 7. Checkpoint checksums and preflight
 
 Verify the two exact files on the Pi:

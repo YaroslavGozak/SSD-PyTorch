@@ -45,6 +45,7 @@ def _required_files():
                 "selected_operational_config.sha256",
                 "calibration_sweep.csv",
                 "calibration_gate_matrix.csv",
+                "calibration_report.md",
                 "full_frame_baseline.json",
             )
         )
