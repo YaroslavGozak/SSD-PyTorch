@@ -20,7 +20,7 @@ class RoiSSDAdapter:
     IMAGENET_MEAN = (0.485, 0.456, 0.406)
     IMAGENET_STD = (0.229, 0.224, 0.225)
 
-    def __init__(self, model_config: str, weights: str, device: str = "cpu", stride: int = 1):
+    def __init__(self, model_config: str, weights: str, device: str = "cpu", stride: int = 1, pretrained_backbone: bool = True):
         config = load_config(model_config)
         dataset_config = config["dataset_params"]
         train_config = config["train_params"]
@@ -30,7 +30,8 @@ class RoiSSDAdapter:
         if model_name == "roissd":
             self.model = RoiSSD(config=config["model_params"], num_classes=num_classes)
         elif model_name in {"roissd-mobilenet", "roissd_mobilenet"}:
-            self.model = RoiSSDMobileNet(config=config["model_params"], num_classes=num_classes)
+            self.model = RoiSSDMobileNet(config=config["model_params"], num_classes=num_classes,
+                                         pretrained_backbone=pretrained_backbone)
         else:
             raise ValueError(f"model config must select roissd or roissd-mobilenet, got {model_name!r}")
 

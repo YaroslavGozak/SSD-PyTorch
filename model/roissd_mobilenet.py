@@ -396,7 +396,7 @@ class RoiSSDMobileNet(nn.Module):
     7a. If training: compute localization and classification losses
     7b. If inference: perform NMS filtering and return detections
     """
-    def __init__(self, config, num_classes=21, record_execution_trace=False):
+    def __init__(self, config, num_classes=21, record_execution_trace=False, pretrained_backbone=True):
         super().__init__()
         self.aspect_ratios = config['aspect_ratios']
 
@@ -418,7 +418,8 @@ class RoiSSDMobileNet(nn.Module):
 
         # Load imagenet pretrained mobilenet network
         backbone = torchvision.models.mobilenet_v3_large(
-            weights=torchvision.models.MobileNet_V3_Large_Weights.IMAGENET1K_V2
+            weights=(torchvision.models.MobileNet_V3_Large_Weights.IMAGENET1K_V2
+                     if pretrained_backbone else None)
         )
 
         # MobileNetV3 features extraction for SSD pyramid

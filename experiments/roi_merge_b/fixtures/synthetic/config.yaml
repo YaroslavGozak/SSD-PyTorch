@@ -1,0 +1,111 @@
+schema_version: 1
+experiment_id: SYNTHETIC-NONPUBLICATION-merge-b
+seed: 20261116
+dataset:
+  index: final_experiments/01_audit/val_manifest.jsonl
+  cohort_manifest: null
+  root_env: SSD_DATASET_ROOT
+  yaml_env: SSD_DATASET_YAML
+  expected_classes: 30
+geometry:
+  canvas_hw:
+  - 320
+  - 320
+  padding_canvas_px: 16
+  minimum_side_canvas_px: 32
+  source: gt-derived
+  deduplicate: true
+splits:
+  calibration_sequences: 2
+  validation_sequences: 2
+models:
+  yolo26n:
+    checkpoint: trained_models/best-imagenet-vid-yolo/best.pt
+    checkpoint_sha256: 5a35043701d4dadd30319e72246f2e6f349688642b75885bdb4a36b294f66027
+    shape_grid: 32
+    architecture:
+      dataset_params:
+        num_classes: 30
+      train_params:
+        model: yolo
+      model_params: {}
+  roi_ssd_mobilenet:
+    checkpoint: trained_models/imagenet-vid-roissd-mobilenet-20261027/stage3/best_map.pt
+    checkpoint_sha256: 1a830c339f060905f1042e10e98906be0cab43fa94cb3867bfc683ad14adc804
+    shape_grid: 1
+    architecture:
+      dataset_params:
+        num_classes: 31
+      train_params:
+        model: roissd-mobilenet
+      model_params:
+        aspect_ratios:
+        - - 1.0
+          - 2.0
+          - 0.5
+        - - 1.0
+          - 2.0
+          - 3.0
+          - 0.5
+          - 0.333
+        - - 1.0
+          - 2.0
+          - 3.0
+          - 0.5
+          - 0.333
+        - - 1.0
+          - 2.0
+          - 3.0
+          - 0.5
+          - 0.333
+        - - 1.0
+          - 2.0
+          - 0.5
+        - - 1.0
+          - 2.0
+          - 0.5
+        detections_per_img: 200
+        im_channels: 3
+        iou_threshold: 0.5
+        low_score_threshold: 0.01
+        neg_pos_ratio: 3
+        nms_threshold: 0.45
+        pre_nms_topK: 400
+        scales:
+        - 0.1
+        - 0.2
+        - 0.375
+        - 0.55
+        - 0.725
+        - 0.9
+runtime:
+  cpu_threads: 4
+  interop_threads: 1
+  opencv_threads: 1
+  affinity: null
+profiling:
+  warmup: 1
+  repetitions: 3
+  evaluation_repetitions: 4
+  calibration_max_shapes: 20
+  max_heldout_shapes: 2048
+  grid_sides:
+  - 32
+  - 96
+  - 192
+  - 320
+  timing_scope: prepared_detector_forward
+  device: cpu
+policies:
+  geometric_area_ratio_max: 1.4
+  confidence_z: 1.645
+  minimum_gain_ms: 0.0
+  exact_oracle_max_rois: 6
+  boundary_bins_ms:
+  - 0.05
+  - 0.2
+  - 1.0
+  bootstrap_repetitions: 30
+subsets:
+  smoke_frames: 20
+  pilot_frames: 200
