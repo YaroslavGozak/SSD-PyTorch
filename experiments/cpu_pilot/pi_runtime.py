@@ -1,8 +1,8 @@
 """Portable launcher for the frozen Stage 3 CPU workflow."""
 
+import argparse
 import hashlib
 import json
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -160,6 +160,16 @@ def _configure():
 
 
 def main():
+    from experiments.cpu_pilot.runtime_threads import add_thread_arguments, install_thread_policy
+
+    thread_parser = argparse.ArgumentParser(add_help=False)
+    add_thread_arguments(thread_parser)
+    if any(argument in {"-h", "--help"} for argument in sys.argv[1:]):
+        thread_parser.print_help()
+    thread_args, remaining = thread_parser.parse_known_args()
+    sys.argv = [sys.argv[0], *remaining]
+    if not any(argument in {"-h", "--help"} for argument in remaining):
+        install_thread_policy(pilot, thread_args)
     if any(argument in {"-h", "--help"} for argument in sys.argv[1:]):
         pilot.main()
         return

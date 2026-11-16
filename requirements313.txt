@@ -11,3 +11,4 @@ ultralytics==8.4.60
 scikit-image==0.26.0
 lapx
 psutil
+threadpoolctl>=3.1

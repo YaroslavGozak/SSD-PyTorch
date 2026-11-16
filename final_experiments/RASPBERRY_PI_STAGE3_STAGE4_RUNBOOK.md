@@ -276,43 +276,50 @@ The selected frozen settings are:
 
 ## 8. Stage 3 smoke, fresh Pi cost profile, and short pipeline check
 
-Define this Bash helper in the activated Pi environment, from `$REPO`, before
-running Stage 3:
+Configure thread counts in the Pi shell before Stage 3 and keep the same values
+through cost profiling, pipeline validation, and Stage 4:
 
 ```bash
-ssd_pi_runtime() {
-  python -u -X faulthandler - "$@" <<'PY'
-import sys
-from experiments.cpu_pilot import pi_runtime
-from ultralytics.utils import torch_utils
-
-torch_utils.NUM_THREADS = pi_runtime.pilot.CPU_THREADS
-sys.argv = ["pi_runtime", *sys.argv[1:]]
-pi_runtime.main()
-PY
-}
+export SSD_CPU_THREADS=3
+export SSD_INTEROP_THREADS=1
+export SSD_OPENCV_THREADS=1
 ```
 
-Ultralytics CPU initialization otherwise changed PyTorch intra-op threads to 3
-on the tested Pi, while the frozen runner starts with 8. This caused the pipeline
-to reject the YOLO cost profile as a different runtime. The helper keeps both
-models at the runner's configured thread count (8) without editing hash-bound
-source or calibration receipts. Use it for every Stage 3 invocation below.
-Redefine it after opening a new shell. If profiles were already measured without
-this helper, preserve those outputs separately and regenerate the profiles;
-do not edit their recorded thread metadata.
+These are defaults, not requirements for every device. Select the policy before
+measuring; a Raspberry Pi may use a different CPU thread count from a desktop.
+`SSD_CPU_THREADS` controls PyTorch intra-op threads, Ultralytics CPU initialization,
+and BLAS pools; inter-op and OpenCV have separate settings. Install the runtime
+controller if updating an existing environment:
+
+```bash
+python -m pip install 'threadpoolctl>=3.1'
+```
+
+Stage 3's portable launcher and Stage 4 accept `--cpu-threads`, `--interop-threads`,
+and `--opencv-threads`; explicit arguments override the environment variables.
+Counts must be positive integers. No shell wrapper is needed. Runtime policy is
+applied before work and checked before and after each detector invocation.
+Profile metadata records actual PyTorch/OpenCV thread counts and the BLAS
+thread limit and rejects incompatible profiles. Regenerate cost profiles after
+updating to this runtime policy, even if the previous PyTorch count was the same. Changing a count requires fresh cost profiles and
+repeated pipeline/benchmark measurements. Preserve previous results separately;
+do not edit profile metadata or frozen calibration receipts.
+
+Use the calibrated source revision plus these launcher/runtime changes. They do
+not change the hash-bound Stage 3 runner or frozen confidence/padding selection.
+Do not pull unrelated changes to hash-bound files during an experiment.
 
 The smoke uses 20 pilot frames per model and the corresponding frozen
 operational confidence. Save each per-model smoke report because the runner
 writes one report per invocation:
 
 ```bash
-ssd_pi_runtime --stage smoke --max-frames 20 \
+python -m experiments.cpu_pilot.pi_runtime --stage smoke --max-frames 20 \
   --models yolo26n --operational-conf 0.10 --output-dir "$SSD_STAGE3_DIR"
 cp "$SSD_STAGE3_DIR/smoke_metadata.json" "$SSD_STAGE3_DIR/smoke_metadata_yolo26n.json"
 cp "$SSD_STAGE3_DIR/smoke_summary.csv" "$SSD_STAGE3_DIR/smoke_summary_yolo26n.csv"
 
-ssd_pi_runtime --stage smoke --max-frames 20 \
+python -m experiments.cpu_pilot.pi_runtime --stage smoke --max-frames 20 \
   --models roi_ssd_mobilenet --operational-conf 0.50 --output-dir "$SSD_STAGE3_DIR"
 cp "$SSD_STAGE3_DIR/smoke_metadata.json" "$SSD_STAGE3_DIR/smoke_metadata_roi_ssd_mobilenet.json"
 cp "$SSD_STAGE3_DIR/smoke_summary.csv" "$SSD_STAGE3_DIR/smoke_summary_roi_ssd_mobilenet.csv"
@@ -323,11 +330,11 @@ This profiles model inference at evaluation confidence and does not repeat the
 confidence-by-padding sweep:
 
 ```bash
-ssd_pi_runtime --stage cost \
+python -m experiments.cpu_pilot.pi_runtime --stage cost \
   --cost-repetitions 8 --output-dir "$SSD_STAGE3_DIR"
 ```
 
-Verify that both profiles exist and record 8 intra-op threads:
+Verify that both profiles exist and record the configured intra-op threads:
 
 ```bash
 python - <<'PY'
@@ -341,7 +348,7 @@ assert {"yolo26n", "roi_ssd_mobilenet"} <= profiles.keys()
 for model, profile in profiles.items():
     threads = profile["runtime_environment"]["pytorch_intra_op_threads"]
     print(f"{model}: {threads} threads")
-    assert threads == 8
+    assert threads == int(os.environ.get("SSD_CPU_THREADS", "8"))
 PY
 ```
 
@@ -353,7 +360,7 @@ Review `cost_profiles_cpu.json` for Pi hardware/software metadata and the
 frozen thresholds/padding. Then exercise the short pipeline on 20 pilot frames:
 
 ```bash
-ssd_pi_runtime --stage pipeline --max-frames 20 \
+python -m experiments.cpu_pilot.pi_runtime --stage pipeline --max-frames 20 \
   --no-debug --output-dir "$SSD_STAGE3_DIR"
 ```
 
@@ -369,30 +376,15 @@ pipeline validation pass, run the final benchmark. Stage 4 generates separate
 cost profiles on the Pi; it does not reuse Stage 3 timings. Keep the same source
 revision, environment, power settings, cooling, and background workload.
 
-Define a Stage 4 helper in the same shell. It applies the same thread setting
-for calibration and benchmarking and propagates the Stage 4 exit status:
-
-```bash
-ssd_stage4() {
-  python -u -X faulthandler - "$@" <<'PY'
-import sys
-from experiments.cpu_pilot import run_pilot
-from ultralytics.utils import torch_utils
-
-torch_utils.NUM_THREADS = run_pilot.CPU_THREADS
-
-from experiments import final_end_to_end_benchmark
-raise SystemExit(final_end_to_end_benchmark.main(sys.argv[1:]))
-PY
-}
-```
+Use the same exported thread policy as Stage 3. The standard Stage 4 command
+applies it to both calibration and benchmarking; no helper function is needed.
 
 Keep `SSD_STAGE3_DIR` pointed at the successful Stage 3 directory. Use an empty,
 Pi-only `SSD_OUTPUT_ROOT` outside the repository. First validate frozen inputs
 without inference:
 
 ```bash
-ssd_stage4 --dry-run \
+python -m experiments.final_end_to_end_benchmark --dry-run \
   --output-root "$SSD_OUTPUT_ROOT" \
   --dataset-yaml "$SSD_DATASET_YAML" \
   --device-label raspberry-pi-5 \
@@ -402,7 +394,7 @@ ssd_stage4 --dry-run \
 After the dry run passes, generate fresh Stage 4 profiles:
 
 ```bash
-ssd_stage4 --stage calibrate \
+python -m experiments.final_end_to_end_benchmark --stage calibrate \
   --output-root "$SSD_OUTPUT_ROOT" \
   --dataset-yaml "$SSD_DATASET_YAML" \
   --device-label raspberry-pi-5 \
@@ -424,22 +416,22 @@ assert {p["model"] for p in profiles} == {"yolo26n", "roi_ssd_mobilenet"}
 for profile in profiles:
     runtime = profile["runtime_environment"]
     print(profile["model"], runtime)
-    assert runtime["pytorch_intra_op_threads"] == 8
+    assert runtime["pytorch_intra_op_threads"] == int(os.environ.get("SSD_CPU_THREADS", "8"))
 PY
 ```
 
 Then process the 4,744-frame final manifest with two timing repetitions:
 
 ```bash
-ssd_stage4 --stage benchmark \
+python -m experiments.final_end_to_end_benchmark --stage benchmark \
   --output-root "$SSD_OUTPUT_ROOT" \
   --dataset-yaml "$SSD_DATASET_YAML" \
   --device-label raspberry-pi-5 \
   --timing-repeats 2 \
-  --system-load-note "Dedicated Raspberry Pi 5 CPU run; 8 PyTorch threads"
+  --system-load-note "Dedicated Raspberry Pi 5 CPU run; ${SSD_CPU_THREADS} PyTorch threads"
 ```
 
-Use `ssd_stage4` for both stages, redefining it if you open a new shell. Stage 4
+Restore the exported thread settings when opening a new shell. Stage 4
 refuses to overwrite frozen cost profiles; use a new output root if calibration
 must be repeated.
 

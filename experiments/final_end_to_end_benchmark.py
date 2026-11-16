@@ -381,12 +381,15 @@ def _validate_device_label(device_label: str, runtime: Dict) -> None:
             )
 
 
-def _load_pilot_module():
+def _load_pilot_module(thread_args=None):
     from experiments.cpu_pilot import run_pilot as pilot
 
     pilot.PILOT_DIR = PILOT_DIR
     pilot.SPLIT_METADATA = PILOT_DIR / "split_metadata.json"
     pilot._cpu_model = cpu_model_fallback
+    if thread_args is not None:
+        from experiments.cpu_pilot.runtime_threads import install_thread_policy
+        install_thread_policy(pilot, thread_args)
     pilot._configure_runtime()
     return pilot
 
@@ -1459,6 +1462,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--calibration-repetitions", type=int, default=8)
     parser.add_argument("--system-load-note", default="")
     parser.add_argument("--dry-run", action="store_true")
+    from experiments.cpu_pilot.runtime_threads import add_thread_arguments
+    add_thread_arguments(parser)
     args = parser.parse_args(argv)
 
     if args.stage != "aggregate":
@@ -1482,7 +1487,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     device_dir = _prepare_device_directory(
         args.output_root, device_label, final_rows, manifest_info
     )
-    pilot = _load_pilot_module()
+    pilot = _load_pilot_module(args)
 
     if args.stage in ("all", "calibrate"):
         profiles = _profile_models(
