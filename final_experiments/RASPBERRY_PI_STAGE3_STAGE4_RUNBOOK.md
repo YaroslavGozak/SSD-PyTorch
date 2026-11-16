@@ -235,27 +235,9 @@ unzip -q "$BASE/stage3_inputs.zip" -d "$SSD_STAGE3_DIR"
 mkdir -p "$SSD_OUTPUT_ROOT"
 ```
 
-The bundle includes each model's `calibration_report.md`; the frozen cost and
-pipeline stages require it alongside the selected-config receipt, sweep,
-gate matrix, and baseline. If an earlier bundle omitted these reports, export
-a new bundle from the same desktop frozen inputs and copy only the reports
-into the existing Pi Stage 3 directory:
-
-```powershell
-$bundle = "$env:TEMP\ssd_pi_inputs_$COMMIT_SHA-repaired"
-python -m experiments.cpu_pilot.export_pi_inputs --output-dir $bundle
-Compress-Archive -Path "$bundle\*" -DestinationPath "$bundle.zip"
-scp "$bundle.zip" PI_USER@PI_HOST:/home/PI_USER/object-detection/stage3_inputs_repaired.zip
-```
-
-```bash
-unzip -o "$BASE/stage3_inputs_repaired.zip" \
-  'calibration/yolo26n/calibration_report.md' \
-  'calibration/roi_ssd_mobilenet/calibration_report.md' \
-  -d "$SSD_STAGE3_DIR"
-test -s "$SSD_STAGE3_DIR/calibration/yolo26n/calibration_report.md"
-test -s "$SSD_STAGE3_DIR/calibration/roi_ssd_mobilenet/calibration_report.md"
-```
+The archive already includes `pilot_report.md` and each model's
+`calibration_report.md`, alongside the selected-config receipts, sweeps, gate
+matrices, and baselines.
 
 ## 7. Checkpoint checksums and preflight
 
@@ -281,7 +263,9 @@ annotation paths in both manifests, label checksums and frame/video IDs
 against the source audit manifest, frozen selection hashes/thresholds/padding,
 absence of copied desktop cost profiles, a fresh writable output root, and a
 clean Git commit. It prints `PI_PREFLIGHT_PASS` only if every check succeeds.
-Resolve every reported failure before starting inference.
+Resolve every reported failure before starting inference. Run preflight before
+Stage 3 smoke runs: it requires untouched inputs and flags generated metadata
+and cost profiles as stale if repeated against a populated Stage 3 directory.
 
 The selected frozen settings are:
 
@@ -292,17 +276,43 @@ The selected frozen settings are:
 
 ## 8. Stage 3 smoke, fresh Pi cost profile, and short pipeline check
 
+Define this Bash helper in the activated Pi environment, from `$REPO`, before
+running Stage 3:
+
+```bash
+ssd_pi_runtime() {
+  python -u -X faulthandler - "$@" <<'PY'
+import sys
+from experiments.cpu_pilot import pi_runtime
+from ultralytics.utils import torch_utils
+
+torch_utils.NUM_THREADS = pi_runtime.pilot.CPU_THREADS
+sys.argv = ["pi_runtime", *sys.argv[1:]]
+pi_runtime.main()
+PY
+}
+```
+
+Ultralytics CPU initialization otherwise changed PyTorch intra-op threads to 3
+on the tested Pi, while the frozen runner starts with 8. This caused the pipeline
+to reject the YOLO cost profile as a different runtime. The helper keeps both
+models at the runner's configured thread count (8) without editing hash-bound
+source or calibration receipts. Use it for every Stage 3 invocation below.
+Redefine it after opening a new shell. If profiles were already measured without
+this helper, preserve those outputs separately and regenerate the profiles;
+do not edit their recorded thread metadata.
+
 The smoke uses 20 pilot frames per model and the corresponding frozen
 operational confidence. Save each per-model smoke report because the runner
 writes one report per invocation:
 
 ```bash
-python -m experiments.cpu_pilot.pi_runtime --stage smoke --max-frames 20 \
+ssd_pi_runtime --stage smoke --max-frames 20 \
   --models yolo26n --operational-conf 0.10 --output-dir "$SSD_STAGE3_DIR"
 cp "$SSD_STAGE3_DIR/smoke_metadata.json" "$SSD_STAGE3_DIR/smoke_metadata_yolo26n.json"
 cp "$SSD_STAGE3_DIR/smoke_summary.csv" "$SSD_STAGE3_DIR/smoke_summary_yolo26n.csv"
 
-python -m experiments.cpu_pilot.pi_runtime --stage smoke --max-frames 20 \
+ssd_pi_runtime --stage smoke --max-frames 20 \
   --models roi_ssd_mobilenet --operational-conf 0.50 --output-dir "$SSD_STAGE3_DIR"
 cp "$SSD_STAGE3_DIR/smoke_metadata.json" "$SSD_STAGE3_DIR/smoke_metadata_roi_ssd_mobilenet.json"
 cp "$SSD_STAGE3_DIR/smoke_summary.csv" "$SSD_STAGE3_DIR/smoke_summary_roi_ssd_mobilenet.csv"
@@ -313,15 +323,37 @@ This profiles model inference at evaluation confidence and does not repeat the
 confidence-by-padding sweep:
 
 ```bash
-python -m experiments.cpu_pilot.pi_runtime --stage cost \
+ssd_pi_runtime --stage cost \
   --cost-repetitions 8 --output-dir "$SSD_STAGE3_DIR"
 ```
+
+Verify that both profiles exist and record 8 intra-op threads:
+
+```bash
+python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["SSD_STAGE3_DIR"]) / "cost_profiles_cpu.json"
+profiles = json.loads(path.read_text())
+assert {"yolo26n", "roi_ssd_mobilenet"} <= profiles.keys()
+for model, profile in profiles.items():
+    threads = profile["runtime_environment"]["pytorch_intra_op_threads"]
+    print(f"{model}: {threads} threads")
+    assert threads == 8
+PY
+```
+
+The frozen runner can finish without a completion message. The cost JSON and
+CSVs are written after both models have been profiled; verify the artifacts
+rather than relying on the last dataset-loading message.
 
 Review `cost_profiles_cpu.json` for Pi hardware/software metadata and the
 frozen thresholds/padding. Then exercise the short pipeline on 20 pilot frames:
 
 ```bash
-python -m experiments.cpu_pilot.pi_runtime --stage pipeline --max-frames 20 \
+ssd_pi_runtime --stage pipeline --max-frames 20 \
   --no-debug --output-dir "$SSD_STAGE3_DIR"
 ```
 
@@ -333,20 +365,83 @@ it.
 ## 9. Stage 4 final benchmark
 
 Only after preflight, both smoke runs, fresh Pi cost calibration, and the short
-pipeline validation pass, run the final benchmark. It calibrates a separate
-Stage 4 cost profile under the empty Pi-only output root before processing the
-4,744-frame final manifest:
+pipeline validation pass, run the final benchmark. Stage 4 generates separate
+cost profiles on the Pi; it does not reuse Stage 3 timings. Keep the same source
+revision, environment, power settings, cooling, and background workload.
+
+Define a Stage 4 helper in the same shell. It applies the same thread setting
+for calibration and benchmarking and propagates the Stage 4 exit status:
 
 ```bash
-python -m experiments.final_end_to_end_benchmark \
-  --stage all \
+ssd_stage4() {
+  python -u -X faulthandler - "$@" <<'PY'
+import sys
+from experiments.cpu_pilot import run_pilot
+from ultralytics.utils import torch_utils
+
+torch_utils.NUM_THREADS = run_pilot.CPU_THREADS
+
+from experiments import final_end_to_end_benchmark
+raise SystemExit(final_end_to_end_benchmark.main(sys.argv[1:]))
+PY
+}
+```
+
+Keep `SSD_STAGE3_DIR` pointed at the successful Stage 3 directory. Use an empty,
+Pi-only `SSD_OUTPUT_ROOT` outside the repository. First validate frozen inputs
+without inference:
+
+```bash
+ssd_stage4 --dry-run \
+  --output-root "$SSD_OUTPUT_ROOT" \
+  --dataset-yaml "$SSD_DATASET_YAML" \
+  --device-label raspberry-pi-5 \
+  --timing-repeats 2
+```
+
+After the dry run passes, generate fresh Stage 4 profiles:
+
+```bash
+ssd_stage4 --stage calibrate \
   --output-root "$SSD_OUTPUT_ROOT" \
   --dataset-yaml "$SSD_DATASET_YAML" \
   --device-label raspberry-pi-5 \
   --timing-repeats 2 \
-  --calibration-repetitions 8 \
-  --system-load-note "Dedicated Raspberry Pi 5 CPU run"
+  --calibration-repetitions 8
 ```
+
+Verify both models and their thread metadata before benchmarking:
+
+```bash
+python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["SSD_OUTPUT_ROOT"]) / "raspberry-pi-5/cost_profiles_final.json"
+profiles = json.loads(path.read_text())["profiles"]
+assert {p["model"] for p in profiles} == {"yolo26n", "roi_ssd_mobilenet"}
+for profile in profiles:
+    runtime = profile["runtime_environment"]
+    print(profile["model"], runtime)
+    assert runtime["pytorch_intra_op_threads"] == 8
+PY
+```
+
+Then process the 4,744-frame final manifest with two timing repetitions:
+
+```bash
+ssd_stage4 --stage benchmark \
+  --output-root "$SSD_OUTPUT_ROOT" \
+  --dataset-yaml "$SSD_DATASET_YAML" \
+  --device-label raspberry-pi-5 \
+  --timing-repeats 2 \
+  --system-load-note "Dedicated Raspberry Pi 5 CPU run; 8 PyTorch threads"
+```
+
+Use `ssd_stage4` for both stages, redefining it if you open a new shell. Stage 4
+refuses to overwrite frozen cost profiles; use a new output root if calibration
+must be repeated.
 
 Review the device directory under `outputs/stage4_pi5/`, especially
 `manifest_provenance.json`, `cost_profiles_final.json`,
