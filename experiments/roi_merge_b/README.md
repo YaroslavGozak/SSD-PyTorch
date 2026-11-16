@@ -106,6 +106,14 @@ python -m experiments.roi_merge_b evaluate --manifest artifacts/roi_merge_b/froz
 python -m experiments.roi_merge_b evaluate --manifest artifacts/roi_merge_b/frozen/manifest.jsonl --model yolo26n --models-dir outputs/merge_b/host_run/yolo26n/calibration --subset smoke --output outputs/merge_b/host_run/yolo26n/smoke
 ```
 
+```bash
+python -m experiments.roi_merge_b inspect --manifest artifacts/roi_merge_b/frozen/manifest.jsonl --output outputs/merge_b/host_run/preflight
+python -m experiments.roi_merge_b calibrate --manifest artifacts/roi_merge_b/frozen/manifest.jsonl --model roi_ssd_mobilenet --dry-run --output outputs/merge_b/host_run/roi_ssd_mobilenet/calibration
+python -m experiments.roi_merge_b calibrate --manifest artifacts/roi_merge_b/frozen/manifest.jsonl --model roi_ssd_mobilenet --output outputs/merge_b/host_run/roi_ssd_mobilenet/calibration
+python -m experiments.roi_merge_b evaluate --manifest artifacts/roi_merge_b/frozen/manifest.jsonl --model roi_ssd_mobilenet --models-dir outputs/merge_b/host_run/roi_ssd_mobilenet/calibration --subset smoke --dry-run --output outputs/merge_b/host_run/roi_ssd_mobilenet/smoke
+python -m experiments.roi_merge_b evaluate --manifest artifacts/roi_merge_b/frozen/manifest.jsonl --model roi_ssd_mobilenet --models-dir outputs/merge_b/host_run/roi_ssd_mobilenet/calibration --subset smoke --output outputs/merge_b/host_run/roi_ssd_mobilenet/smoke
+```
+
 Repeat with `--model roi_ssd_mobilenet` and corresponding directories. Then
 use `--subset pilot` or `--subset full` and fresh evaluation directories.
 Smoke/pilot are immutable seeded selections of held-out frame IDs; their hashes
