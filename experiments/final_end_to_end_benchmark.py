@@ -43,7 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_ROOT = env_path(
     "SSD_OUTPUT_ROOT", ROOT / "raspberry-outputs" / "stage4"
 )
-PILOT_DIR = stage3_dir(ROOT / "final_experiments" / "pilot_20261110")
+PILOT_DIR = stage3_dir(ROOT / "final_experiments" / "pilot_20261117")
 PILOT_REPORT = PILOT_DIR / "pilot_report.md"
 PILOT_MANIFEST = PILOT_DIR / "pilot_manifest.txt"
 FINAL_MANIFEST = PILOT_DIR / "final_eval_manifest_candidate.txt"

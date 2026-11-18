@@ -5,11 +5,11 @@ confidence and segment padding, then profiles CPU cost and runs FF/SEG/CA/
 FULL-TECH using the hash-locked selected configuration:
 
 ```powershell
-.\.venv\Scripts\python.exe -m experiments.cpu_pilot.prepare --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet
-.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet --stage smoke --max-frames 20 --operational-conf 0.10
-.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet --stage calibration
-.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet --stage cost --cost-repetitions 8
-.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261109 --models yolo26n roi_ssd_mobilenet --stage pipeline
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.prepare --output-dir final_experiments\pilot_joint_20261117 --models yolo26n roi_ssd_mobilenet
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261117 --models yolo26n roi_ssd_mobilenet --stage smoke --max-frames 20 --operational-conf 0.10
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261117 --models yolo26n roi_ssd_mobilenet --stage calibration
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261117 --models yolo26n roi_ssd_mobilenet --stage cost --cost-repetitions 8
+.\.venv\Scripts\python.exe -m experiments.cpu_pilot.run_pilot --output-dir final_experiments\pilot_joint_20261117 --models yolo26n roi_ssd_mobilenet --stage pipeline
 ```
 
 By default the primary model pair is YOLO26n and ROI-SSD-MobileNetV3. Config

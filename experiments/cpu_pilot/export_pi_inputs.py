@@ -16,7 +16,7 @@ from experiments.pi_preflight import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SOURCE = ROOT / "final_experiments" / "pilot_20261110"
+SOURCE = ROOT / "final_experiments" / "pilot_20261117"
 
 
 def _sha256(path):
