@@ -1,12 +1,36 @@
+import os
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest import mock
 
-from experiments.cpu_pilot.portable_paths import portable_dataset_config
+from experiments.cpu_pilot.portable_paths import cpu_model_fallback, portable_dataset_config
 from experiments.pi_preflight import _validate_manifest_paths
 
 
 class PortablePathTests(unittest.TestCase):
+    def test_cpu_model_fallback_reads_windows_registry_before_generic_processor(self):
+        winreg = mock.MagicMock()
+        winreg.HKEY_LOCAL_MACHINE = object()
+        winreg.QueryValueEx.return_value = ("Intel(R) Core(TM) i9-9900KF CPU @ 3.60GHz", 1)
+
+        with (
+            mock.patch("sys.platform", "win32"),
+            mock.patch.dict(sys.modules, {"winreg": winreg}),
+            mock.patch(
+                "experiments.cpu_pilot.portable_paths.platform.processor",
+                return_value="Intel64 Family 6 Model 158 Stepping 13, GenuineIntel",
+            ),
+            mock.patch.dict(
+                os.environ,
+                {"PROCESSOR_IDENTIFIER": "Intel64 Family 6 Model 158 Stepping 13, GenuineIntel"},
+            ),
+        ):
+            model = cpu_model_fallback()
+
+        self.assertIn("i9-9900KF", model)
+
     def test_portable_dataset_config_rewrites_absolute_windows_splits(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

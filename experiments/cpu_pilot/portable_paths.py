@@ -2,6 +2,7 @@
 
 import os
 import platform
+import sys
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Union
 
@@ -41,6 +42,20 @@ def display_path(path: PathLike, root: Path = ROOT) -> str:
 
 
 def cpu_model_fallback() -> str:
+    if sys.platform == "win32":
+        import winreg
+
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"HARDWARE\DESCRIPTION\System\CentralProcessor\0",
+            ) as key:
+                model, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+                if model.strip():
+                    return model.strip()
+        except OSError:
+            pass
+
     model = platform.processor() or os.environ.get("PROCESSOR_IDENTIFIER", "")
     if model.strip():
         return model.strip()
